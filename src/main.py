@@ -42,7 +42,10 @@ async def run_sentinel_cycle(
     )
 
     # 2. Fetch raw schedule from web source
-    fetch_res = await parser.fetch_schedule_raw(config.SCHEDULE_TARGET_ID)
+    fetch_res = await parser.fetch_schedule_raw(
+        config.SCHEDULE_TARGET_ID,
+        param_name=config.SCHEDULE_PARAM_NAME,
+    )
     current_payload: SchedulePayload | None = None
 
     if fetch_res.success and fetch_res.raw_content:

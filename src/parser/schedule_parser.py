@@ -50,13 +50,13 @@ class ScheduleParser:
             kwargs["proxy"] = self.proxy
         return httpx.AsyncClient(**kwargs)
 
-    async def fetch_schedule_raw(self, target_id: str, endpoint: str = "") -> FetchResult:
+    async def fetch_schedule_raw(self, target_id: str, endpoint: str = "", param_name: str = "pr") -> FetchResult:
         """Fetch raw schedule payload with retry and timeout protection.
         
         Guarantees that network errors or timeouts will never crash the calling daemon.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}" if endpoint else self.base_url
-        params = {"id": target_id} if target_id else None
+        params = {param_name: target_id} if target_id else None
 
         last_error = None
         for attempt in range(1, self.max_retries + 1):

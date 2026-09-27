@@ -15,8 +15,9 @@ SQLITE_DB_PATH = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlit
 if not os.path.isabs(SQLITE_DB_PATH):
     SQLITE_DB_PATH = str(BASE_DIR / SQLITE_DB_PATH)
 
-SCHEDULE_URL = os.getenv("SCHEDULE_URL", "https://rasp.guap.ru/")
-SCHEDULE_TARGET_ID = os.getenv("SCHEDULE_TARGET_ID", "1234")
+SCHEDULE_URL = os.getenv("SCHEDULE_URL", "https://guap.ru/rasp")
+SCHEDULE_TARGET_ID = os.getenv("SCHEDULE_TARGET_ID", "2903")
+SCHEDULE_PARAM_NAME = os.getenv("SCHEDULE_PARAM_NAME", "pr")
 SCHEDULE_POLL_INTERVAL_HOURS = int(os.getenv("SCHEDULE_POLL_INTERVAL_HOURS", "2"))
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "./credentials.json")
 GOOGLE_TOKEN_FILE = os.getenv("GOOGLE_TOKEN_FILE", "./token.json")
