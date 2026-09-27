@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  assistant-worker:
+    build: .
+    container_name: assistant_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    environment:
+      - PYTHONUNBUFFERED=1
