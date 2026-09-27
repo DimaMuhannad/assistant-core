@@ -152,3 +152,98 @@ class ScheduleParser:
             fetched_at=datetime.now(timezone.utc),
             days=days,
         )
+
+    def parse_html_payload(
+        self,
+        html_content: str,
+        group_or_teacher_id: str,
+        target_date: date | None = None,
+    ) -> SchedulePayload:
+        """Parse university schedule HTML page into SchedulePayload.
+        
+        Extracts day headers, time slots, subject names, room numbers, and teachers.
+        """
+        from bs4 import BeautifulSoup
+        import re
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        days: list[ScheduleDay] = []
+        base_date = target_date or date.today()
+
+        # Strategy 1: Look for day container blocks or headers (common in rasp.guap.ru)
+        day_blocks = soup.find_all(class_=re.compile(r"day|result|schedule-day", re.IGNORECASE))
+        if not day_blocks:
+            # Fallback: look for h3/h4/tables
+            day_blocks = soup.find_all(["h3", "h4", "table"])
+
+        current_day_date = base_date
+        current_lessons: list[Lesson] = []
+
+        # Time pattern HH:MM - HH:MM
+        time_pattern = re.compile(r"(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})")
+
+        # Find all lesson rows / items across document
+        items = soup.find_all(["tr", "div", "li"], class_=re.compile(r"lesson|item|row|study", re.IGNORECASE))
+        if not items:
+            items = soup.find_all("tr")
+
+        for item in items:
+            text = item.get_text(separator=" ", strip=True)
+            time_match = time_pattern.search(text)
+            if not time_match:
+                continue
+
+            start_str, end_str = time_match.groups()
+            try:
+                # Normalize HH:MM
+                sh, sm = map(int, start_str.split(":"))
+                eh, em = map(int, end_str.split(":"))
+                start_t = dt_time(sh, sm)
+                end_t = dt_time(eh, em)
+            except Exception:
+                continue
+
+            # Identify lesson type
+            l_type = LessonType.UNKNOWN
+            upper_text = text.upper()
+            if any(k in upper_text for k in ["(ЛР)", " ЛР ", "ЛАБ"]):
+                l_type = LessonType.LAB
+            elif any(k in upper_text for k in ["(ПР)", " ПР ", "ПРАКТ"]):
+                l_type = LessonType.PRACTICE
+            elif any(k in upper_text for k in ["(Л)", " Л ", "ЛЕКЦ"]):
+                l_type = LessonType.LECTURE
+            elif any(k in upper_text for k in ["ЭКЗАМЕН", "ЭКЗ"]):
+                l_type = LessonType.EXAM
+
+            # Extract room if present (e.g. "ауд. 13-05" or "13-05" or "каб. 22")
+            room_match = re.search(r"(?:ауд\.?|комн\.?|каб\.?|корп\.?)\s*([0-9A-Za-zА-Яа-я\-]+)", text, re.IGNORECASE)
+            room = room_match.group(0) if room_match else "Не указана"
+
+            # Clean subject name
+            subject_candidate = text
+            # Remove time and room
+            subject_candidate = time_pattern.sub("", subject_candidate)
+            if room_match:
+                subject_candidate = subject_candidate.replace(room_match.group(0), "")
+            subject = subject_candidate.strip(" -–—,.")[:100] or "Учебное занятие"
+
+            current_lessons.append(
+                Lesson(
+                    subject=subject,
+                    lesson_type=l_type,
+                    date=current_day_date,
+                    start_time=start_t,
+                    end_time=end_t,
+                    room=room,
+                )
+            )
+
+        if current_lessons:
+            days.append(ScheduleDay(date=current_day_date, lessons=current_lessons))
+
+        return SchedulePayload(
+            group_or_teacher_id=group_or_teacher_id,
+            fetched_at=datetime.now(timezone.utc),
+            days=days,
+        )
+

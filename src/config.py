@@ -18,6 +18,8 @@ if not os.path.isabs(SQLITE_DB_PATH):
 SCHEDULE_URL = os.getenv("SCHEDULE_URL", "https://rasp.guap.ru/")
 SCHEDULE_TARGET_ID = os.getenv("SCHEDULE_TARGET_ID", "1234")
 SCHEDULE_POLL_INTERVAL_HOURS = int(os.getenv("SCHEDULE_POLL_INTERVAL_HOURS", "2"))
+GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "./credentials.json")
+GOOGLE_TOKEN_FILE = os.getenv("GOOGLE_TOKEN_FILE", "./token.json")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID", "")

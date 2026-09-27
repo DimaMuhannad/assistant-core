@@ -1,0 +1,72 @@
+import logging
+from aiogram import Bot
+from aiogram.enums import ParseMode
+
+from src.models.schedule import ScheduleDiff
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramNotifier:
+    """Sends schedule update alerts and digests to Telegram."""
+
+    def __init__(self, bot_token: str | None, user_id: str | int | None):
+        self.bot_token = bot_token
+        self.user_id = user_id
+        self.is_configured = bool(
+            bot_token and user_id and not bot_token.startswith("123456789:ABC")
+        )
+
+    async def send_schedule_diff_alert(self, diff: ScheduleDiff, target_id: str) -> bool:
+        """Send formatted alert when schedule changes are detected."""
+        if not diff.has_changes:
+            return False
+
+        lines = [f"📅 *Обновление расписания (ID: {target_id})*\n"]
+
+        if diff.added_lessons:
+            lines.append(f"➕ *Новые пары ({len(diff.added_lessons)}):*")
+            for l in diff.added_lessons:
+                type_name = {
+                    "LECTURE": "Лекция",
+                    "PRACTICE": "Практика",
+                    "LAB": "Лаб. работа",
+                    "EXAM": "Экзамен",
+                    "UNKNOWN": "Пара",
+                }.get(l.lesson_type.value, l.lesson_type.value)
+
+                lines.append(
+                    f"• {l.date.strftime('%d.%m')} {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} "
+                    f"[{type_name}] {l.subject} (ауд. {l.room})"
+                )
+            lines.append("")
+
+        if diff.removed_lessons:
+            lines.append(f"➖ *Отмененные / перенесенные пары ({len(diff.removed_lessons)}):*")
+            for l in diff.removed_lessons:
+                lines.append(
+                    f"• {l.date.strftime('%d.%m')} {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} "
+                    f"{l.subject} (ауд. {l.room})"
+                )
+            lines.append("")
+
+        message_text = "\n".join(lines).strip()
+
+        if not self.is_configured:
+            logger.info("[TELEGRAM DRY-RUN] Alert for target %s:\n%s", target_id, message_text)
+            return True
+
+        bot = Bot(token=self.bot_token)
+        try:
+            await bot.send_message(
+                chat_id=self.user_id,
+                text=message_text,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            logger.info("Telegram notification sent successfully to user %s", self.user_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to send Telegram alert: %s", e)
+            return False
+        finally:
+            await bot.session.close()

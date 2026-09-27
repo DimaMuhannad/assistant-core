@@ -7,6 +7,8 @@ from src.models.schedule import Lesson, LessonType, ScheduleDay, SchedulePayload
 from src.detector.diff import ScheduleChangeDetector
 from src.storage.db import Database
 from src.parser.schedule_parser import ScheduleParser, FetchResult
+from src.calendar.client import GoogleCalendarClient
+from src.notifier.telegram import TelegramNotifier
 
 
 # ---------------------------------------------------------
@@ -33,12 +35,10 @@ def test_lesson_model_validation():
     assert lesson.lesson_type == LessonType.PRACTICE
     assert lesson.room == "13-05"
 
-    # Verify SHA-256 hash
     expected_raw_key = f"{test_date.isoformat()}_{test_start.isoformat()}_Базы данных_13-05"
     expected_hash = hashlib.sha256(expected_raw_key.encode("utf-8")).hexdigest()
     assert lesson.deterministic_hash == expected_hash
 
-    # Verify defaults
     lesson_defaults = Lesson(
         subject="Физика",
         date=test_date,
@@ -73,20 +73,18 @@ def test_schedule_payload_hash_stability():
 
     payload = SchedulePayload(
         group_or_teacher_id="group_4321",
-        fetched_at=datetime(2026, 9, 28, 10, 0, 0),
+        fetched_at=datetime(2026, 9, 28, 10, 0, 0, tzinfo=timezone.utc),
         days=[
             ScheduleDay(date=d1, lessons=[l1]),
             ScheduleDay(date=d2, lessons=[l2]),
         ],
     )
 
-    # Hashes sorted
     all_hashes = "".join(sorted([l1.deterministic_hash, l2.deterministic_hash]))
     expected_payload_hash = hashlib.sha256(all_hashes.encode("utf-8")).hexdigest()
 
     assert payload.payload_hash == expected_payload_hash
 
-    # Test JSON round-trip
     payload_json = payload.model_dump_json()
     restored = SchedulePayload.model_validate_json(payload_json)
     assert restored.payload_hash == payload.payload_hash
@@ -159,11 +157,9 @@ def test_change_detector_identifies_added_and_removed():
 @pytest.mark.asyncio
 async def test_sqlite_storage_lifecycle():
     """Verify table creation, source registration, and snapshot storage in SQLite."""
-    # Use in-memory SQLite for test isolation
     db = Database(db_path=":memory:")
     await db.init_db()
 
-    # 1. Monitored source upsert
     source_id = "test_schedule_source"
     await db.upsert_monitored_source(
         source_id=source_id,
@@ -172,7 +168,6 @@ async def test_sqlite_storage_lifecycle():
         config={"target_id": "1234"},
     )
 
-    # 2. Save snapshot
     raw_payload_str = json.dumps({"test": "data", "status": "ok"})
     test_hash = "abc123hash"
     snap_id = await db.save_snapshot(
@@ -183,14 +178,12 @@ async def test_sqlite_storage_lifecycle():
     assert snap_id is not None
     assert snap_id > 0
 
-    # 3. Retrieve latest snapshot
     latest = await db.get_latest_snapshot(source_id)
     assert latest is not None
     assert latest["source_id"] == source_id
     assert latest["content_hash"] == test_hash
     assert latest["raw_payload"] == raw_payload_str
 
-    # 4. Record calendar sync
     sync_id = await db.record_calendar_sync(
         source_event_id="slot_001",
         google_event_id="g_event_001",
@@ -208,7 +201,7 @@ async def test_sqlite_storage_lifecycle():
 
 
 # ---------------------------------------------------------
-# 4. HTTP Parser Resilience & JSON Parsing Tests
+# 4. HTTP Parser Resilience & HTML Parsing Tests
 # ---------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -245,3 +238,119 @@ def test_parser_json_payload():
     assert len(payload.days) == 1
     assert payload.days[0].lessons[0].subject == "Информатика"
     assert payload.days[0].lessons[0].lesson_type == LessonType.LECTURE
+
+
+def test_parser_html_payload():
+    """Verify parsing HTML table structure into SchedulePayload."""
+    parser = ScheduleParser()
+    sample_html = """
+    <html>
+      <body>
+        <div class="schedule">
+          <div class="day"><h3>Понедельник</h3></div>
+          <div class="study">
+            <span class="time">09:30 - 11:00</span>
+            <span class="type">(ЛР)</span>
+            <span class="name">Сетевые технологии</span>
+            <span class="room">ауд. 13-05</span>
+          </div>
+          <div class="study">
+            <span class="time">11:10 - 12:40</span>
+            <span class="type">(ПР)</span>
+            <span class="name">Операционные системы</span>
+            <span class="room">ауд. 14-02</span>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    fixed_date = date(2026, 9, 28)
+    payload = parser.parse_html_payload(sample_html, group_or_teacher_id="4321", target_date=fixed_date)
+    assert len(payload.days) == 1
+    lessons = payload.days[0].lessons
+    assert len(lessons) == 2
+    assert lessons[0].lesson_type == LessonType.LAB
+    assert lessons[0].start_time == time(9, 30)
+    assert lessons[0].room == "ауд. 13-05"
+    assert lessons[1].lesson_type == LessonType.PRACTICE
+
+
+# ---------------------------------------------------------
+# 5. Definition of Done: 5x Idempotency Test (0 Duplicates)
+# ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_definition_of_done_5x_idempotency_zero_duplicates():
+    """SPEC_PHASE_1.md DoD:
+
+    'Пятикратный повторный запуск скрипта на неизменном расписании создает ровно 0 дубликатов в Google Календаре.'
+    """
+    db = Database(db_path=":memory:")
+    await db.init_db()
+
+    calendar_client = GoogleCalendarClient(dry_run=True)
+    d = date(2026, 9, 28)
+
+    sample_lesson = Lesson(
+        subject="Архитектура вычислительных систем",
+        lesson_type=LessonType.LECTURE,
+        date=d,
+        start_time=time(9, 30),
+        end_time=time(11, 0),
+        room="13-05",
+        teacher="Иванов И.И.",
+    )
+
+    diff = ScheduleDiff(
+        has_changes=True,
+        new_hash="test_hash_123",
+        added_lessons=[sample_lesson],
+        removed_lessons=[],
+    )
+
+    # Run 1: First sync should create 1 event
+    stats_1 = await calendar_client.sync_schedule(calendar_id="primary", diff=diff, db=db)
+    assert stats_1["created"] == 1
+    assert stats_1["skipped"] == 0
+
+    # Runs 2, 3, 4, 5: Repeated runs on the same schedule must create EXACTLY 0 new events!
+    for i in range(2, 6):
+        stats_repeat = await calendar_client.sync_schedule(calendar_id="primary", diff=diff, db=db)
+        assert stats_repeat["created"] == 0, f"Run {i} created unexpected duplicates!"
+        assert stats_repeat["skipped"] == 1, f"Run {i} should have skipped the existing record!"
+
+    # Verify that in database there is strictly 1 record for this slot
+    async with db.connection() as conn:
+        cursor = await conn.execute("SELECT count(*) as cnt FROM calendar_sync_records;")
+        row = await cursor.fetchone()
+        assert row["cnt"] == 1, f"Expected exactly 1 record in SQLite, found {row['cnt']} (duplicates detected!)"
+
+    await db.close()
+
+
+# ---------------------------------------------------------
+# 6. Telegram Notifier Formatter Test
+# ---------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_telegram_notifier_format():
+    """Verify telegram alert message formatting and dry-run dispatch."""
+    notifier = TelegramNotifier(bot_token=None, user_id=None)
+    d = date(2026, 9, 28)
+    lesson = Lesson(
+        subject="Базы данных",
+        lesson_type=LessonType.LAB,
+        date=d,
+        start_time=time(9, 30),
+        end_time=time(11, 0),
+        room="13-05",
+    )
+    diff = ScheduleDiff(
+        has_changes=True,
+        new_hash="diff_hash_abc",
+        added_lessons=[lesson],
+        removed_lessons=[],
+    )
+
+    res = await notifier.send_schedule_diff_alert(diff, target_id="1234")
+    assert res is True
