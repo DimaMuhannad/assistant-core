@@ -25,9 +25,9 @@ class ScheduleParser:
     def __init__(
         self,
         base_url: str = "https://rasp.guap.ru/",
-        timeout_seconds: float = 15.0,
+        timeout_seconds: float = 30.0,
         max_retries: int = 3,
-        user_agent: str = "AssistantCore-ScheduleSentinel/1.0",
+        user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         proxy: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -165,81 +165,156 @@ class ScheduleParser:
         """
         from bs4 import BeautifulSoup
         import re
+        from datetime import timedelta
 
         soup = BeautifulSoup(html_content, "html.parser")
-        days: list[ScheduleDay] = []
+        days_map = {
+            "Понедельник": 0,
+            "Вторник": 1,
+            "Среда": 2,
+            "Четверг": 3,
+            "Пятница": 4,
+            "Суббота": 5,
+            "Воскресенье": 6,
+        }
+        time_slots = {
+            "1 пара": (dt_time(9, 30), dt_time(11, 0)),
+            "2 пара": (dt_time(11, 10), dt_time(12, 40)),
+            "3 пара": (dt_time(13, 0), dt_time(14, 30)),
+            "4 пара": (dt_time(15, 10), dt_time(16, 40)),
+            "5 пара": (dt_time(17, 0), dt_time(18, 30)),
+            "6 пара": (dt_time(18, 40), dt_time(20, 10)),
+        }
+
         base_date = target_date or date.today()
+        # Monday of this week
+        monday = base_date - timedelta(days=base_date.weekday())
 
-        # Strategy 1: Look for day container blocks or headers (common in rasp.guap.ru)
-        day_blocks = soup.find_all(class_=re.compile(r"day|result|schedule-day", re.IGNORECASE))
-        if not day_blocks:
-            # Fallback: look for h3/h4/tables
-            day_blocks = soup.find_all(["h3", "h4", "table"])
+        days_dict: dict[date, list[Lesson]] = {}
+        current_day_date = None
+        current_slot_times = None
 
-        current_day_date = base_date
-        current_lessons: list[Lesson] = []
-
-        # Time pattern HH:MM - HH:MM
         time_pattern = re.compile(r"(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})")
 
-        # Find all lesson rows / items across document
-        items = soup.find_all(["tr", "div", "li"], class_=re.compile(r"lesson|item|row|study", re.IGNORECASE))
-        if not items:
-            items = soup.find_all("tr")
+        for elem in soup.find_all(["h4", "h3", "div"]):
+            classes = elem.get("class", [])
+            text = elem.get_text(" ", strip=True)
 
-        for item in items:
-            text = item.get_text(separator=" ", strip=True)
-            time_match = time_pattern.search(text)
-            if not time_match:
+            if elem.name in ["h4", "h3"]:
+                day_name = text.strip()
+                if day_name in days_map:
+                    day_offset = days_map[day_name]
+                    current_day_date = monday + timedelta(days=day_offset)
+                    if current_day_date not in days_dict:
+                        days_dict[current_day_date] = []
+                    current_slot_times = None
                 continue
 
-            start_str, end_str = time_match.groups()
-            try:
-                # Normalize HH:MM
-                sh, sm = map(int, start_str.split(":"))
-                eh, em = map(int, end_str.split(":"))
-                start_t = dt_time(sh, sm)
-                end_t = dt_time(eh, em)
-            except Exception:
+            if current_day_date and "text-danger" in classes and "пара (" in text:
+                time_match = time_pattern.search(text)
+                if time_match:
+                    sh, sm = map(int, time_match.group(1).split(":"))
+                    eh, em = map(int, time_match.group(2).split(":"))
+                    current_slot_times = (dt_time(sh, sm), dt_time(eh, em))
+                else:
+                    for slot_name, slot_range in time_slots.items():
+                        if slot_name in text:
+                            current_slot_times = slot_range
+                            break
                 continue
 
-            # Identify lesson type
-            l_type = LessonType.UNKNOWN
-            upper_text = text.upper()
-            if any(k in upper_text for k in ["(ЛР)", " ЛР ", "ЛАБ"]):
-                l_type = LessonType.LAB
-            elif any(k in upper_text for k in ["(ПР)", " ПР ", "ПРАКТ"]):
-                l_type = LessonType.PRACTICE
-            elif any(k in upper_text for k in ["(Л)", " Л ", "ЛЕКЦ"]):
-                l_type = LessonType.LECTURE
-            elif any(k in upper_text for k in ["ЭКЗАМЕН", "ЭКЗ"]):
-                l_type = LessonType.EXAM
+            if current_day_date and current_slot_times and "d-flex" in classes and "gap-2" in classes:
+                if any(clearing in text for clearing in ["Очистить", "Показать расписание"]):
+                    continue
 
-            # Extract room if present (e.g. "ауд. 13-05" or "13-05" or "каб. 22")
-            room_match = re.search(r"(?:ауд\.?|комн\.?|каб\.?|корп\.?)\s*([0-9A-Za-zА-Яа-я\-]+)", text, re.IGNORECASE)
-            room = room_match.group(0) if room_match else "Не указана"
+                l_type = LessonType.UNKNOWN
+                if "Лекция" in text:
+                    l_type = LessonType.LECTURE
+                elif "Лабораторное занятие" in text:
+                    l_type = LessonType.LAB
+                elif "Практическое занятие" in text:
+                    l_type = LessonType.PRACTICE
+                elif "Экзамен" in text:
+                    l_type = LessonType.EXAM
 
-            # Clean subject name
-            subject_candidate = text
-            # Remove time and room
-            subject_candidate = time_pattern.sub("", subject_candidate)
-            if room_match:
-                subject_candidate = subject_candidate.replace(room_match.group(0), "")
-            subject = subject_candidate.strip(" -–—,.")[:100] or "Учебное занятие"
+                room_match = re.search(r"ауд\.\s*([^—\n]+)", text)
+                room = ("ауд. " + room_match.group(1).strip()) if room_match else "Не указана"
 
-            current_lessons.append(
-                Lesson(
-                    subject=subject,
-                    lesson_type=l_type,
-                    date=current_day_date,
-                    start_time=start_t,
-                    end_time=end_t,
-                    room=room,
+                subject = text
+                for prefix in ["▲", "▼", "Лекция", "Лабораторное занятие", "Практическое занятие"]:
+                    subject = subject.replace(prefix, "")
+                if room_match:
+                    subject = subject.split("ауд.")[0]
+                subject = subject.strip(" .–—") or "Учебное занятие"
+
+                teacher_match = re.search(r"преп:\s*([^.]+)", text)
+                teacher = teacher_match.group(1).strip() if teacher_match else None
+
+                days_dict[current_day_date].append(
+                    Lesson(
+                        subject=subject,
+                        lesson_type=l_type,
+                        date=current_day_date,
+                        start_time=current_slot_times[0],
+                        end_time=current_slot_times[1],
+                        room=room,
+                        teacher=teacher,
+                    )
                 )
-            )
 
-        if current_lessons:
-            days.append(ScheduleDay(date=current_day_date, lessons=current_lessons))
+        days: list[ScheduleDay] = [
+            ScheduleDay(date=d, lessons=lessons)
+            for d, lessons in sorted(days_dict.items(), key=lambda x: x[0])
+            if lessons
+        ]
+
+        # Generic fallback if custom structure yielded 0 lessons
+        if not days:
+            # Fallback to general table/div search
+            current_day_date = base_date
+            current_lessons = []
+            for item in soup.find_all(["tr", "div", "li"], class_=re.compile(r"lesson|item|row|study", re.IGNORECASE)):
+                text = item.get_text(separator=" ", strip=True)
+                time_match = time_pattern.search(text)
+                if not time_match:
+                    continue
+                start_str, end_str = time_match.groups()
+                try:
+                    sh, sm = map(int, start_str.split(":"))
+                    eh, em = map(int, end_str.split(":"))
+                    start_t = dt_time(sh, sm)
+                    end_t = dt_time(eh, em)
+                except Exception:
+                    continue
+
+                l_type = LessonType.UNKNOWN
+                upper_text = text.upper()
+                if any(k in upper_text for k in ["(ЛР)", " ЛР ", "ЛАБ"]):
+                    l_type = LessonType.LAB
+                elif any(k in upper_text for k in ["(ПР)", " ПР ", "ПРАКТ"]):
+                    l_type = LessonType.PRACTICE
+                elif any(k in upper_text for k in ["(Л)", " Л ", "ЛЕКЦ"]):
+                    l_type = LessonType.LECTURE
+
+                room_match = re.search(r"(?:ауд\.?|комн\.?|каб\.?|корп\.?)\s*([0-9A-Za-zА-Яа-я\-]+)", text, re.IGNORECASE)
+                room = room_match.group(0) if room_match else "Не указана"
+                subject = time_pattern.sub("", text)
+                if room_match:
+                    subject = subject.replace(room_match.group(0), "")
+                subject = subject.strip(" -–—,.")[:100] or "Учебное занятие"
+
+                current_lessons.append(
+                    Lesson(
+                        subject=subject,
+                        lesson_type=l_type,
+                        date=current_day_date,
+                        start_time=start_t,
+                        end_time=end_t,
+                        room=room,
+                    )
+                )
+            if current_lessons:
+                days.append(ScheduleDay(date=current_day_date, lessons=current_lessons))
 
         return SchedulePayload(
             group_or_teacher_id=group_or_teacher_id,

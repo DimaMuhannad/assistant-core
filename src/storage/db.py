@@ -203,3 +203,94 @@ class Database:
             )
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def get_content_snapshot_by_hash(self, source_id: str, content_hash: str) -> dict[str, Any] | None:
+        """Check if a specific content hash already exists for this source."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, source_id, content_hash, raw_payload, captured_at
+                FROM content_snapshots
+                WHERE source_id = ? AND content_hash = ?
+                LIMIT 1;
+                """,
+                (source_id, content_hash),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def save_action_item(
+        self,
+        source_type: str,
+        priority_score: int,
+        summary_text: str,
+        payload: dict[str, Any] | str,
+        status: str = "pending",
+    ) -> int:
+        """Save a new action item to be reviewed or sent in daily brief."""
+        payload_str = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO action_items (source_type, priority_score, summary_text, payload_json, status)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (source_type, priority_score, summary_text, payload_str, status),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_pending_action_items(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve pending action items ordered by priority (descending)."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, source_type, priority_score, summary_text, payload_json, status, created_at
+                FROM action_items
+                WHERE status = 'pending'
+                ORDER BY priority_score DESC, id DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def update_action_item_status(self, item_id: int, status: str) -> None:
+        """Update status of an action item (e.g. 'processed', 'dismissed', 'confirmed')."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE action_items
+                SET status = ?
+                WHERE id = ?;
+                """,
+                (status, item_id),
+            )
+            await conn.commit()
+
+    async def list_monitored_sources(self, source_type: str | None = None) -> list[dict[str, Any]]:
+        """List active monitored sources."""
+        async with self.connection() as conn:
+            if source_type:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, source_type, display_name, config_json, last_checked_at, is_active
+                    FROM monitored_sources
+                    WHERE is_active = TRUE AND source_type = ?
+                    ORDER BY display_name;
+                    """,
+                    (source_type,),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, source_type, display_name, config_json, last_checked_at, is_active
+                    FROM monitored_sources
+                    WHERE is_active = TRUE
+                    ORDER BY display_name;
+                    """,
+                )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+

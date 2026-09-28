@@ -24,6 +24,8 @@ data/
 .env.local
 credentials.json
 token.json
+*.session
+*.session-journal
 *.pem
 *.key
 

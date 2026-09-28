@@ -24,5 +24,12 @@ GOOGLE_TOKEN_FILE = os.getenv("GOOGLE_TOKEN_FILE", "./token.json")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_USER_ID = os.getenv("TELEGRAM_USER_ID", "")
+TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0")) if os.getenv("TELEGRAM_API_ID") else None
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+TELEGRAM_SESSION_PATH = os.getenv("TELEGRAM_SESSION_PATH", "./data/assistant_worker.session")
+if not os.path.isabs(TELEGRAM_SESSION_PATH):
+    TELEGRAM_SESSION_PATH = str(BASE_DIR / TELEGRAM_SESSION_PATH)
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+

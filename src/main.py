@@ -149,7 +149,7 @@ async def main() -> None:
 
     schedule_parser = ScheduleParser(
         base_url=config.SCHEDULE_URL,
-        timeout_seconds=15.0,
+        timeout_seconds=30.0,
     )
     calendar_client = GoogleCalendarClient(
         credentials_file=config.GOOGLE_CREDENTIALS_FILE,
