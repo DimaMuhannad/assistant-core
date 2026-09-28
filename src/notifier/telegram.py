@@ -70,3 +70,36 @@ class TelegramNotifier:
             return False
         finally:
             await bot.session.close()
+
+    async def send_action_items_alert(self, items: list[dict[str, Any]]) -> bool:
+        """Send formatted alert for newly detected urgent action items from Telegram chats."""
+        if not items:
+            return False
+
+        lines = [f"⚡ *Информационный щит: обнаружены важные события ({len(items)})*\n"]
+        for it in items:
+            priority_icon = "🔴" if it.get("priority", 1) >= 3 else "🟡"
+            category = it.get("category", "info").upper()
+            summary = it.get("summary", "")
+            lines.append(f"{priority_icon} *[{category}]* {summary}")
+
+        message_text = "\n".join(lines).strip()
+
+        if not self.is_configured:
+            logger.info("[TELEGRAM DRY-RUN] Action items alert:\n%s", message_text)
+            return True
+
+        bot = Bot(token=self.bot_token)
+        try:
+            await bot.send_message(
+                chat_id=self.user_id,
+                text=message_text,
+            )
+            logger.info("Sent action items alert to Telegram user %s", self.user_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to send action items alert: %s", e)
+            return False
+        finally:
+            await bot.session.close()
+

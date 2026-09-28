@@ -4,8 +4,18 @@ import logging
 import signal
 import sys
 from datetime import datetime, timezone, date, time as dt_time
+from pathlib import Path
+
+# Ensure project root is first in sys.path and remove script directory to avoid shadowing stdlib 'calendar'
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if sys.path and sys.path[0] == _SCRIPT_DIR:
+    sys.path.pop(0)
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 
 from src import config
 from src.storage.db import Database
@@ -13,7 +23,9 @@ from src.parser.schedule_parser import ScheduleParser
 from src.detector.diff import ScheduleChangeDetector
 from src.calendar.client import GoogleCalendarClient
 from src.notifier.telegram import TelegramNotifier
+from src.collector.tg_collector import TelegramCollector
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
+
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -137,8 +149,48 @@ async def run_sentinel_cycle(
         )
 
 
+async def run_telegram_collector_cycle(
+    db: Database,
+    collector: TelegramCollector,
+    notifier: TelegramNotifier,
+) -> None:
+    """Run one ingestion cycle for monitored Telegram channels/chats."""
+    try:
+        if not await collector.is_authorized():
+            logger.warning("Telegram Userbot is not authorized. Skipping Telegram collection cycle.")
+            return
+
+        sources = await db.list_monitored_sources()
+        tg_sources = [s for s in sources if str(s.get("source_type", "")).startswith("telegram_")]
+        if not tg_sources:
+            logger.info("No Telegram sources registered for monitoring.")
+            return
+
+        logger.info("Starting Telegram collection cycle for %d sources...", len(tg_sources))
+        all_urgent_items = []
+
+        for src in tg_sources:
+            peer_str = str(src["id"]).removeprefix("tg_")
+            try:
+                peer: int | str = int(peer_str)
+            except ValueError:
+                peer = peer_str
+
+            logger.info("Syncing Telegram source: %s (%s)", src.get("display_name"), peer)
+            res = await collector.sync_chat(peer=peer, limit=30)
+            if res.get("action_items"):
+                urgent = [it for it in res["action_items"] if it.get("priority", 1) >= 3]
+                all_urgent_items.extend(urgent)
+
+        if all_urgent_items:
+            logger.info("Found %d urgent action item(s). Sending Telegram notification...", len(all_urgent_items))
+            await notifier.send_action_items_alert(all_urgent_items)
+    except Exception as e:
+        logger.exception("Error during Telegram collection cycle: %s", e)
+
+
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Assistant Core - Phase 1: Schedule Sentinel")
+    parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     args = parser.parse_args()
 
@@ -160,12 +212,15 @@ async def main() -> None:
         bot_token=config.TELEGRAM_BOT_TOKEN,
         user_id=config.TELEGRAM_USER_ID,
     )
+    telegram_collector = TelegramCollector(db=db)
 
     # Run initial cycle
     await run_sentinel_cycle(db, schedule_parser, calendar_client, notifier)
+    await run_telegram_collector_cycle(db, telegram_collector, notifier)
 
     if args.once:
         logger.info("Executed single cycle (--once). Shutting down.")
+        await telegram_collector.disconnect()
         await db.close()
         return
 
@@ -179,9 +234,18 @@ async def main() -> None:
         id="schedule_sentinel_job",
         replace_existing=True,
     )
+    # Telegram userbot collector runs every 30 minutes
+    scheduler.add_job(
+        run_telegram_collector_cycle,
+        "interval",
+        minutes=30,
+        args=[db, telegram_collector, notifier],
+        id="telegram_collector_job",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
-        "Scheduler started. Polling every %d hour(s). Press Ctrl+C to terminate.",
+        "Scheduler started. Schedule polling every %d hour(s), Telegram chats every 30 min. Press Ctrl+C to terminate.",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
     )
 
@@ -197,10 +261,12 @@ async def main() -> None:
     try:
         await stop_event.wait()
     finally:
-        logger.info("Gracefully shutting down scheduler and database...")
+        logger.info("Gracefully shutting down scheduler, userbot and database...")
         scheduler.shutdown(wait=False)
+        await telegram_collector.disconnect()
         await db.close()
         logger.info("Shutdown complete.")
+
 
 
 if __name__ == "__main__":
