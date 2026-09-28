@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 from contextlib import asynccontextmanager
@@ -5,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -93,7 +96,8 @@ class Database:
             # Migrate calendar_sync_records if it contains UNIQUE constraint on google_event_id
             cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='calendar_sync_records';")
             row = await cursor.fetchone()
-            if row and "google_event_id TEXT NOT NULL UNIQUE" in row["sql"]:
+            sql_text = row[0] if row else ""
+            if "google_event_id TEXT NOT NULL UNIQUE" in sql_text:
                 logger.info("Migrating calendar_sync_records: removing UNIQUE constraint on google_event_id...")
                 await conn.executescript(
                     """
