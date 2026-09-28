@@ -24,6 +24,7 @@ from src.detector.diff import ScheduleChangeDetector
 from src.calendar.client import GoogleCalendarClient
 from src.notifier.telegram import TelegramNotifier
 from src.collector.tg_collector import TelegramCollector
+from src.collector.email_collector import EmailCollector
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
 
@@ -166,6 +167,38 @@ async def run_telegram_collector_cycle(
         logger.exception("Error during Telegram collection cycle: %s", e)
 
 
+async def run_email_collector_cycle(
+    db: Database,
+    email_collector: EmailCollector,
+    notifier: TelegramNotifier,
+) -> None:
+    """Run periodic email collection cycle (incremental, last 3 days)."""
+    try:
+        logger.info("Starting email collection cycle...")
+        res = await email_collector.sync_all_accounts(days=3)
+        total_new = sum(r.get("inserted", 0) for k, r in res.items() if isinstance(r, dict))
+        logger.info("Email collection finished: %d new email(s) ingested.", total_new)
+
+        # Notify if new student or department emails arrive
+        if total_new > 0:
+            student_or_dept = await db.list_recent_emails(limit=total_new, non_noise_only=True)
+            academic_items = [e for e in student_or_dept if e.get("category") in ("guap_student", "guap_dept")]
+            for email_item in academic_items:
+                sender = email_item.get("sender_email", "")
+                subject = email_item.get("subject", "Без темы")
+                cat_label = "Студент" if email_item.get("category") == "guap_student" else "Кафедра/ГУАП"
+                snippet = email_item.get("snippet", "")[:150]
+                msg_text = (
+                    f"📬 *Новое письмо ({cat_label})*\n"
+                    f"👤 *От:* `{sender}`\n"
+                    f"📌 *Тема:* {subject}\n"
+                    f"💬 _{snippet}..."
+                )
+                await notifier.send_message(msg_text)
+    except Exception as e:
+        logger.exception("Error during email collection cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
@@ -190,10 +223,12 @@ async def main() -> None:
         user_id=config.TELEGRAM_USER_ID,
     )
     telegram_collector = TelegramCollector(db=db)
+    email_collector = EmailCollector(db=db)
 
     # Run initial cycle
     await run_sentinel_cycle(db, schedule_parser, calendar_client, notifier)
     await run_telegram_collector_cycle(db, telegram_collector, notifier)
+    await run_email_collector_cycle(db, email_collector, notifier)
 
     if args.once:
         logger.info("Executed single cycle (--once). Shutting down.")
@@ -220,9 +255,18 @@ async def main() -> None:
         id="telegram_collector_job",
         replace_existing=True,
     )
+    # Email collector runs every 15 minutes
+    scheduler.add_job(
+        run_email_collector_cycle,
+        "interval",
+        minutes=15,
+        args=[db, email_collector, notifier],
+        id="email_collector_job",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
-        "Scheduler started. Schedule polling every %d hour(s), Telegram chats every 30 min. Press Ctrl+C to terminate.",
+        "Scheduler started. Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min. Press Ctrl+C to terminate.",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
     )
 

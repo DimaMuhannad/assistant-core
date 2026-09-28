@@ -86,9 +86,49 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS email_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL UNIQUE,
+                    account_id TEXT NOT NULL,
+                    folder TEXT NOT NULL,
+                    sender_name TEXT,
+                    sender_email TEXT NOT NULL,
+                    recipients_json TEXT,
+                    subject TEXT,
+                    date_sent TIMESTAMP NOT NULL,
+                    body_plain TEXT,
+                    body_html TEXT,
+                    snippet TEXT,
+                    has_attachments BOOLEAN DEFAULT FALSE,
+                    attachments_json TEXT,
+                    in_reply_to TEXT,
+                    references_text TEXT,
+                    thread_id TEXT,
+                    category TEXT DEFAULT 'general',
+                    is_noise BOOLEAN DEFAULT FALSE,
+                    requires_action BOOLEAN DEFAULT FALSE,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS email_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    subject TEXT,
+                    participant_emails_json TEXT,
+                    message_count INTEGER DEFAULT 1,
+                    last_message_at TIMESTAMP,
+                    category TEXT DEFAULT 'general',
+                    summary TEXT,
+                    status TEXT DEFAULT 'open'
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
+                CREATE INDEX IF NOT EXISTS idx_email_msg_id ON email_messages(message_id);
+                CREATE INDEX IF NOT EXISTS idx_email_account_date ON email_messages(account_id, date_sent);
+                CREATE INDEX IF NOT EXISTS idx_email_thread ON email_messages(thread_id);
+                CREATE INDEX IF NOT EXISTS idx_email_sender ON email_messages(sender_email);
                 """
             )
             await conn.commit()
@@ -323,4 +363,122 @@ class Database:
                 )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def upsert_email_message(
+        self,
+        message_id: str,
+        account_id: str,
+        folder: str,
+        sender_name: str | None,
+        sender_email: str,
+        recipients_json: str,
+        subject: str | None,
+        date_sent: datetime,
+        body_plain: str | None,
+        body_html: str | None,
+        snippet: str | None,
+        has_attachments: bool,
+        attachments_json: str | None,
+        in_reply_to: str | None,
+        references_text: str | None,
+        thread_id: str,
+        category: str = "general",
+        is_noise: bool = False,
+        requires_action: bool = False,
+    ) -> bool:
+        """Insert email message if not already present. Returns True if inserted, False if duplicate."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT OR IGNORE INTO email_messages (
+                    message_id, account_id, folder, sender_name, sender_email,
+                    recipients_json, subject, date_sent, body_plain, body_html,
+                    snippet, has_attachments, attachments_json, in_reply_to,
+                    references_text, thread_id, category, is_noise, requires_action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    message_id, account_id, folder, sender_name, sender_email,
+                    recipients_json, subject, date_sent, body_plain, body_html,
+                    snippet, has_attachments, attachments_json, in_reply_to,
+                    references_text, thread_id, category, is_noise, requires_action,
+                ),
+            )
+            inserted = cursor.rowcount > 0
+
+            # Update or insert thread
+            if inserted and thread_id:
+                await conn.execute(
+                    """
+                    INSERT INTO email_threads (thread_id, subject, participant_emails_json, message_count, last_message_at, category)
+                    VALUES (?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                        message_count = email_threads.message_count + 1,
+                        last_message_at = MAX(email_threads.last_message_at, excluded.last_message_at),
+                        category = CASE WHEN email_threads.category = 'general' THEN excluded.category ELSE email_threads.category END;
+                    """,
+                    (thread_id, subject or "Без темы", json.dumps([sender_email]), date_sent, category),
+                )
+            await conn.commit()
+            return inserted
+
+    async def get_email_stats(self) -> dict[str, Any]:
+        """Get summary statistics about ingested emails."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total_emails,
+                    COUNT(DISTINCT thread_id) as total_threads,
+                    SUM(CASE WHEN is_noise = 1 THEN 1 ELSE 0 END) as noise_count,
+                    SUM(CASE WHEN requires_action = 1 THEN 1 ELSE 0 END) as action_count,
+                    SUM(CASE WHEN category = 'guap_student' THEN 1 ELSE 0 END) as student_count,
+                    SUM(CASE WHEN category = 'guap_dept' THEN 1 ELSE 0 END) as dept_count,
+                    SUM(CASE WHEN category = 'service' THEN 1 ELSE 0 END) as service_count,
+                    SUM(CASE WHEN category = 'personal' THEN 1 ELSE 0 END) as personal_count,
+                    MIN(date_sent) as oldest_date,
+                    MAX(date_sent) as newest_date
+                FROM email_messages;
+                """
+            )
+            row = await cursor.fetchone()
+            stats = dict(row) if row else {}
+
+            cursor2 = await conn.execute(
+                """
+                SELECT account_id, COUNT(*) as count
+                FROM email_messages
+                GROUP BY account_id;
+                """
+            )
+            rows2 = await cursor2.fetchall()
+            stats["by_account"] = {r["account_id"]: r["count"] for r in rows2}
+            return stats
+
+    async def list_recent_emails(
+        self,
+        limit: int = 50,
+        account_id: str | None = None,
+        category: str | None = None,
+        non_noise_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """List recent emails with filters."""
+        query = "SELECT * FROM email_messages WHERE 1=1"
+        params: list[Any] = []
+        if account_id:
+            query += " AND account_id = ?"
+            params.append(account_id)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+        if non_noise_only:
+            query += " AND is_noise = 0"
+        query += " ORDER BY date_sent DESC LIMIT ?"
+        params.append(limit)
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
 
