@@ -31,7 +31,11 @@ if not os.path.isabs(TELEGRAM_SESSION_PATH):
     TELEGRAM_SESSION_PATH = str(BASE_DIR / TELEGRAM_SESSION_PATH)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
-
-
+# Speech-to-Text (STT) Settings
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+WHISPER_CPU_THREADS = int(os.getenv("WHISPER_CPU_THREADS", "2"))
