@@ -197,3 +197,51 @@ class TelegramNotifier:
         if success:
             logger.info("Sent daily brief to Telegram user %s", self.user_id)
         return success
+
+    async def send_voice_transcription_card(
+        self,
+        voice_res: Any,
+        sender_name: str = "",
+        chat_title: str = "",
+    ) -> bool:
+        """Send formatted card for transcribed voice message."""
+        if not voice_res:
+            return False
+
+        dur_seconds = getattr(voice_res, "duration_seconds", None)
+        dur_str = f" ({dur_seconds} сек)" if dur_seconds else ""
+        lines = [f"🎙️ **Голосовое сообщение{dur_str}**"]
+
+        origin = []
+        if sender_name:
+            origin.append(f"От: *{sender_name}*")
+        if chat_title:
+            origin.append(f"Чат: *{chat_title}*")
+        if origin:
+            lines.append(" • ".join(origin))
+
+        lines.append("")
+
+        transcription = getattr(voice_res, "transcription", "")
+        if transcription:
+            lines.append("📝 **Расшифровка:**")
+            lines.append(f"«{transcription}»\n")
+
+        summary = getattr(voice_res, "summary", "")
+        if summary:
+            lines.append(f"📌 **Суть:** {summary}\n")
+
+        action_items = getattr(voice_res, "action_items", [])
+        if action_items:
+            lines.append("⚡ **Выделенные задачи:**")
+            for item in action_items:
+                lines.append(f"• {item}")
+            lines.append("")
+
+        message_text = "\n".join(lines).strip()
+        if not self.is_configured:
+            logger.info("[TELEGRAM DRY-RUN] Voice card:\n%s", message_text)
+            return True
+
+        return await self._send_rich_message(message_text)
+

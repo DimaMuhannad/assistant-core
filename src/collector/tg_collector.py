@@ -8,6 +8,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import Channel, Chat, User
 
 from src.config import TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH
+from src.brain.voice import VoiceProcessor
 from src.detector.tg_filter import TelegramMessageFilter
 from src.models.message import TelegramMessage
 from src.storage.db import Database
@@ -24,12 +25,14 @@ class TelegramCollector:
         api_id: int | None = TELEGRAM_API_ID,
         api_hash: str = TELEGRAM_API_HASH,
         session_path: str = TELEGRAM_SESSION_PATH,
+        voice_processor: VoiceProcessor | None = None,
     ) -> None:
         self.db = db
         self.api_id = api_id
         self.api_hash = api_hash
         self.session_stem = str(Path(session_path)).removesuffix(".session")
         self.filter = TelegramMessageFilter()
+        self.voice_processor = voice_processor or VoiceProcessor()
         self._client: TelegramClient | None = None
 
     def get_client(self) -> TelegramClient:
@@ -101,6 +104,24 @@ class TelegramCollector:
             if msg.media:
                 media_type = type(msg.media).__name__
 
+            text_content = msg.text or ""
+            is_voice = bool(getattr(msg, "voice", False))
+            if is_voice and self.voice_processor:
+                try:
+                    voice_bytes = await msg.download_media(file=bytes)
+                    if voice_bytes:
+                        dur = getattr(getattr(msg, "voice", None), "duration", None)
+                        voice_res = await self.voice_processor.process_voice(
+                            voice_bytes=voice_bytes,
+                            duration_seconds=dur,
+                            sender_name=sender_name,
+                            chat_title=chat_title,
+                        )
+                        if voice_res.success and voice_res.transcription:
+                            text_content = f"[🎙️ Голосовое {dur or ''}с]: {voice_res.transcription}"
+                except Exception as e:
+                    logger.warning("Could not transcribe voice message %s: %s", msg.id, e)
+
             date = msg.date if msg.date else datetime.now(timezone.utc)
             if date.tzinfo is None:
                 date = date.replace(tzinfo=timezone.utc)
@@ -113,7 +134,7 @@ class TelegramCollector:
                     sender_id=msg.sender_id,
                     sender_name=sender_name,
                     sender_username=sender_username,
-                    text=msg.text or "",
+                    text=text_content,
                     date=date,
                     has_media=bool(msg.media),
                     media_type=media_type,
