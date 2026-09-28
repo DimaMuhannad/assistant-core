@@ -195,6 +195,39 @@ class GoogleCalendarClient:
             logger.error("Failed to create Google Calendar event '%s': %s", summary, e)
             raise
 
+    async def patch_event(self, calendar_id: str, google_event_id: str, lesson: Lesson) -> bool:
+        """Patch an existing Google Calendar event with updated details (e.g. room change)."""
+        summary = self.format_summary(lesson)
+        description = self.format_description(lesson)
+        start_iso = f"{lesson.date.isoformat()}T{lesson.start_time.isoformat()}"
+        end_iso = f"{lesson.date.isoformat()}T{lesson.end_time.isoformat()}"
+
+        event_body = {
+            "summary": summary,
+            "location": lesson.room,
+            "description": description,
+            "start": {
+                "dateTime": start_iso,
+                "timeZone": self.timezone_str,
+            },
+            "end": {
+                "dateTime": end_iso,
+                "timeZone": self.timezone_str,
+            },
+        }
+
+        if self.dry_run or self.service is None:
+            logger.info("[DRY-RUN] Patched Google Calendar event %s with room '%s'", google_event_id, lesson.room)
+            return True
+
+        try:
+            self.service.events().patch(calendarId=calendar_id, eventId=google_event_id, body=event_body).execute()
+            logger.info("Patched Google Calendar event %s -> room: %s", google_event_id, lesson.room)
+            return True
+        except Exception as e:
+            logger.error("Failed to patch Google Calendar event %s: %s", google_event_id, e)
+            return False
+
     async def delete_event(self, calendar_id: str, google_event_id: str) -> bool:
         """Delete an event from Google Calendar."""
         if self.dry_run or self.service is None:
@@ -219,9 +252,61 @@ class GoogleCalendarClient:
         
         Guarantees 0 duplicate entries upon repeated runs.
         """
-        stats = {"created": 0, "cancelled": 0, "skipped": 0}
+        stats = {"created": 0, "cancelled": 0, "modified": 0, "skipped": 0}
 
-        # 1. Process added lessons
+        # 1. Process modified lessons (e.g. room change, group change)
+        for mod in diff.modified_lessons:
+            old_slot_id = mod.old_lesson.deterministic_hash
+            new_slot_id = mod.new_lesson.deterministic_hash
+
+            old_record = await db.get_calendar_sync_record(old_slot_id)
+            google_id = old_record["google_event_id"] if old_record else None
+
+            if not google_id:
+                existing_ev = await self.find_existing_event(calendar_id, mod.new_lesson)
+                if existing_ev:
+                    google_id = existing_ev.get("id")
+
+            start_dt = datetime.combine(mod.new_lesson.date, mod.new_lesson.start_time)
+            end_dt = datetime.combine(mod.new_lesson.date, mod.new_lesson.end_time)
+            summary = self.format_summary(mod.new_lesson)
+
+            if google_id:
+                await self.patch_event(calendar_id, google_id, mod.new_lesson)
+                if old_record:
+                    await db.record_calendar_sync(
+                        source_event_id=old_slot_id,
+                        google_event_id=google_id,
+                        calendar_id=calendar_id,
+                        event_start=start_dt,
+                        event_end=end_dt,
+                        summary=old_record["summary"],
+                        status="superseded",
+                    )
+                await db.record_calendar_sync(
+                    source_event_id=new_slot_id,
+                    google_event_id=google_id,
+                    calendar_id=calendar_id,
+                    event_start=start_dt,
+                    event_end=end_dt,
+                    summary=summary,
+                    status="active",
+                )
+                stats["modified"] += 1
+            else:
+                created_id = await self.create_event(calendar_id, mod.new_lesson)
+                await db.record_calendar_sync(
+                    source_event_id=new_slot_id,
+                    google_event_id=created_id,
+                    calendar_id=calendar_id,
+                    event_start=start_dt,
+                    event_end=end_dt,
+                    summary=summary,
+                    status="active",
+                )
+                stats["created"] += 1
+
+        # 2. Process added lessons
         for lesson in diff.added_lessons:
             slot_id = lesson.deterministic_hash
             existing_record = await db.get_calendar_sync_record(slot_id)
@@ -235,7 +320,7 @@ class GoogleCalendarClient:
             start_dt = datetime.combine(lesson.date, lesson.start_time)
             end_dt = datetime.combine(lesson.date, lesson.end_time)
 
-            # Check if an event already covers this time slot in Google Calendar (e.g. recurring event from series)
+            # Check if an event already covers this time slot in Google Calendar
             existing_event = await self.find_existing_event(calendar_id, lesson)
             if existing_event:
                 logger.info(
@@ -269,7 +354,7 @@ class GoogleCalendarClient:
             )
             stats["created"] += 1
 
-        # 2. Process removed lessons
+        # 3. Process removed lessons
         for lesson in diff.removed_lessons:
             slot_id = lesson.deterministic_hash
             existing_record = await db.get_calendar_sync_record(slot_id)
@@ -291,9 +376,11 @@ class GoogleCalendarClient:
                 stats["cancelled"] += 1
 
         logger.info(
-            "Calendar sync finished: +%d created, -%d cancelled, %d skipped.",
+            "Calendar sync finished: +%d created, ~%d modified, -%d cancelled, %d skipped.",
             stats["created"],
+            stats["modified"],
             stats["cancelled"],
             stats["skipped"],
         )
         return stats
+

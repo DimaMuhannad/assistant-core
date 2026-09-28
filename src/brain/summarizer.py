@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiSummarizer:
-    """LLM summarizer using the official Google GenAI SDK (gemini-3.8-flash)."""
+    """LLM summarizer using the official Google GenAI SDK specialized for academic morning briefs."""
 
     def __init__(
         self,
@@ -53,12 +53,16 @@ class GeminiSummarizer:
             if lessons:
                 for l in lessons:
                     type_str = l.lesson_type.value if hasattr(l.lesson_type, "value") else str(l.lesson_type)
-                    schedule_context.append(
-                        f"- {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} "
-                        f"[{type_str}] {l.subject} (ауд. {l.room})"
-                    )
+                    room_str = f"📍 {l.room}" if l.room and l.room != "Не указана" else ""
+                    group_str = f"Группа: {l.group}" if hasattr(l, "group") and l.group else ""
+                    details = " • ".join(filter(None, [room_str, group_str]))
+
+                    line = f"• {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} | [{type_str}] {l.subject}"
+                    if details:
+                        line += f"\n  {details}"
+                    schedule_context.append(line)
             else:
-                schedule_context.append("- Занятий по расписанию нет (методический/свободный день).")
+                schedule_context.append("• Занятий по расписанию нет (методический/свободный день).")
 
             active_deadlines = []
             fresh_notes = []
@@ -79,9 +83,9 @@ class GeminiSummarizer:
                 freshness = payload.get("freshness_label") or "RECENT"
 
                 if "дедлайн" in temp_status.lower() or "дедлайн" in summary.lower():
-                    active_deadlines.append(f"- [{freshness}] {summary} (Статус: {temp_status})")
+                    active_deadlines.append(f"• [{freshness}] {summary} (Статус: {temp_status})")
                 else:
-                    fresh_notes.append(f"- [{freshness}] {summary} (Статус: {temp_status})")
+                    fresh_notes.append(f"• [{freshness}] {summary} (Статус: {temp_status})")
 
             items_block = []
             if active_deadlines:
@@ -103,19 +107,26 @@ class GeminiSummarizer:
 
             system_instruction = (
                 "Ты — персональный академический ассистент преподавателя ГУАП (Попов Д.А., Кафедра 3).\n"
-                f"Сегодняшняя дата: {target_date.strftime('%d.%m.%Y')} ({weekday_ru}).\n"
+                f"Сегодняшняя дата: {target_date.strftime('%d.%m.%Y')} ({weekday_ru}).\n\n"
                 "КРИТИЧЕСКИЕ ПРАВИЛА ВРЕМЕННОЙ ВАЛИДАЦИИ И СВЕЖЕСТИ:\n"
                 f"1. Любые сообщения о парах или переносах из прошлого (до {target_date.strftime('%d.%m.%Y')}) УЖЕ СОСТОЯЛИСЬ. Их КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать за сегодняшние или предстоящие события!\n"
-                "2. Если в расписании на сегодня нет пар, четко фиксируй: 'Пар по расписанию нет (методический/свободный день)'.\n"
-                "3. В блоке 'Предстоящие дедлайны' указывай только будущие даты (например, дедлайн к 03.10) с количеством оставшихся дней.\n"
-                "4. Формат дайджеста:\n"
-                "   - 📅 Расписание на сегодня\n"
-                "   - ⏳ Активные дедлайны (порядок по срочности)\n"
-                "   - 📋 Задачи по группам ОПД (м531, м631к)\n"
-                "   - 💡 Фокус дня\n"
-                "Пиши емко, деловым языком, без воды."
+                "2. Если в расписании на сегодня нет пар, четко фиксируй: '• Занятий нет (свободный/методический день)'.\n"
+                "3. В блоке предстоящих дедлайнов указывай только будущие даты с количеством оставшихся дней.\n\n"
+                "СТАНДАРТЫ ОФОРМЛЕНИЯ ДЛЯ TELEGRAM (МОБИЛЬНЫЙ АКАДЕМИЧЕСКИЙ БРИФИНГ):\n"
+                "- Заголовки разделов: используй ТОЛЬКО жирные эмодзи-заголовки. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать решетки (#, ##, ###)!\n"
+                "  Примеры заголовков:\n"
+                f"  ☀️ **Утренний дайджест на {target_date.strftime('%d.%m.%Y')} ({weekday_ru})**\n"
+                "  📅 **Расписание на сегодня**\n"
+                "  🚨 **Срочное / Дедлайны**\n"
+                "  📋 **Учебные группы и задачи**\n"
+                "  💡 **Фокус дня**\n"
+                "- Формат расписания: для каждого занятия строго соблюдай структуру:\n"
+                "  • 09:30–11:00 | [Тип] Название предмета\n"
+                "    📍 Корпус/аудитория • Группа: номер_группы\n"
+                "- Списки: используй ТОЛЬКО круглые буллеты (•). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать черные галочки (✔️)!\n"
+                "- Разделители: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать горизонтальные линии из дефисов (---, --------). Разделяй смысловые блоки чистыми пустыми строками.\n"
+                "Пиши емко, структурированно, уважительным и деловым языком."
             )
-
 
             candidate_models = [self.model]
             for fallback_m in ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash"]:
@@ -139,7 +150,6 @@ class GeminiSummarizer:
 
             return self._generate_fallback_brief(target_date, lessons, action_items)
 
-
         except Exception as e:
             logger.exception("Failed to generate brief via Gemini API: %s", e)
             return self._generate_fallback_brief(target_date, lessons, action_items)
@@ -151,29 +161,46 @@ class GeminiSummarizer:
         action_items: list[dict[str, Any]],
     ) -> str:
         """Deterministic fallback brief when Gemini API is unavailable or offline."""
-        lines = [f"☀️ *Утренний дайджест на {target_date.strftime('%d.%m.%Y')}*\n"]
+        weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        weekday_ru = weekday_names[target_date.weekday()]
 
-        lines.append("📅 *Расписание на сегодня:*")
+        lines = [f"☀️ **Утренний дайджест на {target_date.strftime('%d.%m.%Y')} ({weekday_ru})**\n"]
+
+        lines.append("📅 **Расписание на сегодня:**")
         if lessons:
             for l in lessons:
+                type_name = {
+                    "LECTURE": "Лекция",
+                    "PRACTICE": "Практика",
+                    "LAB": "Лаб. работа",
+                    "EXAM": "Экзамен",
+                    "UNKNOWN": "Пара",
+                }.get(l.lesson_type.value, l.lesson_type.value)
+
+                room_str = f"📍 {l.room}" if l.room and l.room != "Не указана" else ""
+                group_str = f"Группа: {l.group}" if hasattr(l, "group") and l.group else ""
+                details = " • ".join(filter(None, [room_str, group_str]))
+
                 lines.append(
                     f"• {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} "
-                    f"{l.subject} ({l.room})"
+                    f"| [{type_name}] {l.subject}"
                 )
+                if details:
+                    lines.append(f"  {details}")
         else:
             lines.append("• Занятий нет (свободный/методический день).")
         lines.append("")
 
         urgent = [i for i in action_items if i.get("priority_score", 1) >= 3]
         if urgent:
-            lines.append("🚨 *Срочное / Дедлайны:*")
+            lines.append("🚨 **Срочное / Дедлайны:**")
             for u in urgent:
                 lines.append(f"• {u.get('summary_text', '')}")
             lines.append("")
 
         normal = [i for i in action_items if i.get("priority_score", 1) < 3]
         if normal:
-            lines.append("📋 *Задачи и сообщения:*")
+            lines.append("📋 **Задачи и сообщения:**")
             for n in normal[:7]:
                 lines.append(f"• {n.get('summary_text', '')}")
             lines.append("")

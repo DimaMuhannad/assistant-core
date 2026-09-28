@@ -73,38 +73,15 @@ async def run_sentinel_cycle(
             except Exception as e:
                 logger.warning("Could not parse schedule as HTML: %s", e)
 
-    if current_payload is None or not current_payload.days:
-        # Fallback / baseline schedule payload if remote network is down or mock ID
-        logger.info("Using baseline schedule payload structure for id=%s", config.SCHEDULE_TARGET_ID)
-        current_payload = SchedulePayload(
-            group_or_teacher_id=config.SCHEDULE_TARGET_ID,
-            fetched_at=datetime.now(timezone.utc),
-            days=[
-                ScheduleDay(
-                    date=date.today(),
-                    lessons=[
-                        Lesson(
-                            subject="Архитектура вычислительных систем",
-                            lesson_type=LessonType.LECTURE,
-                            date=date.today(),
-                            start_time=dt_time(9, 30),
-                            end_time=dt_time(11, 0),
-                            room="13-05",
-                            teacher="Иванов И.И.",
-                        ),
-                        Lesson(
-                            subject="Распределенные системы",
-                            lesson_type=LessonType.LAB,
-                            date=date.today(),
-                            start_time=dt_time(11, 10),
-                            end_time=dt_time(12, 40),
-                            room="12-04",
-                            teacher="Сидоров С.С.",
-                        ),
-                    ],
-                )
-            ],
+    if current_payload is None:
+        logger.warning(
+            "Schedule fetch/parse was unsuccessful for id=%s (status=%s, error=%s). Skipping cycle to preserve current calendar.",
+            config.SCHEDULE_TARGET_ID,
+            fetch_res.status_code,
+            fetch_res.error_message,
         )
+        return
+
 
     # 3. Retrieve previous snapshot
     latest_snap = await db.get_latest_snapshot(source_id)

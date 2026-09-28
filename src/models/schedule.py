@@ -56,10 +56,19 @@ class SchedulePayload(BaseModel):
         return lessons
 
 
+class LessonModification(BaseModel):
+    old_lesson: Lesson
+    new_lesson: Lesson
+    change_type: str = "room_changed"
+    detail: str = ""
+
+
 class ScheduleDiff(BaseModel):
     has_changes: bool
     old_hash: str | None = None
     new_hash: str
     added_lessons: list[Lesson] = Field(default_factory=list)
     removed_lessons: list[Lesson] = Field(default_factory=list)
+    modified_lessons: list[LessonModification] = Field(default_factory=list)
     unchanged_count: int = 0
+

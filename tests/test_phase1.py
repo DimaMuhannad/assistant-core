@@ -412,3 +412,121 @@ def test_parser_html_payload_group_extraction():
     assert "ФОНТ" in GoogleCalendarClient.format_summary(l)
     assert l.room == "ауд. 31-04а (Гастелло 15)"
 
+
+# ---------------------------------------------------------
+# 8. Room Change Modification Tests
+# ---------------------------------------------------------
+
+def test_change_detector_identifies_room_modification():
+    """Verify that room change is detected as modified_lesson and not as deletion + addition."""
+    d = date(2026, 9, 30)
+    old_lesson = Lesson(
+        subject="Физические основы нанотехнологий",
+        lesson_type=LessonType.LECTURE,
+        date=d,
+        start_time=time(9, 30),
+        end_time=time(11, 0),
+        room="ауд. 31-04а (Гастелло 15)",
+        group="м431к",
+    )
+    new_lesson = Lesson(
+        subject="Физические основы нанотехнологий",
+        lesson_type=LessonType.LECTURE,
+        date=d,
+        start_time=time(9, 30),
+        end_time=time(11, 0),
+        room="ауд. 22-14 (Ленсовета 14)",
+        group="м431к",
+    )
+
+    old_payload = SchedulePayload(
+        group_or_teacher_id="2903",
+        fetched_at=datetime.now(timezone.utc),
+        days=[ScheduleDay(date=d, lessons=[old_lesson])],
+    )
+    new_payload = SchedulePayload(
+        group_or_teacher_id="2903",
+        fetched_at=datetime.now(timezone.utc),
+        days=[ScheduleDay(date=d, lessons=[new_lesson])],
+    )
+
+    diff = ScheduleChangeDetector.compare(old_payload, new_payload)
+    assert diff.has_changes is True
+    assert len(diff.modified_lessons) == 1
+    assert diff.modified_lessons[0].change_type == "room_changed"
+    assert "22-14" in diff.modified_lessons[0].detail
+    assert len(diff.added_lessons) == 0
+    assert len(diff.removed_lessons) == 0
+
+
+@pytest.mark.asyncio
+async def test_calendar_sync_room_modification_updates_without_deletion():
+    """Verify that room modification patches the calendar record without deleting or duplicating."""
+    db = Database(db_path=":memory:")
+    await db.init_db()
+
+    calendar_client = GoogleCalendarClient(dry_run=True)
+    d = date(2026, 9, 30)
+
+    old_lesson = Lesson(
+        subject="Физика",
+        lesson_type=LessonType.LAB,
+        date=d,
+        start_time=time(11, 10),
+        end_time=time(12, 40),
+        room="32-03",
+    )
+    new_lesson = Lesson(
+        subject="Физика",
+        lesson_type=LessonType.LAB,
+        date=d,
+        start_time=time(11, 10),
+        end_time=time(12, 40),
+        room="31-04в",
+    )
+
+    # Initial sync
+    initial_diff = ScheduleDiff(
+        has_changes=True,
+        new_hash="hash_v1",
+        added_lessons=[old_lesson],
+    )
+    stats_v1 = await calendar_client.sync_schedule(calendar_id="primary", diff=initial_diff, db=db)
+    assert stats_v1["created"] == 1
+
+    # Modification sync
+    mod_diff = ScheduleChangeDetector.compare(
+        SchedulePayload(group_or_teacher_id="2903", fetched_at=datetime.now(timezone.utc), days=[ScheduleDay(date=d, lessons=[old_lesson])]),
+        SchedulePayload(group_or_teacher_id="2903", fetched_at=datetime.now(timezone.utc), days=[ScheduleDay(date=d, lessons=[new_lesson])]),
+    )
+    assert len(mod_diff.modified_lessons) == 1
+
+    stats_v2 = await calendar_client.sync_schedule(calendar_id="primary", diff=mod_diff, db=db)
+    assert stats_v2["modified"] == 1
+    assert stats_v2["created"] == 0
+    assert stats_v2["cancelled"] == 0
+
+    # Ensure new slot hash is active in DB
+    new_record = await db.get_calendar_sync_record(new_lesson.deterministic_hash)
+    assert new_record is not None
+    assert new_record["status"] == "active"
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_notifier_format_room_change():
+    """Verify telegram alert shows room modification with strikethrough and arrow."""
+    notifier = TelegramNotifier(bot_token=None, user_id=None)
+    d = date(2026, 9, 30)
+    l1 = Lesson(subject="Физика", date=d, start_time=time(11, 10), end_time=time(12, 40), room="32-03")
+    l2 = Lesson(subject="Физика", date=d, start_time=time(11, 10), end_time=time(12, 40), room="31-04в")
+
+    diff = ScheduleChangeDetector.compare(
+        SchedulePayload(group_or_teacher_id="2903", fetched_at=datetime.now(timezone.utc), days=[ScheduleDay(date=d, lessons=[l1])]),
+        SchedulePayload(group_or_teacher_id="2903", fetched_at=datetime.now(timezone.utc), days=[ScheduleDay(date=d, lessons=[l2])]),
+    )
+    res = await notifier.send_schedule_diff_alert(diff, target_id="2903")
+    assert res is True
+
+
