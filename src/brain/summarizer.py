@@ -48,7 +48,7 @@ class GeminiSummarizer:
         try:
             client = self.get_client()
 
-            # Format input context for prompt
+            # Format input context for prompt with temporal gradation
             schedule_context = []
             if lessons:
                 for l in lessons:
@@ -60,32 +60,62 @@ class GeminiSummarizer:
             else:
                 schedule_context.append("- Занятий по расписанию нет (методический/свободный день).")
 
-            items_context = []
-            if action_items:
-                for item in action_items[:15]:
-                    summary = item.get("summary_text", "")
-                    prio = item.get("priority_score", 1)
-                    items_context.append(f"- [Приоритет {prio}] {summary}")
-            else:
-                items_context.append("- Нет новых входящих задач и уведомлений.")
+            active_deadlines = []
+            fresh_notes = []
+            for item in action_items:
+                payload = item.get("payload_json", {})
+                if isinstance(payload, str):
+                    import json
+                    try:
+                        payload = json.loads(payload)
+                    except Exception:
+                        payload = {}
+
+                if payload.get("is_expired", False):
+                    continue
+
+                summary = item.get("summary_text", "")
+                temp_status = payload.get("temporal_status") or ""
+                freshness = payload.get("freshness_label") or "RECENT"
+
+                if "дедлайн" in temp_status.lower() or "дедлайн" in summary.lower():
+                    active_deadlines.append(f"- [{freshness}] {summary} (Статус: {temp_status})")
+                else:
+                    fresh_notes.append(f"- [{freshness}] {summary} (Статус: {temp_status})")
+
+            items_block = []
+            if active_deadlines:
+                items_block.append("АКТИВНЫЕ ПРЕДСТОЯЩИЕ ДЕДЛАЙНЫ:\n" + "\n".join(active_deadlines))
+            if fresh_notes:
+                items_block.append("АКТУАЛЬНЫЕ МАТЕРИАЛЫ И УВЕДОМЛЕНИЯ:\n" + "\n".join(fresh_notes))
+            if not items_block:
+                items_block.append("Нет актуальных активных задач и дедлайнов.")
+
+            weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+            weekday_ru = weekday_names[target_date.weekday()]
 
             prompt = (
-                f"Сегодня: {target_date.strftime('%d.%m.%Y')} ({target_date.strftime('%A')})\n\n"
-                f"=== РАСПИСАНИЕ НА СЕГОДНЯ ===\n" + "\n".join(schedule_context) + "\n\n"
-                f"=== ВХОДЯЩИЕ СОБЫТИЯ ИЗ ЧАТОВ И КАНАЛОВ ===\n" + "\n".join(items_context) + "\n\n"
+                f"Сегодня: {target_date.strftime('%d.%m.%Y')} ({weekday_ru})\n\n"
+                f"=== ОФИЦИАЛЬНОЕ РАСПИСАНИЕ НА СЕГОДНЯ ===\n" + "\n".join(schedule_context) + "\n\n"
+                f"=== ПРОВЕРЕННЫЕ АКТУАЛЬНЫЕ СОБЫТИЯ ИЗ ЧАТОВ (ПРОШЕДШИЕ СОБЫТИЯ ОТФИЛЬТРОВАНЫ) ===\n" + "\n\n".join(items_block) + "\n\n"
                 "Сформируй структурированный утренний дайджест для преподавателя."
             )
 
             system_instruction = (
                 "Ты — персональный академический ассистент преподавателя ГУАП (Попов Д.А., Кафедра 3).\n"
-                "Твоя задача — составить краткий, четкий и полезный утренний дайджест на русском языке.\n"
-                "Формат:\n"
-                "1. 📅 Расписание на сегодня: краткий список пар со временем и аудиториями.\n"
-                "2. 🚨 Срочное и дедлайны: ключевые задачи с дедлайнами или изменениями в расписании.\n"
-                "3. 📋 Задачи по дисциплинам/группам: ОПД (м531, м631к), физика, кафедра.\n"
-                "4. 💡 Фокус дня: одна конкретная рекомендация, на что обратить внимание.\n"
-                "Пиши емко, без лишней вежливости и воды. Используй понятные маркеры Markdown."
+                f"Сегодняшняя дата: {target_date.strftime('%d.%m.%Y')} ({weekday_ru}).\n"
+                "КРИТИЧЕСКИЕ ПРАВИЛА ВРЕМЕННОЙ ВАЛИДАЦИИ И СВЕЖЕСТИ:\n"
+                f"1. Любые сообщения о парах или переносах из прошлого (до {target_date.strftime('%d.%m.%Y')}) УЖЕ СОСТОЯЛИСЬ. Их КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдавать за сегодняшние или предстоящие события!\n"
+                "2. Если в расписании на сегодня нет пар, четко фиксируй: 'Пар по расписанию нет (методический/свободный день)'.\n"
+                "3. В блоке 'Предстоящие дедлайны' указывай только будущие даты (например, дедлайн к 03.10) с количеством оставшихся дней.\n"
+                "4. Формат дайджеста:\n"
+                "   - 📅 Расписание на сегодня\n"
+                "   - ⏳ Активные дедлайны (порядок по срочности)\n"
+                "   - 📋 Задачи по группам ОПД (м531, м631к)\n"
+                "   - 💡 Фокус дня\n"
+                "Пиши емко, деловым языком, без воды."
             )
+
 
             candidate_models = [self.model]
             for fallback_m in ["gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.8-flash"]:

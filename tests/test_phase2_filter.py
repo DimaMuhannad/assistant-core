@@ -124,3 +124,36 @@ async def test_db_snapshot_deduplication_and_action_item(db: Database) -> None:
     await db.update_action_item_status(action_id, "processed")
     pending_after = await db.get_pending_action_items()
     assert len(pending_after) == 0
+
+
+def test_temporal_classifier_past_and_future() -> None:
+    from datetime import date, datetime
+    from src.detector.temporal import TemporalClassifier
+
+    ref = date(2026, 9, 28)
+
+    # 1. Past online lesson from 21.09
+    past_msg = "давайте сегодня проведем пару онлайн"
+    t1 = TemporalClassifier.analyze(past_msg, datetime(2026, 9, 21), reference_date=ref)
+    assert t1.is_expired
+    assert t1.freshness_label == "EXPIRED"
+
+    # 2. Rescheduling from 25.09
+    resched_msg = "Завтра занятие в аудитории там и обсудим переносы"
+    t2 = TemporalClassifier.analyze(resched_msg, datetime(2026, 9, 25), reference_date=ref)
+    assert t2.is_expired
+    assert t2.freshness_label == "EXPIRED"
+
+    # 3. Future deadline to 03.10
+    future_dl = "Домашнее задание к 03.10"
+    t3 = TemporalClassifier.analyze(future_dl, datetime(2026, 9, 26), reference_date=ref)
+    assert not t3.is_expired
+    assert t3.freshness_label == "ACTIVE_FUTURE"
+    assert t3.days_remaining == 5
+
+    # 4. Past deadline to 26.09
+    past_dl = "Домашнее задание к 26.09"
+    t4 = TemporalClassifier.analyze(past_dl, datetime(2026, 9, 21), reference_date=ref)
+    assert t4.is_expired
+    assert t4.freshness_label == "EXPIRED"
+

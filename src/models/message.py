@@ -34,6 +34,10 @@ class FilterResult(BaseModel):
     category: str = "general"  # deadline, schedule_change, faculty_notice, exam, etc.
     matched_keywords: list[str] = Field(default_factory=list)
     summary: str = ""
+    is_expired: bool = False
+    freshness_label: str = "RECENT"  # TODAY, YESTERDAY, RECENT, ACTIVE_FUTURE, EXPIRED, STALE
+    temporal_status: str = ""
+
 
 
 class FilteredActionItem(BaseModel):

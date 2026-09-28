@@ -1,13 +1,16 @@
 import re
-from typing import Sequence
+from datetime import date
 from src.models.message import FilterResult, TelegramMessage
+from src.detector.temporal import TemporalClassifier
+
 
 
 class TelegramMessageFilter:
     """Two-stage deterministic filter for Telegram messages.
     
     Filters out noise/chatter and detects high-priority academic notices,
-    deadlines, schedule changes, and faculty announcements.
+    deadlines, schedule changes, and faculty announcements with strict
+    temporal validation and recency classification.
     """
 
     NOISE_PHRASES = {
@@ -97,7 +100,11 @@ class TelegramMessageFilter:
             for category, priority, patterns in self.CATEGORIES_CONFIG
         ]
 
-    def filter_message(self, message: TelegramMessage) -> FilterResult:
+    def filter_message(
+        self,
+        message: TelegramMessage,
+        reference_date: date | None = None,
+    ) -> FilterResult:
         raw_text = (message.text or "").strip()
         lower_text = raw_text.lower()
 
@@ -112,7 +119,14 @@ class TelegramMessageFilter:
         if len(raw_text) < 6 and not message.has_media:
             return FilterResult(is_relevant=False, summary="Too short")
 
-        # Step 2: Categorization against compiled patterns
+        # Step 2: Temporal analysis
+        temp_info = TemporalClassifier.analyze(
+            raw_text,
+            message.date,
+            reference_date=reference_date,
+        )
+
+        # Step 3: Categorization against compiled patterns
         matched_categories: list[tuple[str, int, list[str]]] = []
 
         for category, priority, patterns in self.compiled_rules:
@@ -129,9 +143,18 @@ class TelegramMessageFilter:
             matched_categories.sort(key=lambda x: x[1], reverse=True)
             top_category, top_priority, top_words = matched_categories[0]
 
-            # Generate concise summary
+            # Adjust priority and summary based on temporal validity
             first_line = raw_text.split("\n")[0][:120].strip()
-            summary = f"[{top_category.upper()}] {first_line}"
+            if temp_info.is_expired:
+                # Event or deadline in the past
+                summary = f"[{top_category.upper()}] [ПРОШЕДШЕЕ: {temp_info.status}] {first_line}"
+                effective_priority = 1
+            elif temp_info.freshness_label == "ACTIVE_FUTURE":
+                summary = f"[{top_category.upper()}] [{temp_info.status}] {first_line}"
+                effective_priority = top_priority
+            else:
+                summary = f"[{top_category.upper()}] [{temp_info.status}] {first_line}"
+                effective_priority = top_priority
 
             all_matched_keywords = []
             for _, _, words in matched_categories:
@@ -139,24 +162,30 @@ class TelegramMessageFilter:
 
             return FilterResult(
                 is_relevant=True,
-                priority=top_priority,
+                priority=effective_priority,
                 category=top_category,
                 matched_keywords=list(set(all_matched_keywords)),
                 summary=summary,
+                is_expired=temp_info.is_expired,
+                freshness_label=temp_info.freshness_label,
+                temporal_status=temp_info.status,
             )
 
-        # Step 3: Check for attachments or links in substantial messages
+        # Step 4: Check for attachments or links in substantial messages
         has_url = bool(re.search(r"https?://\S+", raw_text))
         if message.has_media or has_url:
             if len(raw_text) >= 15:
                 first_line = raw_text.split("\n")[0][:120].strip()
-                summary = f"[DOCUMENT/LINK] {first_line or 'Вложение / ссылка'}"
+                summary = f"[DOCUMENT/LINK] [{temp_info.status}] {first_line or 'Вложение / ссылка'}"
                 return FilterResult(
-                    is_relevant=True,
+                    is_relevant=not temp_info.is_expired,
                     priority=1,
                     category="attachment",
                     matched_keywords=["media" if message.has_media else "link"],
                     summary=summary,
+                    is_expired=temp_info.is_expired,
+                    freshness_label=temp_info.freshness_label,
+                    temporal_status=temp_info.status,
                 )
 
         return FilterResult(
@@ -164,4 +193,8 @@ class TelegramMessageFilter:
             priority=1,
             category="general",
             summary="No trigger patterns matched",
+            is_expired=temp_info.is_expired,
+            freshness_label=temp_info.freshness_label,
+            temporal_status=temp_info.status,
         )
+

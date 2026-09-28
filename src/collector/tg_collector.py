@@ -168,9 +168,10 @@ class TelegramCollector:
             )
             new_saved_count += 1
 
-            # Run deterministic two-stage filter
+            # Run deterministic two-stage filter with temporal classification
             filter_res = self.filter.filter_message(msg)
             if filter_res.is_relevant:
+                status = "expired" if filter_res.is_expired else "pending"
                 action_item_id = await self.db.save_action_item(
                     source_type=entity_type,
                     priority_score=filter_res.priority,
@@ -185,18 +186,24 @@ class TelegramCollector:
                         "category": filter_res.category,
                         "priority": filter_res.priority,
                         "matched_keywords": filter_res.matched_keywords,
+                        "is_expired": filter_res.is_expired,
+                        "freshness_label": filter_res.freshness_label,
+                        "temporal_status": filter_res.temporal_status,
                     },
-                    status="pending",
+                    status=status,
                 )
                 action_items_created += 1
-                action_items_details.append(
-                    {
-                        "action_item_id": action_item_id,
-                        "category": filter_res.category,
-                        "priority": filter_res.priority,
-                        "summary": filter_res.summary,
-                    }
-                )
+                if not filter_res.is_expired:
+                    action_items_details.append(
+                        {
+                            "action_item_id": action_item_id,
+                            "category": filter_res.category,
+                            "priority": filter_res.priority,
+                            "summary": filter_res.summary,
+                            "freshness_label": filter_res.freshness_label,
+                        }
+                    )
+
 
         return {
             "source_id": source_id,
