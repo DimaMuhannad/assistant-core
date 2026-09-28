@@ -108,6 +108,13 @@ class Database:
                     is_noise BOOLEAN DEFAULT FALSE,
                     requires_action BOOLEAN DEFAULT FALSE,
                     is_read BOOLEAN DEFAULT FALSE,
+                    is_answered BOOLEAN DEFAULT FALSE,
+                    replied_at TIMESTAMP,
+                    reply_message_id TEXT,
+                    flags_json TEXT,
+                    is_expired BOOLEAN DEFAULT FALSE,
+                    deadline_at TIMESTAMP,
+                    relevance_score REAL DEFAULT 1.0,
                     ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -119,7 +126,9 @@ class Database:
                     last_message_at TIMESTAMP,
                     category TEXT DEFAULT 'general',
                     summary TEXT,
-                    status TEXT DEFAULT 'open'
+                    status TEXT DEFAULT 'open',
+                    last_sender_email TEXT,
+                    last_reply_at TIMESTAMP
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
@@ -129,9 +138,40 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_email_account_date ON email_messages(account_id, date_sent);
                 CREATE INDEX IF NOT EXISTS idx_email_thread ON email_messages(thread_id);
                 CREATE INDEX IF NOT EXISTS idx_email_sender ON email_messages(sender_email);
+                CREATE INDEX IF NOT EXISTS idx_email_answered ON email_messages(is_answered);
+                CREATE INDEX IF NOT EXISTS idx_email_requires_action ON email_messages(requires_action);
                 """
             )
             await conn.commit()
+
+            # Migrate email_messages columns if missing
+            cursor = await conn.execute("PRAGMA table_info(email_messages);")
+            existing_cols = {row[1] for row in await cursor.fetchall()}
+            new_cols_messages = [
+                ("is_answered", "BOOLEAN DEFAULT FALSE"),
+                ("replied_at", "TIMESTAMP"),
+                ("reply_message_id", "TEXT"),
+                ("flags_json", "TEXT"),
+                ("is_expired", "BOOLEAN DEFAULT FALSE"),
+                ("deadline_at", "TIMESTAMP"),
+                ("relevance_score", "REAL DEFAULT 1.0"),
+            ]
+            for col_name, col_type in new_cols_messages:
+                if col_name not in existing_cols:
+                    logger.info("Migrating email_messages: adding column %s", col_name)
+                    await conn.execute(f"ALTER TABLE email_messages ADD COLUMN {col_name} {col_type};")
+
+            # Migrate email_threads columns if missing
+            cursor = await conn.execute("PRAGMA table_info(email_threads);")
+            existing_thread_cols = {row[1] for row in await cursor.fetchall()}
+            new_cols_threads = [
+                ("last_sender_email", "TEXT"),
+                ("last_reply_at", "TIMESTAMP"),
+            ]
+            for col_name, col_type in new_cols_threads:
+                if col_name not in existing_thread_cols:
+                    logger.info("Migrating email_threads: adding column %s", col_name)
+                    await conn.execute(f"ALTER TABLE email_threads ADD COLUMN {col_name} {col_type};")
 
             # Migrate calendar_sync_records if it contains UNIQUE constraint on google_event_id
             cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='calendar_sync_records';")
@@ -385,42 +425,319 @@ class Database:
         category: str = "general",
         is_noise: bool = False,
         requires_action: bool = False,
+        is_read: bool = False,
+        is_answered: bool = False,
+        replied_at: datetime | None = None,
+        reply_message_id: str | None = None,
+        flags_json: str | None = None,
+        is_expired: bool = False,
+        deadline_at: datetime | None = None,
+        relevance_score: float = 1.0,
     ) -> bool:
-        """Insert email message if not already present. Returns True if inserted, False if duplicate."""
+        """Insert email message or update flags/answered status. Returns True if inserted, False if updated/duplicate."""
+        date_sent_str = date_sent.isoformat() if isinstance(date_sent, datetime) else str(date_sent)
+        replied_at_str = replied_at.isoformat() if isinstance(replied_at, datetime) else (str(replied_at) if replied_at else None)
+        deadline_str = deadline_at.isoformat() if isinstance(deadline_at, datetime) else (str(deadline_at) if deadline_at else None)
+
         async with self.connection() as conn:
             cursor = await conn.execute(
                 """
-                INSERT OR IGNORE INTO email_messages (
-                    message_id, account_id, folder, sender_name, sender_email,
-                    recipients_json, subject, date_sent, body_plain, body_html,
-                    snippet, has_attachments, attachments_json, in_reply_to,
-                    references_text, thread_id, category, is_noise, requires_action
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
+                INSERT INTO email_messages (
                     message_id, account_id, folder, sender_name, sender_email,
                     recipients_json, subject, date_sent, body_plain, body_html,
                     snippet, has_attachments, attachments_json, in_reply_to,
                     references_text, thread_id, category, is_noise, requires_action,
+                    is_read, is_answered, replied_at, reply_message_id, flags_json,
+                    is_expired, deadline_at, relevance_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    flags_json = COALESCE(excluded.flags_json, email_messages.flags_json),
+                    is_answered = MAX(email_messages.is_answered, excluded.is_answered),
+                    is_read = MAX(email_messages.is_read, excluded.is_read),
+                    category = CASE WHEN email_messages.category = 'general' THEN excluded.category ELSE email_messages.category END,
+                    relevance_score = excluded.relevance_score,
+                    is_expired = excluded.is_expired,
+                    deadline_at = COALESCE(excluded.deadline_at, email_messages.deadline_at),
+                    replied_at = COALESCE(excluded.replied_at, email_messages.replied_at),
+                    reply_message_id = COALESCE(excluded.reply_message_id, email_messages.reply_message_id);
+                """,
+                (
+                    message_id, account_id, folder, sender_name, sender_email,
+                    recipients_json, subject, date_sent_str, body_plain, body_html,
+                    snippet, has_attachments, attachments_json, in_reply_to,
+                    references_text, thread_id, category, is_noise, requires_action,
+                    is_read, is_answered, replied_at_str, reply_message_id, flags_json,
+                    is_expired, deadline_str, relevance_score,
                 ),
             )
             inserted = cursor.rowcount > 0
 
             # Update or insert thread
-            if inserted and thread_id:
+            if thread_id:
+                initial_status = "answered" if is_answered else ("open" if is_noise else "unanswered")
                 await conn.execute(
                     """
-                    INSERT INTO email_threads (thread_id, subject, participant_emails_json, message_count, last_message_at, category)
-                    VALUES (?, ?, ?, 1, ?, ?)
+                    INSERT INTO email_threads (
+                        thread_id, subject, participant_emails_json, message_count,
+                        last_message_at, category, status, last_sender_email
+                    )
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?)
                     ON CONFLICT(thread_id) DO UPDATE SET
                         message_count = email_threads.message_count + 1,
                         last_message_at = MAX(email_threads.last_message_at, excluded.last_message_at),
+                        last_sender_email = excluded.last_sender_email,
                         category = CASE WHEN email_threads.category = 'general' THEN excluded.category ELSE email_threads.category END;
                     """,
-                    (thread_id, subject or "Без темы", json.dumps([sender_email]), date_sent, category),
+                    (thread_id, subject or "Без темы", json.dumps([sender_email]), date_sent_str, category, initial_status, sender_email),
                 )
             await conn.commit()
             return inserted
+
+    async def reconcile_replies_and_threads(self, user_emails: list[str]) -> dict[str, int]:
+        """Reconcile replied status across email messages and threads.
+        
+        Marks incoming emails as answered if:
+        1. Dmitry has sent a reply referencing the message (In-Reply-To / References).
+        2. Dmitry has sent a reply in the same thread later than the incoming message.
+        3. The message has IMAP flag \\Answered.
+        
+        Updates thread status:
+        - 'answered': Dmitry sent the most recent message or has replied.
+        - 'unanswered': Waiting for Dmitry to reply.
+        - 'expired': Deadline passed or older than threshold.
+        """
+        user_emails_lower = [e.lower().strip() for e in user_emails if e and e.strip()]
+        if not user_emails_lower:
+            return {"answered_by_reply": 0, "answered_by_flag": 0, "threads_updated": 0}
+
+        stats = {"answered_by_reply": 0, "answered_by_flag": 0, "threads_updated": 0}
+
+        async with self.connection() as conn:
+            # 1. Answered by IMAP flag (\Answered in flags_json)
+            cursor = await conn.execute(
+                """
+                UPDATE email_messages
+                SET is_answered = 1
+                WHERE is_answered = 0 AND flags_json LIKE '%Answered%';
+                """
+            )
+            stats["answered_by_flag"] = cursor.rowcount
+
+            # 2. Outgoing replies: find all messages sent by user
+            placeholders = ",".join("?" for _ in user_emails_lower)
+            cursor = await conn.execute(
+                f"""
+                SELECT message_id, in_reply_to, references_text, thread_id, date_sent
+                FROM email_messages
+                WHERE LOWER(sender_email) IN ({placeholders})
+                ORDER BY date_sent ASC;
+                """,
+                tuple(user_emails_lower),
+            )
+            outgoing_msgs = await cursor.fetchall()
+
+            for out_msg in outgoing_msgs:
+                out_id = out_msg["message_id"]
+                in_reply = out_msg["in_reply_to"]
+                refs = out_msg["references_text"]
+                th_id = out_msg["thread_id"]
+                out_date = out_msg["date_sent"]
+
+                # A. Match direct in_reply_to
+                if in_reply:
+                    c = await conn.execute(
+                        """
+                        UPDATE email_messages
+                        SET is_answered = 1, replied_at = ?, reply_message_id = ?
+                        WHERE message_id = ? AND is_answered = 0;
+                        """,
+                        (out_date, out_id, in_reply),
+                    )
+                    stats["answered_by_reply"] += c.rowcount
+
+                # B. Match references
+                if refs:
+                    for ref_id in refs.split():
+                        c = await conn.execute(
+                            """
+                            UPDATE email_messages
+                            SET is_answered = 1, replied_at = ?, reply_message_id = ?
+                            WHERE message_id = ? AND is_answered = 0;
+                            """,
+                            (out_date, out_id, ref_id),
+                        )
+                        stats["answered_by_reply"] += c.rowcount
+
+                # C. Match thread: any incoming message in the same thread with date_sent <= out_date
+                if th_id:
+                    c = await conn.execute(
+                        f"""
+                        UPDATE email_messages
+                        SET is_answered = 1, replied_at = ?, reply_message_id = ?
+                        WHERE thread_id = ? AND date_sent <= ? AND LOWER(sender_email) NOT IN ({placeholders}) AND is_answered = 0;
+                        """,
+                        (out_date, out_id, th_id, out_date, *user_emails_lower),
+                    )
+                    stats["answered_by_reply"] += c.rowcount
+
+            # 3. Update thread statuses & last sender
+            cursor = await conn.execute(
+                """
+                SELECT thread_id, sender_email, date_sent, requires_action, is_expired, is_answered
+                FROM email_messages
+                ORDER BY date_sent ASC;
+                """
+            )
+            all_msgs = await cursor.fetchall()
+            thread_latest: dict[str, dict[str, Any]] = {}
+            for m in all_msgs:
+                th_id = m["thread_id"]
+                if not th_id:
+                    continue
+                thread_latest[th_id] = dict(m)
+
+            for th_id, latest in thread_latest.items():
+                sender = (latest["sender_email"] or "").lower()
+                is_from_me = sender in user_emails_lower
+                if is_from_me:
+                    th_status = "answered"
+                    last_reply = latest["date_sent"]
+                else:
+                    if latest.get("is_expired"):
+                        th_status = "expired"
+                    elif latest.get("is_answered"):
+                        th_status = "answered"
+                    elif latest.get("requires_action"):
+                        th_status = "unanswered"
+                    else:
+                        th_status = "open"
+                    last_reply = None
+
+                c = await conn.execute(
+                    """
+                    UPDATE email_threads
+                    SET status = ?, last_sender_email = ?, last_reply_at = COALESCE(?, last_reply_at)
+                    WHERE thread_id = ?;
+                    """,
+                    (th_status, latest["sender_email"], last_reply, th_id),
+                )
+                stats["threads_updated"] += c.rowcount
+
+            await conn.commit()
+            return stats
+
+    async def update_date_relevance(self, reference_now: datetime | None = None) -> dict[str, int]:
+        """Recalculate relevance scores and expiration for non-noise emails."""
+        now = reference_now or datetime.now(timezone.utc)
+        stats = {"updated": 0, "expired": 0}
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, date_sent, deadline_at, is_answered, requires_action
+                FROM email_messages
+                WHERE is_noise = 0;
+                """
+            )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                msg_id = row["id"]
+                date_sent_raw = row["date_sent"]
+                deadline_raw = row["deadline_at"]
+
+                # Parse date_sent
+                if isinstance(date_sent_raw, str):
+                    try:
+                        date_sent = datetime.fromisoformat(date_sent_raw)
+                    except Exception:
+                        date_sent = now
+                else:
+                    date_sent = date_sent_raw
+
+                if date_sent.tzinfo is None:
+                    date_sent = date_sent.replace(tzinfo=timezone.utc)
+
+                # Parse deadline
+                deadline = None
+                if deadline_raw:
+                    if isinstance(deadline_raw, str):
+                        try:
+                            deadline = datetime.fromisoformat(deadline_raw)
+                        except Exception:
+                            deadline = None
+                    else:
+                        deadline = deadline_raw
+                    if deadline and deadline.tzinfo is None:
+                        deadline = deadline.replace(tzinfo=timezone.utc)
+
+                age_days = (now - date_sent).days
+
+                # Determine expiration and score
+                is_expired = False
+                score = 1.0
+
+                if deadline:
+                    if deadline < now:
+                        is_expired = True
+                        score = 0.05
+                    else:
+                        days_left = (deadline - now).days
+                        if days_left <= 1:
+                            score = 1.5
+                        elif days_left <= 3:
+                            score = 1.3
+                        else:
+                            score = 1.1
+                else:
+                    # Aging decay
+                    if age_days <= 1:
+                        score = 1.0
+                    elif age_days <= 3:
+                        score = 0.9
+                    elif age_days <= 7:
+                        score = 0.75
+                    elif age_days <= 14:
+                        score = 0.5
+                    elif age_days <= 30:
+                        score = 0.25
+                    else:
+                        score = 0.05
+                        is_expired = True
+
+                if is_expired:
+                    stats["expired"] += 1
+
+                await conn.execute(
+                    """
+                    UPDATE email_messages
+                    SET relevance_score = ?, is_expired = ?
+                    WHERE id = ?;
+                    """,
+                    (score, 1 if is_expired else 0, msg_id),
+                )
+                stats["updated"] += 1
+
+            await conn.commit()
+            return stats
+
+    async def list_actionable_emails(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List emails that require action: not noise, not answered, not expired."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, message_id, account_id, folder, sender_name, sender_email,
+                       subject, date_sent, snippet, has_attachments, category,
+                       relevance_score, deadline_at, is_answered, is_expired
+                FROM email_messages
+                WHERE requires_action = 1 AND is_answered = 0 AND is_noise = 0 AND is_expired = 0
+                ORDER BY relevance_score DESC, date_sent DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
     async def get_email_stats(self) -> dict[str, Any]:
         """Get summary statistics about ingested emails."""
@@ -432,6 +749,9 @@ class Database:
                     COUNT(DISTINCT thread_id) as total_threads,
                     SUM(CASE WHEN is_noise = 1 THEN 1 ELSE 0 END) as noise_count,
                     SUM(CASE WHEN requires_action = 1 THEN 1 ELSE 0 END) as action_count,
+                    SUM(CASE WHEN is_answered = 1 THEN 1 ELSE 0 END) as answered_count,
+                    SUM(CASE WHEN is_expired = 1 THEN 1 ELSE 0 END) as expired_count,
+                    SUM(CASE WHEN requires_action = 1 AND is_answered = 0 AND is_expired = 0 AND is_noise = 0 THEN 1 ELSE 0 END) as active_action_count,
                     SUM(CASE WHEN category = 'guap_student' THEN 1 ELSE 0 END) as student_count,
                     SUM(CASE WHEN category = 'guap_dept' THEN 1 ELSE 0 END) as dept_count,
                     SUM(CASE WHEN category = 'service' THEN 1 ELSE 0 END) as service_count,
@@ -480,5 +800,6 @@ class Database:
             cursor = await conn.execute(query, tuple(params))
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
 
 

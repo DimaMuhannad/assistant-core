@@ -71,6 +71,85 @@ DEPT_PATTERNS = [
     r"эффективн.*контракт",
 ]
 
+MONTHS_RU = {
+    "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5,
+    "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
+}
+
+
+def get_user_emails() -> list[str]:
+    """Return normalized list of Dmitry's active email addresses."""
+    candidates = [config.MAILRU_EMAIL, config.GUAP_EMAIL, config.GMAIL_EMAIL]
+    return [e.lower().strip() for e in candidates if e and e.strip()]
+
+
+def extract_deadline(text: str, default_year: int = 2026) -> datetime | None:
+    """Extract explicit deadline date from text if mentioned (e.g. 'до 24.09.26', 'к 15 октября')."""
+    if not text:
+        return None
+    # Pattern 1: до 24.09.26 or до 24.09.2026 or до 24.09
+    m = re.search(r"(?:до|к|срок(?:ом)?(?:\s+до)?)\s+(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", text, re.IGNORECASE)
+    if m:
+        day, month, year_str = int(m.group(1)), int(m.group(2)), m.group(3)
+        if year_str:
+            year = int(year_str)
+            if year < 100:
+                year += 2000
+        else:
+            year = default_year
+        try:
+            return datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    # Pattern 2: до 24 сентября
+    m2 = re.search(r"(?:до|к|срок(?:ом)?(?:\s+до)?)\s+(\d{1,2})\s+([а-яё]{3,8})(?:\s+(\d{4}))?", text, re.IGNORECASE)
+    if m2:
+        day = int(m2.group(1))
+        m_str = m2.group(2).lower()[:3]
+        year = int(m2.group(3)) if m2.group(3) else default_year
+        if m_str in MONTHS_RU:
+            try:
+                return datetime(year, MONTHS_RU[m_str], day, 23, 59, 59, tzinfo=timezone.utc)
+            except Exception:
+                pass
+    return None
+
+
+def calculate_relevance(date_sent: datetime, deadline: datetime | None, now: datetime | None = None) -> tuple[float, bool]:
+    """Calculate date relevance score and expiration status.
+    
+    Returns: (relevance_score, is_expired)
+    """
+    now = now or datetime.now(timezone.utc)
+    if date_sent.tzinfo is None:
+        date_sent = date_sent.replace(tzinfo=timezone.utc)
+
+    if deadline:
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline < now:
+            return 0.05, True
+        days_left = (deadline - now).total_seconds() / 86400.0
+        if days_left <= 1:
+            return 1.5, False
+        if days_left <= 3:
+            return 1.3, False
+        return 1.1, False
+
+    age_days = (now - date_sent).total_seconds() / 86400.0
+    if age_days <= 1:
+        return 1.0, False
+    if age_days <= 3:
+        return 0.9, False
+    if age_days <= 7:
+        return 0.75, False
+    if age_days <= 14:
+        return 0.5, False
+    if age_days <= 30:
+        return 0.25, False
+    return 0.05, True
+
 
 class EmailCollector:
     """Multi-account email collector and ingestion engine."""
@@ -231,13 +310,19 @@ class EmailCollector:
                         chunk_size = 25
                         for i in range(0, len(msg_uids), chunk_size):
                             chunk = msg_uids[i : i + chunk_size]
-                            fetch_data = client.fetch(chunk, ["RFC822"])
+                            fetch_data = client.fetch(chunk, ["RFC822", "FLAGS"])
 
                             for uid, data in fetch_data.items():
                                 stats["checked"] += 1
                                 raw_bytes = data.get(b"RFC822")
                                 if not raw_bytes:
                                     continue
+
+                                raw_flags = data.get(b"FLAGS", ())
+                                flags_list = [f.decode("utf-8", errors="ignore") if isinstance(f, bytes) else str(f) for f in raw_flags]
+                                flags_json = json.dumps(flags_list, ensure_ascii=False)
+                                has_answered_flag = any("answered" in f.lower() for f in flags_list)
+                                has_seen_flag = any("seen" in f.lower() for f in flags_list)
 
                                 msg = email.message_from_bytes(raw_bytes, policy=policy.default)
                                 message_id = str(msg.get("Message-ID", "")).strip() or f"gen-{account_id}-{folder}-{uid}"
@@ -278,9 +363,24 @@ class EmailCollector:
                                     attachments.append(fname)
                                 has_attachments = len(attachments) > 0
 
-                                # Classification
-                                category, is_noise = self.classify_email(sender_email, subject, msg)
-                                requires_action = (category in ("guap_student", "guap_dept")) and not is_noise
+                                # Check if outgoing from user
+                                user_emails = get_user_emails()
+                                is_from_me = (sender_email.lower().strip() in user_emails) or (folder in ("Отправленные", "Sent"))
+
+                                if is_from_me:
+                                    category = "outgoing"
+                                    is_noise = False
+                                    requires_action = False
+                                    is_answered = True
+                                    is_expired = False
+                                    deadline = None
+                                    relevance_score = 1.0
+                                else:
+                                    category, is_noise = self.classify_email(sender_email, subject, msg)
+                                    deadline = extract_deadline(f"{subject} {snippet}")
+                                    relevance_score, is_expired = calculate_relevance(date_sent, deadline)
+                                    is_answered = has_answered_flag
+                                    requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
 
                                 # Persist
                                 inserted = await self.db.upsert_email_message(
@@ -303,6 +403,12 @@ class EmailCollector:
                                     category=category,
                                     is_noise=is_noise,
                                     requires_action=requires_action,
+                                    is_read=has_seen_flag,
+                                    is_answered=is_answered,
+                                    flags_json=flags_json,
+                                    is_expired=is_expired,
+                                    deadline_at=deadline,
+                                    relevance_score=relevance_score,
                                 )
 
                                 if inserted:
@@ -367,6 +473,7 @@ class EmailCollector:
                     logger.debug("Failed to get gmail msg %s: %s", msg_id, get_err)
                     continue
 
+                label_ids = detail.get("labelIds", [])
                 payload = detail.get("payload", {})
                 headers_list = payload.get("headers", [])
                 headers_map = {h["name"].lower(): h["value"] for h in headers_list}
@@ -398,17 +505,34 @@ class EmailCollector:
                 # Snippet
                 snippet = detail.get("snippet", "")
 
-                # Simple body extraction from payload
                 body_plain = snippet
                 has_attachments = False
 
-                category, is_noise = self.classify_email(sender_email, subject, headers_map)
-                requires_action = (category in ("guap_student", "guap_dept")) and not is_noise
+                user_emails = get_user_emails()
+                is_from_me = ("SENT" in label_ids) or (sender_email.lower().strip() in user_emails)
+
+                if is_from_me:
+                    category = "outgoing"
+                    is_noise = False
+                    requires_action = False
+                    is_answered = True
+                    is_expired = False
+                    deadline = None
+                    relevance_score = 1.0
+                else:
+                    category, is_noise = self.classify_email(sender_email, subject, headers_map)
+                    deadline = extract_deadline(f"{subject} {snippet}")
+                    relevance_score, is_expired = calculate_relevance(date_sent, deadline)
+                    is_answered = False
+                    requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
+
+                flags_list = list(label_ids)
+                has_seen = "UNREAD" not in label_ids
 
                 inserted = await self.db.upsert_email_message(
                     message_id=message_id,
                     account_id=account_id,
-                    folder="INBOX",
+                    folder="INBOX" if not is_from_me else "SENT",
                     sender_name=sender_name,
                     sender_email=sender_email,
                     recipients_json=json.dumps(recipients, ensure_ascii=False),
@@ -425,6 +549,12 @@ class EmailCollector:
                     category=category,
                     is_noise=is_noise,
                     requires_action=requires_action,
+                    is_read=has_seen,
+                    is_answered=is_answered,
+                    flags_json=json.dumps(flags_list, ensure_ascii=False),
+                    is_expired=is_expired,
+                    deadline_at=deadline,
+                    relevance_score=relevance_score,
                 )
 
                 if inserted:
@@ -440,12 +570,12 @@ class EmailCollector:
         return stats
 
     async def sync_all_accounts(self, days: int = 60) -> dict[str, Any]:
-        """Sync all connected accounts and return aggregated statistics."""
+        """Sync all connected accounts, reconcile replies, and update date relevance."""
         await self.db.init_db()
         results = {}
 
-        # 1. Sync Mail.ru (INBOX and ГУАП folders)
-        mailru_folders = ["INBOX", "ГУАП"]
+        # 1. Sync Mail.ru (INBOX, ГУАП, and Отправленные)
+        mailru_folders = ["INBOX", "ГУАП", "Отправленные"]
         logger.info("Starting Mail.ru ingestion for last %d days...", days)
         results["mailru"] = await self.ingest_imap_account(
             account_id="mailru",
@@ -457,7 +587,7 @@ class EmailCollector:
             days=days,
         )
 
-        # 2. Sync GUAP Corporate direct IMAP
+        # 2. Sync GUAP Corporate direct IMAP (INBOX and Sent)
         logger.info("Starting GUAP direct IMAP ingestion for last %d days...", days)
         results["guap"] = await self.ingest_imap_account(
             account_id="guap",
@@ -465,7 +595,7 @@ class EmailCollector:
             port=config.GUAP_IMAP_PORT,
             username=config.GUAP_EMAIL,
             password=config.GUAP_PASSWORD,
-            folders=["INBOX"],
+            folders=["INBOX", "Sent"],
             days=days,
         )
 
@@ -476,7 +606,22 @@ class EmailCollector:
             days=days,
         )
 
-        # Aggregated stats from DB
+        # 4. Reconcile outgoing replies and thread statuses
+        user_emails = get_user_emails()
+        logger.info("Reconciling replies and thread statuses for %s...", user_emails)
+        reconcile_stats = await self.db.reconcile_replies_and_threads(user_emails)
+        results["reconciliation"] = reconcile_stats
+
+        # 5. Recalculate date relevance and aging
+        logger.info("Updating date relevance and expiration...")
+        aging_stats = await self.db.update_date_relevance()
+        results["aging"] = aging_stats
+
+        # 6. Aggregated stats from DB
         db_stats = await self.db.get_email_stats()
         results["db_totals"] = db_stats
+
+        actionable = await self.db.list_actionable_emails()
+        results["active_actionable_count"] = len(actionable)
+        logger.info("Sync finished. Active actionable emails remaining: %d", len(actionable))
         return results

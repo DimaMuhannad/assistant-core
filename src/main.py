@@ -182,7 +182,13 @@ async def run_email_collector_cycle(
         # Notify if new student or department emails arrive
         if total_new > 0:
             student_or_dept = await db.list_recent_emails(limit=total_new, non_noise_only=True)
-            academic_items = [e for e in student_or_dept if e.get("category") in ("guap_student", "guap_dept")]
+            academic_items = [
+                e for e in student_or_dept
+                if e.get("category") in ("guap_student", "guap_dept")
+                and e.get("requires_action")
+                and not e.get("is_answered")
+                and not e.get("is_expired")
+            ]
             for email_item in academic_items:
                 sender = email_item.get("sender_email", "")
                 subject = email_item.get("subject", "Без темы")
