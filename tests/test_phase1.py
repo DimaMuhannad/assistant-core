@@ -354,3 +354,61 @@ async def test_telegram_notifier_format():
 
     res = await notifier.send_schedule_diff_alert(diff, target_id="1234")
     assert res is True
+
+
+# ---------------------------------------------------------
+# 7. Calendar Event Formatting & Group Extraction Tests
+# ---------------------------------------------------------
+
+def test_calendar_custom_formatting():
+    """Verify event summary and description adhere to Dmitry's custom format."""
+    lesson = Lesson(
+        subject="Физические основы нанотехнологий",
+        lesson_type=LessonType.LECTURE,
+        date=date(2026, 9, 30),
+        start_time=time(9, 30),
+        end_time=time(11, 0),
+        room="ауд. 31-04а (Гастелло 15)",
+        teacher="Попов Д.А.",
+        group="м431к",
+    )
+
+    summary = GoogleCalendarClient.format_summary(lesson)
+    assert summary == "[м431к] ФОНТ (Лек)"
+
+    desc = GoogleCalendarClient.format_description(lesson)
+    assert "Пара: 1 (09:30—11:00)" in desc
+    assert "Группа: м431к" in desc
+    assert "Предмет: Физические основы нанотехнологий (ФОНТ)" in desc
+    assert "Тип занятия: Лекция (Лек)" in desc
+    assert "Преподаватель: Попов Д.А." in desc
+    assert "Аудитория: ауд. 31-04а (Гастелло 15)" in desc
+
+
+def test_parser_html_payload_group_extraction():
+    """Verify group and room normalization during HTML parsing."""
+    parser = ScheduleParser()
+    sample_html = """
+    <html>
+      <body>
+        <div><h4>Среда</h4></div>
+        <div class="mt-3 text-danger">1 пара (09:30 - 11:00)</div>
+        <div class="d-flex gap-2">
+          ▲ Лекция Физические основы нанотехнологий ауд. 31-04а&nbsp;(Гастелло 15) — Кафедра 3 преп: Попов Д.А.
+          <br>
+          гр: м431к
+        </div>
+      </body>
+    </html>
+    """
+    fixed_date = date(2026, 9, 30)
+    payload = parser.parse_html_payload(sample_html, group_or_teacher_id="2903", target_date=fixed_date)
+    assert len(payload.days) == 1
+    lessons = payload.days[0].lessons
+    assert len(lessons) == 1
+    l = lessons[0]
+    assert l.group == "м431к"
+    assert l.lesson_type == LessonType.LECTURE
+    assert "ФОНТ" in GoogleCalendarClient.format_summary(l)
+    assert l.room == "ауд. 31-04а (Гастелло 15)"
+

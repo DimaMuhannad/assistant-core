@@ -5,10 +5,33 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.models.schedule import Lesson, ScheduleDiff
+from src.models.schedule import Lesson, LessonType, ScheduleDiff
 from src.storage.db import Database
 
 logger = logging.getLogger(__name__)
+
+SUBJECT_SHORT_NAMES: dict[str, str] = {
+    "физические основы нанотехнологий": "ФОНТ",
+    "основы проектной деятельности в профессии": "ОПДвП",
+    "основы проектной деятельности": "ОПД",
+    "физика": "Физика",
+}
+
+LESSON_TYPE_SHORT: dict[LessonType, str] = {
+    LessonType.LECTURE: "Лек",
+    LessonType.LAB: "Лаб",
+    LessonType.PRACTICE: "Пр",
+    LessonType.EXAM: "Экз",
+    LessonType.UNKNOWN: "Занятие",
+}
+
+LESSON_TYPE_LONG: dict[LessonType, str] = {
+    LessonType.LECTURE: "Лекция",
+    LessonType.LAB: "Лабораторное занятие",
+    LessonType.PRACTICE: "Практическое занятие",
+    LessonType.EXAM: "Экзамен",
+    LessonType.UNKNOWN: "Занятие",
+}
 
 
 class GoogleCalendarClient:
@@ -63,20 +86,85 @@ class GoogleCalendarClient:
             )
             self.dry_run = True
 
+    @classmethod
+    def format_summary(cls, lesson: Lesson) -> str:
+        """Format event summary matching Dmitry's standard: [Group] Subject (Type)."""
+        subj_clean = lesson.subject.strip()
+        short_subj = SUBJECT_SHORT_NAMES.get(subj_clean.lower(), subj_clean)
+        short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Занятие")
+        if lesson.group:
+            return f"[{lesson.group}] {short_subj} ({short_type})"
+        return f"{short_subj} ({short_type})"
+
+    @classmethod
+    def format_description(cls, lesson: Lesson) -> str:
+        """Format event description matching Dmitry's structured calendar format."""
+        slot_map = {
+            (9, 30): 1,
+            (11, 10): 2,
+            (13, 0): 3,
+            (15, 10): 4,
+            (17, 0): 5,
+            (18, 40): 6,
+        }
+        slot_num = slot_map.get((lesson.start_time.hour, lesson.start_time.minute))
+        time_str = f"{lesson.start_time.strftime('%H:%M')}—{lesson.end_time.strftime('%H:%M')}"
+        lines = []
+        if slot_num:
+            lines.append(f"Пара: {slot_num} ({time_str})")
+        if lesson.group:
+            lines.append(f"Группа: {lesson.group}")
+        subj_clean = lesson.subject.strip()
+        short_subj = SUBJECT_SHORT_NAMES.get(subj_clean.lower(), subj_clean)
+        short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Занятие")
+        long_type = LESSON_TYPE_LONG.get(lesson.lesson_type, "Занятие")
+        lines.append(f"Предмет: {lesson.subject} ({short_subj})")
+        lines.append(f"Тип занятия: {long_type} ({short_type})")
+        if lesson.teacher:
+            lines.append(f"Преподаватель: {lesson.teacher}")
+        lines.append(f"Аудитория: {lesson.room}")
+        lines.append(f"Хэш слота: {lesson.deterministic_hash}")
+        return "\n".join(lines)
+
+    async def find_existing_event(self, calendar_id: str, lesson: Lesson) -> dict[str, Any] | None:
+        """Find an existing calendar event for the lesson slot to prevent duplication."""
+        if self.dry_run or self.service is None:
+            return None
+
+        # Query events on the given date (day bounds)
+        time_min = f"{lesson.date.isoformat()}T00:00:00Z"
+        time_max = f"{lesson.date.isoformat()}T23:59:59Z"
+
+        try:
+            res = self.service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+            ).execute()
+
+            items = res.get("items", [])
+            target_start_prefix = f"{lesson.date.isoformat()}T{lesson.start_time.strftime('%H:%M')}"
+            for item in items:
+                start_dt = item.get("start", {}).get("dateTime", "")
+                if start_dt.startswith(target_start_prefix):
+                    return item
+        except Exception as e:
+            logger.warning("Failed to query Google Calendar for existing events on %s: %s", lesson.date, e)
+
+        return None
+
     async def create_event(self, calendar_id: str, lesson: Lesson) -> str:
         """Create an event in Google Calendar and return its ID."""
-        summary = f"[{lesson.lesson_type.value}] {lesson.subject}"
+        summary = self.format_summary(lesson)
+        description = self.format_description(lesson)
         start_iso = f"{lesson.date.isoformat()}T{lesson.start_time.isoformat()}"
         end_iso = f"{lesson.date.isoformat()}T{lesson.end_time.isoformat()}"
 
         event_body = {
             "summary": summary,
             "location": lesson.room,
-            "description": (
-                f"Преподаватель: {lesson.teacher or 'Не указан'}\n"
-                f"Группа: {lesson.group or 'Не указана'}\n"
-                f"Хэш слота: {lesson.deterministic_hash}"
-            ),
+            "description": description,
             "start": {
                 "dateTime": start_iso,
                 "timeZone": self.timezone_str,
@@ -138,10 +226,32 @@ class GoogleCalendarClient:
                 stats["skipped"] += 1
                 continue
 
-            # Create event in Google Calendar
-            google_id = await self.create_event(calendar_id, lesson)
+            summary = self.format_summary(lesson)
             start_dt = datetime.combine(lesson.date, lesson.start_time)
             end_dt = datetime.combine(lesson.date, lesson.end_time)
+
+            # Check if an event already covers this time slot in Google Calendar (e.g. recurring event from series)
+            existing_event = await self.find_existing_event(calendar_id, lesson)
+            if existing_event:
+                logger.info(
+                    "Event already exists in calendar: '%s' (id: %s). Linking record, skipping duplicate creation.",
+                    existing_event.get("summary"),
+                    existing_event.get("id"),
+                )
+                await db.record_calendar_sync(
+                    source_event_id=slot_id,
+                    google_event_id=existing_event.get("id"),
+                    calendar_id=calendar_id,
+                    event_start=start_dt,
+                    event_end=end_dt,
+                    summary=existing_event.get("summary") or summary,
+                    status="active",
+                )
+                stats["skipped"] += 1
+                continue
+
+            # Create event in Google Calendar
+            google_id = await self.create_event(calendar_id, lesson)
 
             await db.record_calendar_sync(
                 source_event_id=slot_id,
@@ -149,7 +259,7 @@ class GoogleCalendarClient:
                 calendar_id=calendar_id,
                 event_start=start_dt,
                 event_end=end_dt,
-                summary=f"[{lesson.lesson_type.value}] {lesson.subject}",
+                summary=summary,
                 status="active",
             )
             stats["created"] += 1

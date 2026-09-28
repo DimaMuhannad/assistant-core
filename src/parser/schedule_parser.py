@@ -237,18 +237,27 @@ class ScheduleParser:
                 elif "Экзамен" in text:
                     l_type = LessonType.EXAM
 
-                room_match = re.search(r"ауд\.\s*([^—\n]+)", text)
-                room = ("ауд. " + room_match.group(1).strip()) if room_match else "Не указана"
+                room_match = re.search(r"ауд\.\s*([^—\n\r]+)", text)
+                room = ("ауд. " + room_match.group(1).replace("\xa0", " ").strip()) if room_match else "Не указана"
+                room = re.sub(r"\s+", " ", room)
 
                 subject = text
                 for prefix in ["▲", "▼", "Лекция", "Лабораторное занятие", "Практическое занятие"]:
                     subject = subject.replace(prefix, "")
                 if room_match:
                     subject = subject.split("ауд.")[0]
-                subject = subject.strip(" .–—") or "Учебное занятие"
+                subject = subject.replace("\xa0", " ").strip(" .–—") or "Учебное занятие"
+                subject = re.sub(r"\s+", " ", subject)
 
                 teacher_match = re.search(r"преп:\s*([^.]+)", text)
-                teacher = teacher_match.group(1).strip() if teacher_match else None
+                teacher = teacher_match.group(1).replace("\xa0", " ").strip() if teacher_match else None
+                if teacher:
+                    teacher = re.sub(r"\s+", " ", teacher)
+
+                group_match = re.search(r"гр:\s*([^\r\n—]+)", text)
+                group = group_match.group(1).replace("\xa0", " ").strip() if group_match else None
+                if group:
+                    group = re.sub(r"\s+", " ", group)
 
                 days_dict[current_day_date].append(
                     Lesson(
@@ -259,6 +268,7 @@ class ScheduleParser:
                         end_time=current_slot_times[1],
                         room=room,
                         teacher=teacher,
+                        group=group,
                     )
                 )
 
