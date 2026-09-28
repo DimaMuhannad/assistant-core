@@ -64,7 +64,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS calendar_sync_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source_event_id TEXT NOT NULL UNIQUE,
-                    google_event_id TEXT NOT NULL UNIQUE,
+                    google_event_id TEXT NOT NULL,
                     calendar_id TEXT NOT NULL,
                     event_start TIMESTAMP NOT NULL,
                     event_end TIMESTAMP NOT NULL,
@@ -89,6 +89,32 @@ class Database:
                 """
             )
             await conn.commit()
+
+            # Migrate calendar_sync_records if it contains UNIQUE constraint on google_event_id
+            cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='calendar_sync_records';")
+            row = await cursor.fetchone()
+            if row and "google_event_id TEXT NOT NULL UNIQUE" in row["sql"]:
+                logger.info("Migrating calendar_sync_records: removing UNIQUE constraint on google_event_id...")
+                await conn.executescript(
+                    """
+                    CREATE TABLE calendar_sync_records_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_event_id TEXT NOT NULL UNIQUE,
+                        google_event_id TEXT NOT NULL,
+                        calendar_id TEXT NOT NULL,
+                        event_start TIMESTAMP NOT NULL,
+                        event_end TIMESTAMP NOT NULL,
+                        summary TEXT NOT NULL,
+                        last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'active'
+                    );
+                    INSERT OR IGNORE INTO calendar_sync_records_new SELECT * FROM calendar_sync_records;
+                    DROP TABLE calendar_sync_records;
+                    ALTER TABLE calendar_sync_records_new RENAME TO calendar_sync_records;
+                    CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
+                    """
+                )
+                await conn.commit()
 
     async def upsert_monitored_source(
         self,

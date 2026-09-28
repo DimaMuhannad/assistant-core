@@ -190,6 +190,18 @@ class ScheduleParser:
         # Monday of this week
         monday = base_date - timedelta(days=base_date.weekday())
 
+        # Determine current week type from page header (▲ UPPER / ▼ LOWER)
+        current_week_type = "UNKNOWN"
+        for d in soup.find_all("div"):
+            txt = d.get_text(" ", strip=True)
+            if "учебного года" in txt or "неделя" in txt:
+                if "▲" in txt or "верхняя" in txt.lower():
+                    current_week_type = "UPPER"
+                    break
+                elif "▼" in txt or "нижняя" in txt.lower():
+                    current_week_type = "LOWER"
+                    break
+
         days_dict: dict[date, list[Lesson]] = {}
         current_day_date = None
         current_slot_times = None
@@ -225,6 +237,11 @@ class ScheduleParser:
 
             if current_day_date and current_slot_times and "d-flex" in classes and "gap-2" in classes:
                 if any(clearing in text for clearing in ["Очистить", "Показать расписание"]):
+                    continue
+
+                if current_week_type == "UPPER" and "▼" in text:
+                    continue
+                if current_week_type == "LOWER" and "▲" in text:
                     continue
 
                 l_type = LessonType.UNKNOWN

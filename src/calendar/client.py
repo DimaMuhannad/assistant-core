@@ -145,10 +145,15 @@ class GoogleCalendarClient:
 
             items = res.get("items", [])
             target_start_prefix = f"{lesson.date.isoformat()}T{lesson.start_time.strftime('%H:%M')}"
+            short_subj = SUBJECT_SHORT_NAMES.get(lesson.subject.strip().lower(), lesson.subject.strip()).lower()
             for item in items:
                 start_dt = item.get("start", {}).get("dateTime", "")
                 if start_dt.startswith(target_start_prefix):
-                    return item
+                    ev_summary = (item.get("summary") or "").lower()
+                    if short_subj in ev_summary or lesson.subject.strip().lower() in ev_summary:
+                        return item
+                    if lesson.group and lesson.group.lower() in ev_summary:
+                        return item
         except Exception as e:
             logger.warning("Failed to query Google Calendar for existing events on %s: %s", lesson.date, e)
 
