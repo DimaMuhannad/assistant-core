@@ -16,6 +16,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram import Bot, Dispatcher
 
 
 from src import config
@@ -27,6 +28,9 @@ from src.notifier.telegram import TelegramNotifier
 from src.collector.tg_collector import TelegramCollector
 from src.collector.email_collector import EmailCollector
 from src.brain.summarizer import GeminiSummarizer
+from src.brain.reply_generator import ReplyGenerator
+from src.sender.email_sender import EmailSender
+from src.notifier.bot_handler import EmailBotHandler
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
 
@@ -192,17 +196,8 @@ async def run_email_collector_cycle(
                 and not e.get("is_expired")
             ]
             for email_item in academic_items:
-                sender = email_item.get("sender_email", "")
-                subject = email_item.get("subject", "Без темы")
-                cat_label = "Студент" if email_item.get("category") == "guap_student" else "Кафедра/ГУАП"
-                snippet = email_item.get("snippet", "")[:150]
-                msg_text = (
-                    f"📬 *Новое письмо ({cat_label})*\n"
-                    f"👤 *От:* `{sender}`\n"
-                    f"📌 *Тема:* {subject}\n"
-                    f"💬 _{snippet}..."
-                )
-                await notifier.send_message(msg_text)
+                logger.info("Sending actionable email card for email id=%s (%s)", email_item.get("id"), email_item.get("subject"))
+                await notifier.send_actionable_email_card(email_item)
     except Exception as e:
         logger.exception("Error during email collection cycle: %s", e)
 
@@ -276,12 +271,32 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     parser.add_argument("--brief", action="store_true", help="Force send morning brief and exit")
+    parser.add_argument("--send-email-cards", action="store_true", help="Send cards for all current actionable emails")
+    parser.add_argument("--send-email-id", type=int, help="Send card for a specific email by ID")
     args = parser.parse_args()
 
     logger.info("Assistant Worker starting up...")
     db = Database(config.SQLITE_DB_PATH)
     await db.init_db()
     logger.info("Database initialized at %s", config.SQLITE_DB_PATH)
+
+    bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+    dp = Dispatcher()
+    notifier = TelegramNotifier(
+        bot_token=config.TELEGRAM_BOT_TOKEN,
+        user_id=config.TELEGRAM_USER_ID,
+        bot=bot,
+    )
+    reply_generator = ReplyGenerator()
+    email_sender = EmailSender()
+    bot_handler = EmailBotHandler(
+        db=db,
+        reply_generator=reply_generator,
+        email_sender=email_sender,
+        notifier=notifier,
+        allowed_user_id=config.TELEGRAM_USER_ID,
+    )
+    dp.include_router(bot_handler.router)
 
     schedule_parser = ScheduleParser(
         base_url=config.SCHEDULE_URL,
@@ -291,10 +306,6 @@ async def main() -> None:
         credentials_file=config.GOOGLE_CREDENTIALS_FILE,
         token_file=config.GOOGLE_TOKEN_FILE,
         timezone_str=config.TZ,
-    )
-    notifier = TelegramNotifier(
-        bot_token=config.TELEGRAM_BOT_TOKEN,
-        user_id=config.TELEGRAM_USER_ID,
     )
     telegram_collector = TelegramCollector(db=db)
     email_collector = EmailCollector(db=db)
@@ -308,9 +319,34 @@ async def main() -> None:
         config={"hour": 8, "minute": 0},
     )
 
+    if args.send_email_id:
+        logger.info("Sending card for email ID=%d...", args.send_email_id)
+        email_item = await db.get_email_by_id(args.send_email_id)
+        if email_item:
+            await notifier.send_actionable_email_card(email_item)
+            logger.info("Card sent for email ID=%d", args.send_email_id)
+        else:
+            logger.error("Email ID=%d not found in database", args.send_email_id)
+        await bot.session.close()
+        await db.close()
+        return
+
+    if args.send_email_cards:
+        logger.info("Sending cards for all actionable emails...")
+        actionable = await db.list_actionable_emails(limit=10)
+        for it in actionable:
+            full_item = await db.get_email_by_id(it["id"])
+            if full_item:
+                await notifier.send_actionable_email_card(full_item)
+        logger.info("Sent %d actionable email card(s).", len(actionable))
+        await bot.session.close()
+        await db.close()
+        return
+
     if args.brief:
         logger.info("Force sending morning brief via --brief flag...")
         await run_morning_brief_cycle(db, schedule_parser, summarizer, notifier, force=True)
+        await bot.session.close()
         await telegram_collector.disconnect()
         await db.close()
         return
@@ -327,6 +363,7 @@ async def main() -> None:
 
     if args.once:
         logger.info("Executed single cycle (--once). Shutting down.")
+        await bot.session.close()
         await telegram_collector.disconnect()
         await db.close()
         return
@@ -371,8 +408,14 @@ async def main() -> None:
     )
     scheduler.start()
     logger.info(
-        "Scheduler started. Morning brief at 08:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min. Press Ctrl+C to terminate.",
+        "Scheduler started. Morning brief at 08:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min.",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
+    )
+
+    # Start Telegram Bot polling in background task for interactive callbacks
+    logger.info("Starting Telegram Bot dispatcher polling for interactive email callbacks...")
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     )
 
     stop_event = asyncio.Event()
@@ -387,8 +430,15 @@ async def main() -> None:
     try:
         await stop_event.wait()
     finally:
-        logger.info("Gracefully shutting down scheduler, userbot and database...")
+        logger.info("Gracefully shutting down scheduler, bot polling, userbot and database...")
         scheduler.shutdown(wait=False)
+        if polling_task and not polling_task.done():
+            polling_task.cancel()
+            try:
+                await polling_task
+            except asyncio.CancelledError:
+                pass
+        await bot.session.close()
         await telegram_collector.disconnect()
         await db.close()
         logger.info("Shutdown complete.")

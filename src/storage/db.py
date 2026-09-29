@@ -131,6 +131,15 @@ class Database:
                     last_reply_at TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS email_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email_id INTEGER NOT NULL REFERENCES email_messages(id),
+                    draft_text TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -140,6 +149,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_email_sender ON email_messages(sender_email);
                 CREATE INDEX IF NOT EXISTS idx_email_answered ON email_messages(is_answered);
                 CREATE INDEX IF NOT EXISTS idx_email_requires_action ON email_messages(requires_action);
+                CREATE INDEX IF NOT EXISTS idx_email_drafts_email_id ON email_drafts(email_id);
                 """
             )
             await conn.commit()
@@ -800,6 +810,136 @@ class Database:
             cursor = await conn.execute(query, tuple(params))
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def get_email_by_id(self, email_id: int) -> dict[str, Any] | None:
+        """Fetch a single email message by primary key id."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM email_messages WHERE id = ? LIMIT 1;",
+                (email_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_thread_messages(self, thread_id: str) -> list[dict[str, Any]]:
+        """Fetch all messages belonging to a thread in chronological order."""
+        if not thread_id:
+            return []
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, message_id, account_id, sender_name, sender_email, subject,
+                       date_sent, snippet, body_plain, is_answered, category
+                FROM email_messages
+                WHERE thread_id = ?
+                ORDER BY date_sent ASC;
+                """,
+                (thread_id,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def mark_email_as_answered(
+        self,
+        email_id: int,
+        reply_message_id: str | None = None,
+        user_email: str | None = None,
+    ) -> bool:
+        """Mark email as answered, recording timestamp and updating thread status."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            # 1. Update email_messages
+            cursor = await conn.execute(
+                """
+                UPDATE email_messages
+                SET is_answered = 1,
+                    requires_action = 0,
+                    replied_at = ?,
+                    reply_message_id = COALESCE(?, reply_message_id)
+                WHERE id = ?;
+                """,
+                (now_iso, reply_message_id, email_id),
+            )
+            updated = cursor.rowcount > 0
+
+            # 2. Get thread_id for this email
+            cursor = await conn.execute(
+                "SELECT thread_id FROM email_messages WHERE id = ?;",
+                (email_id,),
+            )
+            row = await cursor.fetchone()
+            if row and row["thread_id"]:
+                thread_id = row["thread_id"]
+                await conn.execute(
+                    """
+                    UPDATE email_threads
+                    SET status = 'answered',
+                        last_sender_email = COALESCE(?, last_sender_email),
+                        last_reply_at = ?
+                    WHERE thread_id = ?;
+                    """,
+                    (user_email, now_iso, thread_id),
+                )
+            await conn.commit()
+            return updated
+
+    async def create_email_draft(self, email_id: int, draft_text: str) -> int:
+        """Save a new draft reply to the database."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO email_drafts (email_id, draft_text, status, created_at, updated_at)
+                VALUES (?, ?, 'pending', ?, ?);
+                """,
+                (email_id, draft_text, now_iso, now_iso),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_email_draft(self, draft_id: int) -> dict[str, Any] | None:
+        """Retrieve draft by ID including linked email info."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT d.id as draft_id, d.email_id, d.draft_text, d.status as draft_status,
+                       d.created_at as draft_created_at, d.updated_at as draft_updated_at,
+                       m.message_id, m.account_id, m.sender_name, m.sender_email, m.subject,
+                       m.in_reply_to, m.references_text, m.thread_id, m.body_plain, m.category
+                FROM email_drafts d
+                JOIN email_messages m ON d.email_id = m.id
+                WHERE d.id = ? LIMIT 1;
+                """,
+                (draft_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_email_draft(
+        self,
+        draft_id: int,
+        draft_text: str | None = None,
+        status: str | None = None,
+    ) -> bool:
+        """Update draft reply text and/or status."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        fields = ["updated_at = ?"]
+        params: list[Any] = [now_iso]
+
+        if draft_text is not None:
+            fields.append("draft_text = ?")
+            params.append(draft_text)
+        if status is not None:
+            fields.append("status = ?")
+            params.append(status)
+
+        params.append(draft_id)
+        query = f"UPDATE email_drafts SET {', '.join(fields)} WHERE id = ?;"
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(query, tuple(params))
+            await conn.commit()
+            return cursor.rowcount > 0
 
 
 

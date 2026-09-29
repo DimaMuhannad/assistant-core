@@ -2,12 +2,62 @@ import logging
 import re
 from typing import Any
 from aiogram import Bot
-from aiogram.types import MessageEntity
+from aiogram.types import MessageEntity, InlineKeyboardMarkup, InlineKeyboardButton
 import telegramify_markdown
 
 from src.models.schedule import ScheduleDiff
 
 logger = logging.getLogger(__name__)
+
+
+def build_email_action_keyboard(email_id: int) -> InlineKeyboardMarkup:
+    """Builds inline action keyboard under an incoming email."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💡 Предложить ответ",
+                    callback_data=f"em:sug:{email_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Написать ответ",
+                    callback_data=f"em:wr:{email_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📜 Посмотреть всю переписку",
+                    callback_data=f"em:th:{email_id}",
+                )
+            ],
+        ]
+    )
+
+
+def build_draft_action_keyboard(draft_id: int) -> InlineKeyboardMarkup:
+    """Builds confirmation buttons under a generated or composed reply draft."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Отправить",
+                    callback_data=f"dr:snd:{draft_id}",
+                ),
+                InlineKeyboardButton(
+                    text="✏️ Исправить",
+                    callback_data=f"dr:edt:{draft_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отменить",
+                    callback_data=f"dr:cnc:{draft_id}",
+                )
+            ],
+        ]
+    )
 
 
 def format_and_split_for_telegram(raw_markdown: str) -> list[tuple[str, list[MessageEntity]]]:
@@ -50,41 +100,129 @@ def format_and_split_for_telegram(raw_markdown: str) -> list[tuple[str, list[Mes
 class TelegramNotifier:
     """Sends schedule update alerts and executive digests to Telegram with specialized academic formatting."""
 
-    def __init__(self, bot_token: str | None, user_id: str | int | None):
+    def __init__(self, bot_token: str | None, user_id: str | int | None, bot: Bot | None = None):
         self.bot_token = bot_token
         self.user_id = user_id
+        self._shared_bot = bot
         self.is_configured = bool(
-            bot_token and user_id and not bot_token.startswith("123456789:ABC")
+            (bot_token or bot) and user_id and not (bot_token and bot_token.startswith("123456789:ABC"))
         )
 
-    async def _send_rich_message(self, text_markdown: str) -> bool:
+    async def _send_rich_message(
+        self,
+        text_markdown: str,
+        reply_markup: Any | None = None,
+        chat_id: str | int | None = None,
+    ) -> bool:
         """Sends markdown formatted message using native Telegram entities with clean text fallback."""
         if not self.is_configured:
             return True
 
-        bot = Bot(token=self.bot_token)
+        target_chat = chat_id or self.user_id
+        should_close_bot = False
+        if self._shared_bot:
+            bot = self._shared_bot
+        else:
+            bot = Bot(token=self.bot_token)
+            should_close_bot = True
+
         try:
             chunks = format_and_split_for_telegram(text_markdown)
-            for chunk_text, aio_entities in chunks:
+            num_chunks = len(chunks)
+            for idx, (chunk_text, aio_entities) in enumerate(chunks):
                 if chunk_text.strip():
+                    is_last = (idx == num_chunks - 1)
                     await bot.send_message(
-                        chat_id=self.user_id,
+                        chat_id=target_chat,
                         text=chunk_text,
                         entities=aio_entities,
+                        reply_markup=reply_markup if is_last else None,
                     )
             return True
         except Exception as e:
             logger.warning("Native entities dispatch failed (%s), falling back to clean text", e)
             clean = re.sub(r"\[([^\]]+)\]\(file:///[^\)]+\)", r"\1", text_markdown)
             clean = re.sub(r"^[ \t]*[-*_—─]{3,}[ \t]*$", "", clean, flags=re.MULTILINE)
-            await bot.send_message(chat_id=self.user_id, text=clean[:3900])
+            await bot.send_message(
+                chat_id=target_chat,
+                text=clean[:3900],
+                reply_markup=reply_markup,
+            )
             return True
         finally:
-            await bot.session.close()
+            if should_close_bot:
+                await bot.session.close()
 
-    async def send_message(self, text_markdown: str) -> bool:
+    async def send_message(
+        self,
+        text_markdown: str,
+        reply_markup: Any | None = None,
+        chat_id: str | int | None = None,
+    ) -> bool:
         """Send formatted markdown message to user."""
-        return await self._send_rich_message(text_markdown)
+        return await self._send_rich_message(text_markdown, reply_markup=reply_markup, chat_id=chat_id)
+
+    async def send_actionable_email_card(
+        self,
+        email_data: dict[str, Any],
+        chat_id: str | int | None = None,
+    ) -> bool:
+        """Sends a card with FULL email text and interactive action buttons."""
+        email_id = email_data.get("id")
+        sender_name = email_data.get("sender_name") or ""
+        sender_email = email_data.get("sender_email") or ""
+        subject = email_data.get("subject") or "Без темы"
+        date_sent = email_data.get("date_sent") or ""
+        if hasattr(date_sent, "strftime"):
+            date_str = date_sent.strftime("%d.%m.%Y %H:%M")
+        else:
+            date_str = str(date_sent)[:16].replace("T", " ")
+
+        category = email_data.get("category", "guap_student")
+        cat_label = "Студент ГУАП" if category == "guap_student" else "Кафедра/Университет"
+        sender_display = f"**{sender_name}** (`{sender_email}`)" if sender_name else f"`{sender_email}`"
+
+        body = (email_data.get("body_plain") or email_data.get("snippet") or "").strip()
+        if not body:
+            body = "Текст письма отсутствует."
+
+        message_text = (
+            f"📬 **Входящее письмо ({cat_label})**\n\n"
+            f"👤 **От:** {sender_display}\n"
+            f"📌 **Тема:** {subject}\n"
+            f"🕒 **Дата:** {date_str}\n\n"
+            f"📝 **Текст письма:**\n"
+            f"{body}"
+        )
+
+        keyboard = build_email_action_keyboard(email_id) if email_id else None
+        return await self._send_rich_message(message_text, reply_markup=keyboard, chat_id=chat_id)
+
+    async def send_draft_reply_card(
+        self,
+        draft_data: dict[str, Any],
+        chat_id: str | int | None = None,
+    ) -> bool:
+        """Sends a card with proposed reply draft and confirmation buttons."""
+        draft_id = draft_data.get("draft_id") or draft_data.get("id")
+        sender_name = draft_data.get("sender_name") or ""
+        sender_email = draft_data.get("sender_email") or ""
+        subject = draft_data.get("subject") or ""
+        reply_subject = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+        draft_text = (draft_data.get("draft_text") or "").strip()
+
+        target_display = f"**{sender_name}** (`{sender_email}`)" if sender_name else f"`{sender_email}`"
+
+        message_text = (
+            f"💡 **Предложенный проект ответа**\n\n"
+            f"👤 **Кому:** {target_display}\n"
+            f"📌 **Тема:** {reply_subject}\n\n"
+            f"📝 **Текст ответа:**\n"
+            f"{draft_text}"
+        )
+
+        keyboard = build_draft_action_keyboard(draft_id) if draft_id else None
+        return await self._send_rich_message(message_text, reply_markup=keyboard, chat_id=chat_id)
 
     async def send_schedule_diff_alert(self, diff: ScheduleDiff, target_id: str) -> bool:
         """Send formatted alert when schedule changes are detected."""
