@@ -52,6 +52,32 @@ async def find_task(client: httpx.AsyncClient, query_or_id: str) -> dict[str, An
     return None
 
 
+async def create_issue(
+    title: str,
+    module: str = "LMS pro.guap.ru (Academic)",
+    priority: str = "P1 - High",
+    issue_type: str = "🚀 feat (Feature)",
+    status: str = "In Progress",
+) -> dict[str, Any]:
+    """Create a new issue in Notion Issues DB."""
+    async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
+        payload = {
+            "parent": {"database_id": ISSUES_DB_ID},
+            "properties": {
+                "Issue": {"title": [{"text": {"content": title}}]},
+                "Module": {"select": {"name": module}},
+                "Priority": {"select": {"name": priority}},
+                "Type": {"select": {"name": issue_type}},
+                "Status": {"status": {"name": status}},
+            },
+        }
+        resp = await client.post("/pages", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        logger.info("Created issue '%s' (ID: %s, Status: %s)", title, data["id"], status)
+        return data
+
+
 async def start_task(task_query: str) -> dict[str, Any]:
     """Transition task from 'Ready for Dev' / 'Backlog' to 'In Progress'."""
     async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
@@ -248,6 +274,14 @@ if __name__ == "__main__":
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--status", help="Filter by status (Backlog, Ready for Dev, In Progress, Done)")
 
+    # create
+    p_create = subparsers.add_parser("create")
+    p_create.add_argument("title", help="Issue title")
+    p_create.add_argument("--module", default="LMS pro.guap.ru (Academic)", help="Module name")
+    p_create.add_argument("--priority", default="P1 - High", help="Priority")
+    p_create.add_argument("--type", default="🚀 feat (Feature)", help="Type")
+    p_create.add_argument("--status", default="In Progress", help="Initial status")
+
     # start
     p_start = subparsers.add_parser("start")
     p_start.add_argument("task", help="Task title or ID")
@@ -274,6 +308,8 @@ if __name__ == "__main__":
         res = loop.run_until_complete(list_tasks(args.status))
         for t in res:
             print(f"[{t['status']:<12}] [{t['priority']:<11}] [{t['module']:<30}] {t['title']} ({t['commit']})")
+    elif args.cmd == "create":
+        loop.run_until_complete(create_issue(args.title, args.module, args.priority, args.type, args.status))
     elif args.cmd == "start":
         loop.run_until_complete(start_task(args.task))
     elif args.cmd == "finish":

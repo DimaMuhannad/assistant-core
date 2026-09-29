@@ -38,6 +38,8 @@ class GuapLmsClient:
                 "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
             ),
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": self.base_url,
+            "Referer": f"{self.base_url}/inside/professor/tasks",
         })
 
     @property
@@ -120,71 +122,100 @@ class GuapLmsClient:
                 raise ConnectionError("Failed to authenticate into pro.guap.ru.")
 
     def list_tasks(self, semester: int | str = 28) -> list[dict[str, Any]]:
-        """List instructor tasks for semester from pro.guap.ru."""
+        """List instructor tasks for semester from pro.guap.ru across all pages."""
         self.ensure_authenticated()
         url = f"{self.base_url}/inside/professor/tasks"
-        params = {"semesters": str(semester)} if semester else None
-
-        r = self.session.get(url, params=params, timeout=self.timeout)
-        soup = BeautifulSoup(r.text, "html.parser")
-        table = soup.find("table")
-        if not table:
-            return []
 
         tasks: list[dict[str, Any]] = []
-        for tr in table.find_all("tr"):
-            tds = tr.find_all("td")
-            if len(tds) < 8:
-                continue
+        page = 1
 
-            # Column 1: Ordernum
-            ordernum = tds[1].get_text(strip=True)
+        while True:
+            params = {"page": str(page)}
+            if semester:
+                params["semesters"] = str(semester)
 
-            # Column 2: Subject & Group
-            subject_txt = tds[2].get_text(" ", strip=True)
+            r = self.session.get(url, params=params, timeout=self.timeout)
+            soup = BeautifulSoup(r.text, "html.parser")
+            table = soup.find("table")
+            if not table:
+                break
 
-            # Column 3: Title & Link
-            link_tag = tds[3].find("a")
-            title = link_tag.get_text(strip=True) if link_tag else tds[3].get_text(strip=True)
-            href = link_tag.get("href") if link_tag else ""
-            task_id = None
-            if href:
-                m = re.search(r"/tasks/(\d+)/show", href)
-                if m:
-                    task_id = int(m.group(1))
+            page_tasks: list[dict[str, Any]] = []
+            for tr in table.find_all("tr"):
+                tds = tr.find_all("td")
+                if len(tds) < 8:
+                    continue
 
-            # Column 4: Type
-            task_type = tds[4].get_text(strip=True)
+                # Column 1: Ordernum
+                ordernum = tds[1].get_text(strip=True)
 
-            # Column 5: Deadline
-            deadline = tds[5].get_text(strip=True)
+                # Column 2: Subject & Group
+                subject_txt = tds[2].get_text(" ", strip=True)
 
-            # Column 6: Visibility to student
-            vis_td = tds[6]
-            is_public = False
-            eye_icon = vis_td.find("i")
-            if eye_icon:
-                classes = eye_icon.get("class", [])
-                title_attr = eye_icon.get("title", "")
-                if "text-success" in classes or "Виден" in title_attr:
-                    is_public = True
+                # Column 3: Title & Link
+                link_tag = tds[3].find("a")
+                title = link_tag.get_text(strip=True) if link_tag else tds[3].get_text(strip=True)
+                href = link_tag.get("href") if link_tag else ""
+                task_id = None
+                if href:
+                    m = re.search(r"/tasks/(\d+)/show", href)
+                    if m:
+                        task_id = int(m.group(1))
 
-            # Column 7: Updated
-            updated_at = tds[7].get_text(strip=True)
+                # Column 4: Type
+                task_type = tds[4].get_text(strip=True)
 
-            tasks.append({
-                "id": task_id,
-                "ordernum": ordernum,
-                "subject": subject_txt,
-                "title": title,
-                "task_type": task_type,
-                "deadline": deadline,
-                "is_public": is_public,
-                "updated_at": updated_at,
-                "link": href,
-            })
+                # Column 5: Deadline
+                deadline = tds[5].get_text(strip=True)
 
-        logger.info("Parsed %d tasks from pro.guap.ru for semester %s", len(tasks), semester)
+                # Column 6: Visibility to student
+                vis_td = tds[6]
+                is_public = False
+                eye_icon = vis_td.find("i")
+                if eye_icon:
+                    classes = eye_icon.get("class", [])
+                    title_attr = eye_icon.get("title", "")
+                    if "text-success" in classes or "Виден" in title_attr:
+                        is_public = True
+
+                # Column 7: Updated
+                updated_at = tds[7].get_text(strip=True)
+
+                page_tasks.append({
+                    "id": task_id,
+                    "ordernum": ordernum,
+                    "subject": subject_txt,
+                    "title": title,
+                    "task_type": task_type,
+                    "deadline": deadline,
+                    "is_public": is_public,
+                    "updated_at": updated_at,
+                    "link": href,
+                })
+
+            if not page_tasks:
+                break
+
+            tasks.extend(page_tasks)
+
+            # Check if there is a next page
+            pagination = soup.find(class_=lambda c: c and "pagination" in c)
+            if not pagination:
+                break
+
+            next_page_exists = False
+            for a in pagination.find_all("a"):
+                href = a.get("href", "")
+                if f"page={page + 1}" in href:
+                    next_page_exists = True
+                    break
+
+            if not next_page_exists:
+                break
+
+            page += 1
+
+        logger.info("Parsed %d tasks from pro.guap.ru for semester %s (across %d page(s))", len(tasks), semester, page)
         return tasks
 
     def get_task_details(self, task_id: int | str) -> dict[str, Any]:
@@ -269,10 +300,10 @@ class GuapLmsClient:
         group_ids: list[str | int],
         semester_id: str | int = 28,
         task_type_id: str | int = 2,
-        description: str = "",
+        description: str = "Отчет по лабораторной работе (титульный лист, цель, измерения, расчет погрешностей, выводы).",
         markpoint: int = 10,
         ordernum: int = 1,
-        harddeadline: str = "2026-10-31",
+        harddeadline: str = "2026-12-31",
         is_public: bool = False,
         report_required: bool = True,
         extensions: list[str] | None = None,
@@ -330,7 +361,17 @@ class GuapLmsClient:
         }
 
         logger.info("Submitting task '%s' (is_public=%s) to pro.guap.ru...", name, is_public)
-        resp = self.session.post(action_url, data=data, files=files, timeout=self.timeout)
+        post_headers = {
+            "Origin": self.base_url,
+            "Referer": f"{self.base_url}/inside/professor/tasks/create",
+        }
+        resp = self.session.post(
+            action_url,
+            data=data,
+            files=files,
+            headers=post_headers,
+            timeout=self.timeout,
+        )
 
         created_id = None
         m = re.search(r"/tasks/(\d+)/show", resp.url)
@@ -345,6 +386,118 @@ class GuapLmsClient:
             "name": name,
             "is_public": is_public,
         }
+
+    def delete_task(self, task_id: int | str, semester_id: int | str = 28) -> bool:
+        """Delete task by ID from pro.guap.ru."""
+        self.ensure_authenticated()
+        # 1. Fetch remove confirmation page to obtain CSRF token
+        r_rem = self.session.get(
+            f"{self.base_url}/inside/professor/tasks/{task_id}/remove",
+            timeout=self.timeout,
+        )
+        if r_rem.status_code == 404:
+            logger.warning("Task %s already does not exist (404).", task_id)
+            return True
+
+        soup = BeautifulSoup(r_rem.text, "html.parser")
+        del_form = None
+        for f in soup.find_all("form"):
+            if "delete" in str(f.get("action")):
+                del_form = f
+                break
+
+        if not del_form:
+            logger.error("Could not find delete form for task %s", task_id)
+            return False
+
+        action_url = del_form.get("action")
+        if action_url.startswith("/"):
+            action_url = self.base_url + action_url
+
+        token_input = del_form.find("input", {"name": "token"})
+        if not token_input:
+            logger.error("Could not find CSRF token in delete form for task %s", task_id)
+            return False
+        token = token_input.get("value")
+
+        logger.info("Executing delete for task %s on %s...", task_id, action_url)
+        del_headers = {
+            "Origin": self.base_url,
+            "Referer": f"{self.base_url}/inside/professor/tasks/{task_id}/remove",
+        }
+        resp = self.session.post(action_url, data={"token": token}, headers=del_headers, timeout=self.timeout)
+        return resp.status_code == 200
+
+    def set_task_visibility(
+        self,
+        task_id: int | str,
+        is_public: bool,
+        semester_id: int | str = 28,
+    ) -> bool:
+        """Update visibility of task (publish or hide from students)."""
+        self.ensure_authenticated()
+        edit_url = f"{self.base_url}/inside/professor/tasks/{semester_id}/{task_id}/edit"
+        r_edit = self.session.get(edit_url, timeout=self.timeout)
+        if r_edit.status_code != 200:
+            logger.error("Failed to load edit page for task %s (status: %s)", task_id, r_edit.status_code)
+            return False
+
+        soup = BeautifulSoup(r_edit.text, "html.parser")
+        form = soup.find("form", action=lambda a: a and ("update" in str(a) or f"/tasks/{task_id}" in str(a)))
+        if not form:
+            logger.error("Could not find update form on %s", edit_url)
+            return False
+
+        action_url = form.get("action")
+        if action_url.startswith("/"):
+            action_url = self.base_url + action_url
+
+        data: dict[str, Any] = {}
+        for inp in form.find_all("input"):
+            name = inp.get("name")
+            val = inp.get("value", "")
+            inp_type = inp.get("type", "text")
+            if not name:
+                continue
+            if inp_type in ("checkbox", "radio"):
+                if inp.has_attr("checked"):
+                    data[name] = val or "on"
+            else:
+                data[name] = val
+
+        for ta in form.find_all("textarea"):
+            name = ta.get("name")
+            if name:
+                data[name] = ta.get_text()
+
+        for sel in form.find_all("select"):
+            name = sel.get("name")
+            if not name:
+                continue
+            selected_opts = [opt.get("value") for opt in sel.find_all("option", selected=True)]
+            if not selected_opts:
+                first_opt = sel.find("option")
+                if first_opt and first_opt.get("value"):
+                    selected_opts = [first_opt.get("value")]
+            if name.endswith("[]"):
+                data[name] = selected_opts
+            else:
+                data[name] = selected_opts[0] if selected_opts else ""
+
+        if is_public:
+            data["public"] = "on"
+        else:
+            data.pop("public", None)
+
+        files = {"file": ("", b"")}
+        headers = {
+            "Origin": self.base_url,
+            "Referer": edit_url,
+        }
+
+        logger.info("Setting visibility for task %s to public=%s...", task_id, is_public)
+        resp = self.session.post(action_url, data=data, files=files, headers=headers, timeout=self.timeout)
+        return resp.status_code == 200
 
     def download_student_report(self, download_path_or_id: str | int, dest_file: str | Path) -> Path:
         """Download student's submitted report file (PDF, docx, etc.) for AI analysis."""

@@ -146,7 +146,7 @@ def test_create_task_omits_public_flag_when_hidden():
 
     captured_data = {}
 
-    def fake_post(url, data, files, timeout):
+    def fake_post(url, data, files, headers=None, timeout=None):
         nonlocal captured_data
         captured_data = data
         return mock_post
@@ -167,3 +167,85 @@ def test_create_task_omits_public_flag_when_hidden():
     assert "public" not in captured_data
     assert captured_data["token"] == "mock_csrf_token_123"
     assert captured_data["subjects[]"] == ["3443405"]
+
+
+def test_delete_task_success():
+    client = GuapLmsClient(email="user@guap.ru", password="pass")
+
+    remove_html = """
+    <form action="/inside/professor/tasks/101/delete?semesters=28&_method=DELETE" method="post">
+      <input type="hidden" name="token" value="del_token_456">
+      <button type="submit">Удалить</button>
+    </form>
+    """
+    mock_get = MagicMock()
+    mock_get.text = remove_html
+    mock_get.status_code = 200
+
+    mock_post = MagicMock()
+    mock_post.status_code = 200
+
+    with patch.object(client, "ensure_authenticated"):
+        with patch.object(client.session, "get", return_value=mock_get):
+            with patch.object(client.session, "post", return_value=mock_post) as post_mock:
+                res = client.delete_task(101)
+
+    assert res is True
+    post_mock.assert_called_once_with(
+        "https://pro.guap.ru/inside/professor/tasks/101/delete?semesters=28&_method=DELETE",
+        data={"token": "del_token_456"},
+        headers={"Origin": "https://pro.guap.ru", "Referer": "https://pro.guap.ru/inside/professor/tasks/101/remove"},
+        timeout=client.timeout,
+    )
+
+
+def test_delete_task_handles_404():
+    client = GuapLmsClient(email="user@guap.ru", password="pass")
+
+    mock_get = MagicMock()
+    mock_get.status_code = 404
+
+    with patch.object(client, "ensure_authenticated"):
+        with patch.object(client.session, "get", return_value=mock_get):
+            res = client.delete_task(9999)
+
+    assert res is True
+
+
+def test_set_task_visibility():
+    client = GuapLmsClient(email="user@guap.ru", password="pass")
+
+    edit_html = """
+    <form action="/inside/professor/tasks/101?semesters=28&_method=PUT" method="post">
+      <input type="hidden" name="token" value="csrf_edit_123">
+      <input type="text" name="name" value="Попов: Лабораторная работа №1">
+      <input type="checkbox" name="public" value="on">
+      <textarea name="description">Отчет</textarea>
+    </form>
+    """
+    mock_get = MagicMock()
+    mock_get.text = edit_html
+    mock_get.status_code = 200
+
+    captured_data = {}
+
+    def fake_post(url, data, files, headers=None, timeout=None):
+        nonlocal captured_data
+        captured_data = data
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        return mock_resp
+
+    with patch.object(client, "ensure_authenticated"):
+        with patch.object(client.session, "get", return_value=mock_get):
+            with patch.object(client.session, "post", side_effect=fake_post):
+                # 1. Hide task
+                res_hide = client.set_task_visibility(101, is_public=False)
+                assert res_hide is True
+                assert "public" not in captured_data
+
+                # 2. Publish task
+                res_pub = client.set_task_visibility(101, is_public=True)
+                assert res_pub is True
+                assert captured_data["public"] == "on"
+                assert captured_data["name"] == "Попов: Лабораторная работа №1"
