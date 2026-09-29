@@ -207,6 +207,22 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS lms_submissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id INTEGER UNIQUE,
+                    task_id INTEGER NOT NULL,
+                    task_title TEXT NOT NULL,
+                    student_name TEXT NOT NULL,
+                    group_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    upload_date TEXT,
+                    check_date TEXT,
+                    download_url TEXT,
+                    local_path TEXT,
+                    notified_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -226,6 +242,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_timesheet_start ON timesheet_records(start_time);
                 CREATE INDEX IF NOT EXISTS idx_timesheet_project ON timesheet_records(project_name);
                 CREATE INDEX IF NOT EXISTS idx_timesheet_conflict ON timesheet_records(has_guap_conflict);
+                CREATE INDEX IF NOT EXISTS idx_lms_sub_report ON lms_submissions(report_id);
+                CREATE INDEX IF NOT EXISTS idx_lms_sub_task ON lms_submissions(task_id);
+                CREATE INDEX IF NOT EXISTS idx_lms_sub_notified ON lms_submissions(notified_at);
                 """
             )
             await conn.commit()
@@ -1678,6 +1697,77 @@ class Database:
                 (limit,),
             )
             return [dict(r) for r in await cursor.fetchall()]
+
+    # -------------------------------------------------------------
+    # LMS Student Submissions & Monitoring
+    # -------------------------------------------------------------
+
+    async def record_lms_submission(
+        self,
+        report_id: int,
+        task_id: int,
+        task_title: str,
+        student_name: str,
+        group_name: str,
+        status: str,
+        upload_date: str = "",
+        check_date: str = "",
+        download_url: str = "",
+        local_path: str = "",
+    ) -> bool:
+        """Records student report submission. Returns True if newly inserted, False if already exists."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT OR IGNORE INTO lms_submissions (
+                    report_id, task_id, task_title, student_name, group_name,
+                    status, upload_date, check_date, download_url, local_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report_id,
+                    task_id,
+                    task_title,
+                    student_name,
+                    group_name,
+                    status,
+                    upload_date,
+                    check_date,
+                    download_url,
+                    local_path,
+                ),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def get_unnotified_lms_submissions(self) -> list[dict[str, Any]]:
+        """Fetch submissions that have not been notified to user yet."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM lms_submissions WHERE notified_at IS NULL ORDER BY id ASC;"
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def mark_lms_submission_notified(self, report_id: int) -> None:
+        """Mark submission as notified to user."""
+        async with self.connection() as conn:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await conn.execute(
+                "UPDATE lms_submissions SET notified_at = ? WHERE report_id = ?;",
+                (now_iso, report_id),
+            )
+            await conn.commit()
+
+    async def list_lms_submissions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List recent submissions."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM lms_submissions ORDER BY id DESC LIMIT ?;",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 

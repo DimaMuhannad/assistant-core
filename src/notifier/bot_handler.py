@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import re
 from datetime import datetime, timezone, date
 from typing import Any
 
@@ -15,10 +17,13 @@ from src.storage.db import Database
 from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
 from src.sender.email_sender import EmailSender
+from src.connectors.guap_lms.client import GuapLmsClient
 from src.notifier.telegram import (
     TelegramNotifier,
     build_email_action_keyboard,
     build_draft_action_keyboard,
+    build_lms_tasks_keyboard,
+    build_lms_pub_hide_keyboard,
     format_and_split_for_telegram,
 )
 
@@ -26,23 +31,25 @@ logger = logging.getLogger(__name__)
 
 
 class EmailBotHandler:
-    """Handles Telegram inline callbacks, message cleanup, and interactive replies for email workflow."""
+    """Handles Telegram inline callbacks, message cleanup, and interactive replies for email and LMS workflow."""
 
     def __init__(
         self,
         db: Database,
-        reply_generator: ReplyGenerator,
-        email_sender: EmailSender,
-        notifier: TelegramNotifier,
+        reply_generator: ReplyGenerator | None = None,
+        email_sender: EmailSender | None = None,
+        notifier: TelegramNotifier | None = None,
         bot: Bot | None = None,
         allowed_user_id: int | str | None = None,
         summarizer: GeminiSummarizer | None = None,
+        lms_client: GuapLmsClient | None = None,
     ):
         self.db = db
-        self.reply_generator = reply_generator
-        self.email_sender = email_sender
+        self.reply_generator = reply_generator or ReplyGenerator()
+        self.email_sender = email_sender or EmailSender()
         self.notifier = notifier
         self.allowed_user_id = int(allowed_user_id) if allowed_user_id else None
+        self.lms_client = lms_client or GuapLmsClient()
         self.bot = bot or getattr(notifier, "_shared_bot", None)
         if not self.bot:
             token = getattr(notifier, "bot_token", "")
@@ -98,6 +105,14 @@ class EmailBotHandler:
         self.router.message(Command("timesheet", "tydex", "hours"))(self.handle_cmd_timesheet)
         self.router.message(Command("cancel", "cansel"))(self.handle_cmd_cancel)
 
+        # LMS Commands
+        self.router.message(Command("tasks", "lms", "labs"))(self.handle_cmd_lms_tasks)
+        self.router.message(Command("reports", "submissions"))(self.handle_cmd_lms_reports)
+        self.router.message(Command("lms_publish"))(self.handle_cmd_lms_publish)
+        self.router.message(Command("lms_hide"))(self.handle_cmd_lms_hide)
+        self.router.message(Command("lms_create"))(self.handle_cmd_lms_create)
+        self.router.message(Command("lms_delete"))(self.handle_cmd_lms_delete)
+
         # Callbacks under email card
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
         self.router.callback_query(F.data.startswith("em:wr:"))(self.cb_write_reply)
@@ -111,6 +126,17 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("dr:edt:"))(self.cb_edit_draft)
         self.router.callback_query(F.data.startswith("dr:cnc:"))(self.cb_cancel_draft)
         self.router.callback_query(F.data == "dr:cnc_input")(self.cb_cancel_input)
+
+        # Callbacks under LMS tasks
+        self.router.callback_query(F.data == "lms:pub_menu")(self.cb_lms_pub_menu)
+        self.router.callback_query(F.data.startswith("lms:pub:"))(self.cb_lms_pub_action)
+        self.router.callback_query(F.data == "lms:hide_menu")(self.cb_lms_hide_menu)
+        self.router.callback_query(F.data.startswith("lms:hide:"))(self.cb_lms_hide_action)
+        self.router.callback_query(F.data == "lms:reports")(self.cb_lms_reports)
+        self.router.callback_query(F.data == "lms:refresh")(self.cb_lms_refresh)
+        self.router.callback_query(F.data == "lms:del_prompt")(self.cb_lms_del_prompt)
+        self.router.callback_query(F.data.startswith("lms:del_confirm:"))(self.cb_lms_del_confirm)
+        self.router.callback_query(F.data == "lms:create_menu")(self.cb_lms_create_menu)
 
         # Interactive text messages (for edit or manual draft entry)
         self.router.message(F.text)(self.handle_user_text)
@@ -126,14 +152,18 @@ class EmailBotHandler:
             return
         text = (
             "🤖 **Академический ассистент ГУАП (Кафедра физики)**\n\n"
-            "Сервис 24/7 ведет мониторинг расписания, почты и рабочих чатов.\n\n"
+            "Сервис 24/7 ведет мониторинг расписания, почты, задач и личного кабинета pro.guap.ru.\n\n"
             "Доступные команды:\n"
+            "• `/tasks` — управление заданиями pro.guap.ru (публикация, скрытие, создание, удаление)\n"
+            "• `/reports` — сданные студенческие отчеты, ожидающие проверки\n"
+            "• `/lms_publish <№|id>` — опубликовать лабораторную работу для всех групп (или по ID)\n"
+            "• `/lms_hide <№|id>` — скрыть лабораторную работу от студентов\n"
+            "• `/lms_create <группа> <название>` — создать новое задание\n"
+            "• `/lms_delete <id>` — удалить задание по ID\n"
             "• `/emails` — показать неотвеченные письма студентов и кафедры\n"
             "• `/timesheet` — учет часов в «Тидекс» и наложения на пары ГУАП\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
-            "• `/help` — справка по возможностям бота\n\n"
-            "После отправки ответа на письмо все карточки и служебные сообщения автоматически удаляются из чата, "
-            "а статистика ответов сохраняется в вечернем дайджесте."
+            "• `/help` — справка по возможностям бота"
         )
         await self.notifier.send_message(text, chat_id=message.chat.id)
 
@@ -505,6 +535,25 @@ class EmailBotHandler:
 
         state = self.waiting_input.pop(user_id, None)
         if not state:
+            user_msg = message.text.strip().lower()
+            if user_msg in ("задания", "список заданий", "покажи задания", "пары", "лабы", "лабораторные"):
+                await self.handle_cmd_lms_tasks(message)
+                return
+            if user_msg in ("отчеты", "проверь отчеты", "сданные отчеты", "работы", "сданные работы"):
+                await self.handle_cmd_lms_reports(message)
+                return
+            m_pub = re.match(r"^опубликуй\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg)
+            if m_pub:
+                target = m_pub.group(1)
+                target_code = "all" if target == "все" else target
+                await self._execute_visibility_change(message, target_code, is_public=True)
+                return
+            m_hide = re.match(r"^скрой\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg)
+            if m_hide:
+                target = m_hide.group(1)
+                target_code = "all" if target == "все" else target
+                await self._execute_visibility_change(message, target_code, is_public=False)
+                return
             return  # Normal text message unrelated to email draft prompt
 
         # 1. Clean up user's own typed message to keep chat spotless
@@ -523,6 +572,35 @@ class EmailBotHandler:
 
         action = state.get("action")
         email_id = state.get("email_id")
+
+        if action == "lms_create":
+            parts = message.text.strip().split(maxsplit=1)
+            if len(parts) < 2:
+                await message.answer("⚠️ Неверный формат. Укажите группу и название, например:\n`1632 Попов: Лабораторная работа №5`")
+                return
+            await self._create_task_from_params(message.chat.id, parts[0], parts[1])
+            return
+
+        if action == "lms_delete":
+            m = re.search(r"\d+", message.text)
+            if not m:
+                await message.answer("⚠️ Не удалось распознать ID задания. Отправьте числовой ID (например `3422`):")
+                return
+            task_id = int(m.group(0))
+            confirm_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text=f"🗑️ Да, удалить {task_id}", callback_data=f"lms:del_confirm:{task_id}"),
+                        InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input"),
+                    ]
+                ]
+            )
+            await message.answer(
+                f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с pro.guap.ru?**\n"
+                f"Это действие необратимо.",
+                reply_markup=confirm_kb,
+            )
+            return
 
         if action == "edit":
             draft_id = state.get("draft_id")
@@ -775,4 +853,429 @@ class EmailBotHandler:
             text_lines.append("✅ Все смены согласованы без наложений на пары.")
 
         await callback.message.answer("\n".join(text_lines))
+
+    # -------------------------------------------------------------
+    # LMS (pro.guap.ru) Management & Monitoring Methods
+    # -------------------------------------------------------------
+
+    def _format_lms_tasks_overview(self, tasks: list[dict[str, Any]]) -> str:
+        """Format an overview of LMS lab assignments grouped by study group."""
+        if not tasks:
+            return "📋 **Задания pro.guap.ru:**\n\nЗаданий на текущий семестр не найдено."
+
+        total_count = len(tasks)
+        public_count = sum(1 for t in tasks if t.get("is_public"))
+        hidden_count = total_count - public_count
+
+        lines = [
+            "📋 **Задания кафедры физики (pro.guap.ru)**\n",
+            f"• Всего заданий в ЛК: **{total_count}**",
+            f"• Опубликовано (видно студентам): **{public_count}** 👁️",
+            f"• Скрыто (в черновиках): **{hidden_count}** 🔒\n",
+            "**Статус по группам:**",
+        ]
+
+        by_group: dict[str, list[dict[str, Any]]] = {}
+        for t in tasks:
+            subj_group = t.get("subject", "Общие")
+            grp_match = re.search(r"\b([МM]?\d{3,4}[А-Яа-яA-Za-z]*)\b", subj_group)
+            grp_name = grp_match.group(1) if grp_match else subj_group[:15]
+            by_group.setdefault(grp_name, []).append(t)
+
+        for grp, grp_tasks in sorted(by_group.items()):
+            task_status_parts = []
+            grp_tasks_sorted = sorted(grp_tasks, key=lambda x: str(x.get("title", "")))
+            for gt in grp_tasks_sorted:
+                t_title = gt.get("title", "")
+                lab_m = re.search(r"№\s*(\d+)|Лабораторная\s+работа\s*№?\s*(\d+)", t_title, re.I)
+                num = lab_m.group(1) or lab_m.group(2) if lab_m else gt.get("ordernum", "?")
+                icon = "👁️" if gt.get("is_public") else "🔒"
+                task_status_parts.append(f"{icon} №{num} (`{gt.get('id')}`)")
+            lines.append(f"• **Гр. {grp}:** " + ", ".join(task_status_parts))
+
+        lines.append("\n💡 *Используйте кнопки ниже для управления видимостью, создания/удаления или проверки отчетов.*")
+        return "\n".join(lines)
+
+    async def _execute_visibility_change(
+        self,
+        message_or_query: Message | CallbackQuery,
+        target_code: str,
+        is_public: bool,
+    ) -> None:
+        """Executes publishing or hiding lab assignments on pro.guap.ru."""
+        action_verb = "Публикую" if is_public else "Скрываю"
+        past_verb = "опубликовано" if is_public else "скрыто"
+        icon = "👁️" if is_public else "🔒"
+
+        is_cb = isinstance(message_or_query, CallbackQuery)
+        if is_cb:
+            await message_or_query.answer(f"{action_verb}...")
+            send_target = message_or_query.message
+        else:
+            send_target = message_or_query
+
+        status_msg = await send_target.answer(f"⏳ {action_verb} задания на pro.guap.ru (цель: `{target_code}`)...")
+
+        try:
+            tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
+            active_tasks = popov_tasks if popov_tasks else tasks
+
+            if target_code == "all":
+                target_tasks = active_tasks
+            elif target_code.isdigit() and len(target_code) <= 2:
+                target_tasks = [
+                    t for t in active_tasks
+                    if f"№{target_code}" in t.get("title", "") or f"№ {target_code}" in t.get("title", "")
+                ]
+            else:
+                target_tasks = [t for t in tasks if str(t.get("id")) == str(target_code)]
+
+            if not target_tasks:
+                await status_msg.edit_text(f"⚠️ Не найдены задания, соответствующие критерию `{target_code}`.")
+                return
+
+            updated_count = 0
+            already_count = 0
+            for t in target_tasks:
+                if t.get("is_public") == is_public:
+                    already_count += 1
+                    continue
+                ok = await asyncio.to_thread(self.lms_client.set_task_visibility, t["id"], is_public)
+                if ok:
+                    updated_count += 1
+
+            result_lines = [
+                f"{icon} **Результат изменения видимости:**\n",
+                f"• Обновлено заданий: **{updated_count}** (статус: {past_verb})",
+            ]
+            if already_count > 0:
+                result_lines.append(f"• Уже находились в этом статусе: **{already_count}**")
+            result_lines.append(f"• Всего проверено заданий: **{len(target_tasks)}**")
+
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="📋 К списку заданий", callback_data="lms:refresh")]
+                ]
+            )
+            await status_msg.edit_text("\n".join(result_lines), reply_markup=kb)
+
+        except Exception as e:
+            logger.exception("Error changing visibility: %s", e)
+            await status_msg.edit_text(f"⚠️ Ошибка при изменении видимости: {e}")
+
+    async def _create_task_from_params(self, chat_id: int, group_name: str, task_title: str) -> None:
+        """Helper to create a task given group name and title."""
+        status_msg = await self.bot.send_message(chat_id, f"⏳ Создаю задание `{task_title}` для гр. `{group_name}`...")
+        try:
+            disciplines = await asyncio.to_thread(self.lms_client.get_disciplines)
+            matched_subj_id = None
+            matched_group_id = None
+            for disc in disciplines:
+                if disc.get("semester") != 28:
+                    continue
+                for g in disc.get("groups", []):
+                    if g.get("text", "").strip().lower() == group_name.strip().lower():
+                        matched_subj_id = disc.get("id")
+                        matched_group_id = g.get("id")
+                        break
+                if matched_subj_id:
+                    break
+
+            if not matched_subj_id or not matched_group_id:
+                await status_msg.edit_text(
+                    f"⚠️ Группа `{group_name}` не найдена среди ваших дисциплин на 28 семестр.\n"
+                    f"Доступные группы: 1632, 1538, 8626, М562, М553, М431К, М651Ксв, М531, М631К."
+                )
+                return
+
+            res = await asyncio.to_thread(
+                self.lms_client.create_task,
+                name=task_title,
+                subject_id=matched_subj_id,
+                group_ids=[matched_group_id],
+                semester_id=28,
+                is_public=False,
+            )
+            created_id = res.get("created_id")
+            if res.get("status") == "success" and created_id:
+                await status_msg.edit_text(
+                    f"✅ **Задание успешно создано!**\n\n"
+                    f"• ID: `{created_id}`\n"
+                    f"• Название: **{task_title}**\n"
+                    f"• Группа: **{group_name}**\n"
+                    f"• Статус: 🔒 Скрыто (черновик)\n\n"
+                    f"🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{created_id}/show)"
+                )
+            else:
+                await status_msg.edit_text(f"⚠️ Не удалось создать задание: статус {res.get('status_code')}")
+        except Exception as e:
+            logger.exception("Error creating LMS task: %s", e)
+            await status_msg.edit_text(f"⚠️ Ошибка создания задания: {e}")
+
+    async def handle_cmd_lms_tasks(self, message: Message) -> None:
+        """Handle /tasks command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        status_msg = await message.answer("⏳ Загружаю список заданий из pro.guap.ru...")
+        try:
+            tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
+            display_tasks = popov_tasks if popov_tasks else tasks
+
+            overview = self._format_lms_tasks_overview(display_tasks)
+            kb = build_lms_tasks_keyboard()
+            await status_msg.edit_text(overview, reply_markup=kb)
+        except Exception as e:
+            logger.exception("Error listing LMS tasks: %s", e)
+            await status_msg.edit_text(f"⚠️ Ошибка при загрузке заданий: {e}")
+
+    async def handle_cmd_lms_reports(self, message: Message) -> None:
+        """Handle /reports command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        status_msg = await message.answer("🔍 Проверяю сданные отчеты на pro.guap.ru...")
+        try:
+            submissions = await self.db.list_lms_submissions(limit=25)
+            if not submissions:
+                tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+                public_tasks = [t for t in tasks if t.get("is_public")]
+                for pt in public_tasks:
+                    details = await asyncio.to_thread(self.lms_client.get_task_details, pt["id"])
+                    for rep in details.get("reports", []):
+                        if rep.get("report_id"):
+                            await self.db.record_lms_submission(
+                                report_id=rep["report_id"],
+                                task_id=pt["id"],
+                                task_title=pt["title"],
+                                student_name=rep["student_name"],
+                                group_name=rep["group"],
+                                status=rep["status"],
+                                upload_date=rep.get("upload_date", ""),
+                                check_date=rep.get("check_date", ""),
+                                download_url=rep.get("download_url", ""),
+                            )
+                submissions = await self.db.list_lms_submissions(limit=25)
+
+            if not submissions:
+                await status_msg.edit_text(
+                    "📥 **Сданных студенческих отчетов пока нет.**\n\n"
+                    "Как только студенты загрузят первые работы, бот мгновенно уведомит вас в чате."
+                )
+                return
+
+            lines = [f"📥 **Сданные студенческие отчеты ({len(submissions)}):**\n"]
+            for s in submissions:
+                st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
+                lines.append(
+                    f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
+                    f"  📌 {s['task_title']}\n"
+                    f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
+                    f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                )
+            await status_msg.edit_text("\n".join(lines))
+        except Exception as e:
+            logger.exception("Error checking reports: %s", e)
+            await status_msg.edit_text(f"⚠️ Ошибка при проверке отчетов: {e}")
+
+    async def handle_cmd_lms_publish(self, message: Message) -> None:
+        """Handle /lms_publish command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        args = message.text.removeprefix("/lms_publish").strip().lower()
+        if not args:
+            kb = build_lms_pub_hide_keyboard("lms:pub:")
+            await message.answer("👁️ **Выберите, какие лабораторные работы опубликовать:**", reply_markup=kb)
+            return
+        target = "all" if args in ("all", "все") else args
+        await self._execute_visibility_change(message, target, is_public=True)
+
+    async def handle_cmd_lms_hide(self, message: Message) -> None:
+        """Handle /lms_hide command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        args = message.text.removeprefix("/lms_hide").strip().lower()
+        if not args:
+            kb = build_lms_pub_hide_keyboard("lms:hide:")
+            await message.answer("🔒 **Выберите, какие лабораторные работы скрыть (в черновик):**", reply_markup=kb)
+            return
+        target = "all" if args in ("all", "все") else args
+        await self._execute_visibility_change(message, target, is_public=False)
+
+    async def handle_cmd_lms_create(self, message: Message) -> None:
+        """Handle /lms_create command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        args_text = message.text.removeprefix("/lms_create").strip()
+        if not args_text:
+            cancel_kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
+            )
+            prompt_msg = await message.answer(
+                "➕ **Создание нового задания на pro.guap.ru**\n\n"
+                "Отправьте в чат сообщение в формате:\n"
+                "`<номер группы> <название задания>`\n\n"
+                "Пример:\n"
+                "`1632 Попов: Лабораторная работа №5`\n\n"
+                "_Задание будет создано как черновик (скрыто от студентов)._",
+                reply_markup=cancel_kb,
+            )
+            self.waiting_input[message.from_user.id] = {
+                "action": "lms_create",
+                "prompt_msg_id": prompt_msg.message_id,
+            }
+            return
+
+        parts = args_text.split(maxsplit=1)
+        if len(parts) < 2:
+            await message.answer("⚠️ Укажите группу и название задания, например:\n`/lms_create 1632 Попов: Лабораторная работа №5`")
+            return
+        await self._create_task_from_params(message.chat.id, parts[0], parts[1])
+
+    async def handle_cmd_lms_delete(self, message: Message) -> None:
+        """Handle /lms_delete command."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        args_text = message.text.removeprefix("/lms_delete").strip()
+        m = re.search(r"\d+", args_text)
+        if not m:
+            cancel_kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
+            )
+            prompt_msg = await message.answer(
+                "🗑️ Введите ID задания для удаления (например, `3422`):",
+                reply_markup=cancel_kb,
+            )
+            self.waiting_input[message.from_user.id] = {
+                "action": "lms_delete",
+                "prompt_msg_id": prompt_msg.message_id,
+            }
+            return
+
+        task_id = int(m.group(0))
+        confirm_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text=f"🗑️ Да, удалить {task_id}", callback_data=f"lms:del_confirm:{task_id}"),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input"),
+                ]
+            ]
+        )
+        await message.answer(
+            f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с pro.guap.ru?**\n"
+            f"Это действие необратимо.",
+            reply_markup=confirm_kb,
+        )
+
+    async def cb_lms_pub_menu(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer()
+        kb = build_lms_pub_hide_keyboard("lms:pub:")
+        await callback.message.edit_text(
+            "👁️ **Выберите, какие лабораторные работы опубликовать для студентов:**",
+            reply_markup=kb,
+        )
+
+    async def cb_lms_pub_action(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        target = callback.data.split(":")[-1]
+        await self._execute_visibility_change(callback, target, is_public=True)
+
+    async def cb_lms_hide_menu(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer()
+        kb = build_lms_pub_hide_keyboard("lms:hide:")
+        await callback.message.edit_text(
+            "🔒 **Выберите, какие лабораторные работы скрыть от студентов (черновик):**",
+            reply_markup=kb,
+        )
+
+    async def cb_lms_hide_action(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        target = callback.data.split(":")[-1]
+        await self._execute_visibility_change(callback, target, is_public=False)
+
+    async def cb_lms_reports(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer("Загружаю отчеты...")
+        await self.handle_cmd_lms_reports(callback.message)
+
+    async def cb_lms_refresh(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer("Обновляю список...")
+        try:
+            tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
+            display_tasks = popov_tasks if popov_tasks else tasks
+            overview = self._format_lms_tasks_overview(display_tasks)
+            kb = build_lms_tasks_keyboard()
+            await callback.message.edit_text(overview, reply_markup=kb)
+        except Exception as e:
+            await callback.message.answer(f"⚠️ Ошибка обновления: {e}")
+
+    async def cb_lms_del_prompt(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer()
+        cancel_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
+        )
+        prompt_msg = await callback.message.answer(
+            "🗑️ **Удаление задания:**\n\nОтправьте в чат **ID задания** (или команду `/lms_delete <id>`), которое нужно удалить:",
+            reply_markup=cancel_kb,
+        )
+        self.waiting_input[callback.from_user.id] = {
+            "action": "lms_delete",
+            "prompt_msg_id": prompt_msg.message_id,
+        }
+
+    async def cb_lms_del_confirm(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        try:
+            task_id = int(callback.data.split(":")[-1])
+        except (ValueError, IndexError):
+            await callback.answer("Неверный ID задания.")
+            return
+
+        await callback.answer("Удаляю задание...")
+        try:
+            ok = await asyncio.to_thread(self.lms_client.delete_task, task_id)
+            if ok:
+                await callback.message.edit_text(f"✅ Задание `{task_id}` успешно удалено из pro.guap.ru!")
+            else:
+                await callback.message.edit_text(f"⚠️ Не удалось удалить задание `{task_id}` (проверьте права или наличие в ЛК).")
+        except Exception as e:
+            logger.exception("Error deleting task %s: %s", task_id, e)
+            await callback.message.edit_text(f"⚠️ Ошибка при удалении задания: {e}")
+
+    async def cb_lms_create_menu(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer()
+        cancel_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
+        )
+        prompt_msg = await callback.message.answer(
+            "➕ **Создание нового задания на pro.guap.ru**\n\n"
+            "Отправьте в чат сообщение в формате:\n"
+            "`<номер группы> <название задания>`\n\n"
+            "Пример:\n"
+            "`1632 Попов: Лабораторная работа №5`\n\n"
+            "_Задание будет создано как черновик (скрыто от студентов)._",
+            reply_markup=cancel_kb,
+        )
+        self.waiting_input[callback.from_user.id] = {
+            "action": "lms_create",
+            "prompt_msg_id": prompt_msg.message_id,
+        }
+
 

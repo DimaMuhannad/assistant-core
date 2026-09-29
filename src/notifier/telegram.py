@@ -60,6 +60,48 @@ def build_draft_action_keyboard(draft_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def build_lms_tasks_keyboard() -> InlineKeyboardMarkup:
+    """Builds action keyboard for managing GUAP LMS assignments."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👁️ Опубликовать...", callback_data="lms:pub_menu"),
+                InlineKeyboardButton(text="🔒 Скрыть...", callback_data="lms:hide_menu"),
+            ],
+            [
+                InlineKeyboardButton(text="➕ Создать задание", callback_data="lms:create_menu"),
+                InlineKeyboardButton(text="🗑️ Удалить задание", callback_data="lms:del_prompt"),
+            ],
+            [
+                InlineKeyboardButton(text="📥 Сданные отчеты", callback_data="lms:reports"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="lms:refresh"),
+            ],
+        ]
+    )
+
+
+def build_lms_pub_hide_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
+    """Builds sub-menu for publishing or hiding specific lab assignments."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Лаб №1", callback_data=f"{action_prefix}1"),
+                InlineKeyboardButton(text="Лаб №2", callback_data=f"{action_prefix}2"),
+            ],
+            [
+                InlineKeyboardButton(text="Лаб №3", callback_data=f"{action_prefix}3"),
+                InlineKeyboardButton(text="Лаб №4", callback_data=f"{action_prefix}4"),
+            ],
+            [
+                InlineKeyboardButton(text="⚡ Все лабораторные", callback_data=f"{action_prefix}all"),
+            ],
+            [
+                InlineKeyboardButton(text="◀️ Назад к заданиям", callback_data="lms:refresh"),
+            ],
+        ]
+    )
+
+
 def format_and_split_for_telegram(raw_markdown: str) -> list[tuple[str, list[MessageEntity]]]:
     """Cleans markdown and converts to native Telegram entities without escape artifacts."""
     # 1. Clean local IDE file links: [file.py](file:///path/to/file.py) -> `file.py`

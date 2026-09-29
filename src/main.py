@@ -31,6 +31,7 @@ from src.brain.summarizer import GeminiSummarizer
 from src.brain.reply_generator import ReplyGenerator
 from src.sender.email_sender import EmailSender
 from src.notifier.bot_handler import EmailBotHandler
+from src.connectors.guap_lms.client import GuapLmsClient
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
 
@@ -372,6 +373,66 @@ async def run_evening_digest_cycle(
         logger.exception("Error during evening digest cycle: %s", e)
 
 
+async def run_lms_monitor_cycle(
+    db: Database,
+    lms_client: GuapLmsClient,
+    notifier: TelegramNotifier,
+) -> None:
+    """Monitors pro.guap.ru for new student report submissions."""
+    logger.info("Starting LMS submissions monitor cycle...")
+    try:
+        tasks = await asyncio.to_thread(lms_client.list_tasks, 28)
+        public_tasks = [t for t in tasks if t.get("is_public")]
+        logger.info("Found %d public LMS task(s) to monitor for student reports.", len(public_tasks))
+
+        for pt in public_tasks:
+            task_id = pt.get("id")
+            if not task_id:
+                continue
+            details = await asyncio.to_thread(lms_client.get_task_details, task_id)
+            for rep in details.get("reports", []):
+                rep_id = rep.get("report_id")
+                if not rep_id:
+                    continue
+                inserted = await db.record_lms_submission(
+                    report_id=rep_id,
+                    task_id=task_id,
+                    task_title=pt.get("title", ""),
+                    student_name=rep.get("student_name", "Студент"),
+                    group_name=rep.get("group", ""),
+                    status=rep.get("status", "Ожидает проверки"),
+                    upload_date=rep.get("upload_date", ""),
+                    check_date=rep.get("check_date", ""),
+                    download_url=rep.get("download_url", ""),
+                )
+                if inserted:
+                    logger.info(
+                        "Recorded new submission #%d from %s (task %s)",
+                        rep_id,
+                        rep.get("student_name"),
+                        task_id,
+                    )
+
+        # Send Telegram notifications for any unnotified submissions
+        unnotified = await db.get_unnotified_lms_submissions()
+        if unnotified:
+            logger.info("Sending notifications for %d unnotified LMS submission(s)...", len(unnotified))
+            for sub in unnotified:
+                text = (
+                    "📥 **Новый отчет по лабораторной работе!**\n\n"
+                    f"👤 **Студент:** {sub['student_name']} (гр. {sub['group_name']})\n"
+                    f"📌 **Задание:** {sub['task_title']}\n"
+                    f"📅 **Дата загрузки:** {sub.get('upload_date', '—')}\n"
+                    f"📊 **Статус:** {sub.get('status', 'Ожидает проверки')}\n\n"
+                    f"🔗 [Открыть задание в pro.guap.ru](https://pro.guap.ru/inside/professor/tasks/{sub['task_id']}/show)"
+                )
+                await notifier.send_message(text)
+                await db.mark_lms_submission_notified(sub["report_id"])
+
+    except Exception as e:
+        logger.exception("Error in LMS submissions monitor cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
@@ -396,6 +457,7 @@ async def main() -> None:
     reply_generator = ReplyGenerator()
     email_sender = EmailSender()
     summarizer = GeminiSummarizer()
+    lms_client = GuapLmsClient()
     bot_handler = EmailBotHandler(
         db=db,
         reply_generator=reply_generator,
@@ -404,6 +466,7 @@ async def main() -> None:
         bot=bot,
         allowed_user_id=config.TELEGRAM_USER_ID,
         summarizer=summarizer,
+        lms_client=lms_client,
     )
     dp.include_router(bot_handler.router)
 
@@ -484,6 +547,7 @@ async def main() -> None:
     await run_sentinel_cycle(db, schedule_parser, calendar_client, notifier)
     await run_telegram_collector_cycle(db, telegram_collector, notifier)
     await run_email_collector_cycle(db, email_collector, notifier)
+    await run_lms_monitor_cycle(db, lms_client, notifier)
 
     # If current time is between 08:00 and 12:00 MSK and today's brief was not sent, send it now
     now_local = datetime.now(ZoneInfo(config.TZ))
@@ -523,6 +587,15 @@ async def main() -> None:
         minutes=15,
         args=[db, email_collector, notifier],
         id="email_collector_job",
+        replace_existing=True,
+    )
+    # LMS student reports monitor runs every 30 minutes
+    scheduler.add_job(
+        run_lms_monitor_cycle,
+        "interval",
+        minutes=30,
+        args=[db, lms_client, notifier],
+        id="lms_monitor_job",
         replace_existing=True,
     )
     # Morning brief runs daily at 08:00 MSK
