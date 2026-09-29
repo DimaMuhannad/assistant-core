@@ -100,3 +100,49 @@ async def test_bot_handler_free_form_text_delegation():
         mock_dialog.assert_called_once_with(mock_msg, "Привет! Напомни, сколько пар у меня завтра?")
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_db_search_emails_stemming():
+    db = Database(db_path=":memory:")
+    await db.init_db()
+
+    now = datetime.now(timezone.utc)
+    await db.upsert_email_message(
+        message_id="msg-nov-1@yandex.ru",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Новикова Юлиана",
+        sender_email="Nov-Jliana@yandex.ru",
+        recipients_json='["scipopov@mail.ru"]',
+        subject="Эффективные контракты",
+        date_sent=now,
+        body_plain="Уважаемые коллеги! Отправляю форму отчета по эффективному контракту.",
+        body_html=None,
+        snippet="Отправляю форму отчета",
+        has_attachments=False,
+        attachments_json="[]",
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-1",
+        category="guap_dept",
+        requires_action=False,
+    )
+
+    # Search with inflected Russian words
+    res = await db.search_emails("эффективный контракт Новиковой")
+    assert len(res) == 1
+    assert res[0]["subject"] == "Эффективные контракты"
+    assert res[0]["sender_name"] == "Новикова Юлиана"
+
+    await db.close()
+
+
+def test_search_local_files_catalog():
+    db = Database(db_path=":memory:")
+    engine = SecretaryDialogEngine(db=db, api_key="")
+    ctx, files = engine._search_local_files_context("скинь шаблон эффективного контракта")
+    assert len(files) >= 1
+    assert any("Форма_отчета_эффективный_контракт" in f["name"] for f in files)
+    assert "ДОСТУПНЫЕ ЛОКАЛЬНЫЕ ФАЙЛЫ" in ctx
+

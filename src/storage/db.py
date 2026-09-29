@@ -1037,6 +1037,74 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def search_emails(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search email messages across subject, body, and sender using keyword stemming."""
+        cleaned = query.strip()
+        if not cleaned:
+            return []
+
+        STOPWORDS = {
+            "поищи", "найди", "поиск", "ищи", "посмотри", "глянь", "проверь", "проверить", "найти",
+            "почте", "почта", "почту", "почты", "почтой", "письмо", "письма", "писем", "письмах",
+            "сообщение", "сообщения", "сообщений", "сообщениях",
+            "группе", "группа", "группу", "группы", "группах",
+            "чате", "чат", "чата", "чаты", "чатах", "телеграм", "telegram", "телеге",
+            "или", "что", "где", "когда", "есть", "было", "были", "был", "была", "какие", "какой", "какая", "какое",
+            "скинь", "пришли", "отправь", "дай", "покажи", "пожалуйста", "секретарь", "бот",
+            "для", "про", "обо", "обоих", "все", "всё", "всех", "мне", "нам", "вас", "вашей", "нашей", "его", "ее", "её",
+        }
+
+        def stem_token(w: str) -> str:
+            w_lower = w.lower()
+            for end in ("ый", "ой", "ий", "ая", "яя", "ое", "ее", "ые", "ие", "ых", "их", "ым", "им", "ом", "ем", "ам", "ям", "ами", "ями", "ах", "ях", "ов", "ев", "ей", "а", "я", "у", "ю", "е", "о"):
+                if w_lower.endswith(end) and len(w_lower) - len(end) >= 4:
+                    return w_lower[:-len(end)]
+            return w_lower
+
+        words = [w.strip(".,?!:;\"'()[]{}«»").lower() for w in cleaned.split()]
+        filtered_words = [w for w in words if len(w) > 2 and w not in STOPWORDS]
+        active_words = filtered_words if filtered_words else [w for w in words if len(w) > 2]
+        if not active_words:
+            active_words = [cleaned.lower()]
+
+        tokens = [stem_token(w) for w in active_words]
+
+        where_clauses = []
+        score_exprs = []
+        params_where: list[Any] = []
+        params_score: list[Any] = []
+
+        for t in tokens[:6]:
+            p = f"%{t}%"
+            where_clauses.append("(LOWER(subject) LIKE ? OR LOWER(body_plain) LIKE ? OR LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ?)")
+            params_where.extend([p, p, p, p])
+            score_exprs.append("(CASE WHEN LOWER(subject) LIKE ? THEN 5 ELSE 0 END + CASE WHEN LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ? THEN 3 ELSE 0 END + CASE WHEN LOWER(body_plain) LIKE ? THEN 1 ELSE 0 END)")
+            params_score.extend([p, p, p, p])
+
+        where_sql = " OR ".join(where_clauses)
+        score_sql = " + ".join(score_exprs) if score_exprs else "1"
+        all_params = params_score + params_where + [limit]
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT id, message_id, account_id, sender_name, sender_email,
+                       subject, date_sent, body_plain, snippet, category, requires_action,
+                       ({score_sql}) AS relevance_score
+                FROM email_messages
+                WHERE {where_sql}
+                ORDER BY relevance_score DESC, date_sent DESC
+                LIMIT ?;
+                """,
+                tuple(all_params),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def get_email_by_id(self, email_id: int) -> dict[str, Any] | None:
         """Fetch a single email message by primary key id."""
         async with self.connection() as conn:

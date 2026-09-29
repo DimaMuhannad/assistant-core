@@ -600,7 +600,7 @@ class MethodistService:
         import asyncio
         client = self.get_client()
         answer_text = ""
-        candidate_models = [self.model, "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+        candidate_models = [self.model, "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-lite-latest"]
         # Deduplicate while preserving order
         unique_models = []
         for m in candidate_models:
@@ -617,10 +617,13 @@ class MethodistService:
                 if "3.8" in mod or "3.7" in mod or "2.5" in mod:
                     cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
 
-                resp = await client.aio.models.generate_content(
-                    model=mod,
-                    contents=user_prompt,
-                    config=types.GenerateContentConfig(**cfg_kwargs),
+                resp = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=mod,
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(**cfg_kwargs),
+                    ),
+                    timeout=25.0,
                 )
                 answer_text = (resp.text or "").strip()
                 if answer_text:

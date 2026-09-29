@@ -981,15 +981,33 @@ class EmailBotHandler:
         except Exception:
             pass
 
-        answer = await self.dialog_engine.answer_user_message(
+        answer, matched_files = await self.dialog_engine.answer_user_message(
             user_id=message.from_user.id,
             message_text=text,
+            return_files=True,
         )
 
         if self.notifier:
             await self.notifier.send_message(answer, chat_id=message.chat.id)
         else:
             await message.answer(answer)
+
+        # Proactively send files if user asked for templates, forms, or documents
+        lower_t = text.lower()
+        send_triggers = ("скинь", "пришли", "отправь", "дай бланк", "дай шаблон", "прикрепи", "скачать", "файл", "документ", "шаблон", "бланк", "форма")
+        if matched_files and any(tr in lower_t for tr in send_triggers):
+            from aiogram.types import FSInputFile
+            for f in matched_files[:2]:
+                f_path = Path(f["path"])
+                if f_path.exists():
+                    try:
+                        await self.bot.send_document(
+                            chat_id=message.chat.id,
+                            document=FSInputFile(str(f_path)),
+                            caption=f"📄 {f.get('desc', f['name'])}",
+                        )
+                    except Exception as fe:
+                        logger.warning("Could not send document %s: %s", f_path, fe)
 
     async def handle_user_voice(self, message: Message) -> None:
         """Handle voice messages: transcribe audio and process via conversational secretary."""
