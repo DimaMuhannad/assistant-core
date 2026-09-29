@@ -117,6 +117,9 @@ class EmailBotHandler:
         self.router.message(Command("methodist", "gost", "rpd"))(self.handle_cmd_methodist)
         self.router.message(Command("methodist_teach"))(self.handle_cmd_methodist_teach)
         self.router.message(Command("methodist_stats"))(self.handle_cmd_methodist_stats)
+        self.router.message(Command("methodist_books"))(self.handle_cmd_methodist_books)
+        self.router.message(Command("methodist_toc"))(self.handle_cmd_methodist_toc)
+        self.router.message(Command("methodist_reindex"))(self.handle_cmd_methodist_reindex)
 
         # Callbacks under email card
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
@@ -166,9 +169,11 @@ class EmailBotHandler:
             "• `/lms_create <группа> <название>` — создать новое задание\n"
             "• `/lms_delete <id>` — удалить задание по ID\n"
             "• `/emails` — показать неотвеченные письма студентов и кафедры\n"
-            "• `/methodist <вопрос>` — консультация с агентом-методистом (ГОСТы, РПД, БРС, титульники)\n"
+            "• `/methodist <вопрос>` — консультация с агентом-методистом (учебники Коваленко, задачники, лабы, ГОСТы)\n"
+            "• `/methodist_books` — каталог учебников Коваленко, задачников и практикумов\n"
+            "• `/methodist_toc <id>` — оглавление учебного пособия с номерами страниц\n"
             "• `/methodist_teach <тема> | <текст>` — дообучение методиста новым правилам кафедры\n"
-            "• `/methodist_stats` — база знаний и проиндексированные регламенты\n"
+            "• `/methodist_stats` — статистика базы знаний и разделов\n"
             "• `/timesheet` — табель и пейсинг выработки нормы в «Тидекс»\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота"
@@ -915,7 +920,7 @@ class EmailBotHandler:
         """Query MethodistService and return authoritative answer with citations."""
         from src.brain.methodist import MethodistService
         service = MethodistService(self.db)
-        status_msg = await message.answer("🔍 *Методист кафедры сверяет регламенты и ГОСТы...*")
+        status_msg = await message.answer("🔍 *Методист кафедры сверяет оглавления пособий, формулы и ГОСТы...*")
         res = await service.ask(query, caller="tg_user", caller_id=str(message.from_user.id))
         try:
             await status_msg.delete()
@@ -926,11 +931,85 @@ class EmailBotHandler:
         sources = res.get("sources", [])
         src_text = ""
         if sources:
-            src_list = list({s.get("doc_title") for s in sources if s.get("doc_title")})
-            if src_list:
-                src_text = "\n\n📚 **Использованные первоисточники:**\n" + "\n".join(f"• _{s}_" for s in src_list[:3])
+            src_items = []
+            for s in sources:
+                d_title = s.get("doc_title", "")
+                sec = s.get("section", "")
+                pages = s.get("pages")
+                if pages:
+                    src_items.append(f"• _{d_title}_ [{sec}] (стр. {pages})")
+                elif sec:
+                    src_items.append(f"• _{d_title}_ [{sec}]")
+                elif d_title:
+                    src_items.append(f"• _{d_title}_")
+
+            if src_items:
+                unique_src = list(dict.fromkeys(src_items))
+                src_text = "\n\n📚 **Использованные первоисточники (выгрузка страниц):**\n" + "\n".join(unique_src[:4])
 
         await message.answer(f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}")
+
+    async def handle_cmd_methodist_books(self, message: Message) -> None:
+        """Display list of indexed textbooks and lab manuals with TOC stats."""
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        stats = await service.get_stats()
+        books = stats.get("books", [])
+        if not books:
+            await message.answer("📚 Учебные пособия с оглавлениями пока не проиндексированы.")
+            return
+
+        lines = ["📚 **Учебные издания кафедры физики (проиндексированные оглавления):**\n"]
+        for b in books:
+            lines.append(f"• `ID {b['id']}` **{b['title']}**\n  Категория: `{b['category']}` | Разделов: **{b['toc_count']}** | Стр. {b['pages']}")
+
+        lines.append("\n💡 *Для просмотра оглавления пособия используйте:* `/methodist_toc <ID>`")
+        await message.answer("\n".join(lines))
+
+    async def handle_cmd_methodist_toc(self, message: Message) -> None:
+        """Display Table of Contents for a specific book ID."""
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            await message.answer("⚠️ Укажите числовой ID книги из каталога. Пример: `/methodist_toc 25`\nСписок доступных книг: `/methodist_books`")
+            return
+
+        doc_id = int(parts[1].strip())
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        toc = await service.get_book_toc(doc_id)
+        if not toc:
+            await message.answer(f"Пособие с ID {doc_id} не найдено или в нем нет оглавления.")
+            return
+
+        book_title = toc[0].get("book_title", f"Книга {doc_id}")
+        lines = [f"📖 **Оглавление пособия:**\n*{book_title}*\n"]
+        for item in toc[:35]:
+            ch_num = f"{item['chapter_number']}. " if item.get("chapter_number") else ""
+            lines.append(f"• `[стр. {item['page_start']}-{item['page_end']}]` {ch_num}{item['chapter_title']}")
+
+        if len(toc) > 35:
+            lines.append(f"\n_...и еще {len(toc) - 35} разделов_")
+
+        await message.answer("\n".join(lines))
+
+    async def handle_cmd_methodist_reindex(self, message: Message) -> None:
+        """Trigger reindexing of all materials in data/methodist/raw/."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        status_msg = await message.answer("🔄 *Запущен режим дообучения: сканирование и индексация пособий ГУАП...*")
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        report = await service.reindex_all_materials()
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await message.answer(
+            f"✅ **Индексация завершена успешно!**\n\n"
+            f"• Всего обработано файлов: **{report.get('total_processed', 0)}**\n"
+            f"• Просмотреть статистику: `/methodist_stats`\n"
+            f"• Каталог изданий: `/methodist_books`"
+        )
 
     async def handle_cmd_methodist_teach(self, message: Message) -> None:
         """Handle /methodist_teach command to teach the agent a new rule."""
@@ -964,13 +1043,13 @@ class EmailBotHandler:
         text_lines = [
             "🎓 **База знаний агента-методиста кафедры физики:**\n",
             f"• Всего документов: **{stats.get('total_documents', 0)}**",
+            f"• Проиндексированных разделов/глав: **{stats.get('total_toc_entries', 0)}**",
         ]
         by_cat = stats.get("by_category", {})
         for cat, cnt in by_cat.items():
             text_lines.append(f"  — `{cat}`: {cnt} документов")
-        text_lines.append("\n📁 **Проиндексированные регламенты:**")
-        for d in stats.get("documents", [])[:10]:
-            text_lines.append(f"• {d['title']} ({d['chunks']} чанков)")
+        text_lines.append("\n📚 **Каталог пособий и оглавлений:** `/methodist_books`")
+        text_lines.append("📖 **Просмотр оглавления книги:** `/methodist_toc <ID>`")
         await message.answer("\n".join(text_lines))
 
     # -------------------------------------------------------------

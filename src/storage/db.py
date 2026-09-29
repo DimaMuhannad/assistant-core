@@ -275,6 +275,43 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS methodist_toc_index (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    doc_id INTEGER NOT NULL REFERENCES methodist_documents(id) ON DELETE CASCADE,
+                    category TEXT NOT NULL,
+                    book_title TEXT NOT NULL,
+                    chapter_number TEXT,
+                    chapter_title TEXT NOT NULL,
+                    page_start INTEGER NOT NULL,
+                    page_end INTEGER NOT NULL,
+                    parent_title TEXT,
+                    summary TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS methodist_toc_fts USING fts5(
+                    chapter_title,
+                    book_title,
+                    summary,
+                    content='methodist_toc_index',
+                    content_rowid='id'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS methodist_toc_ai AFTER INSERT ON methodist_toc_index BEGIN
+                    INSERT INTO methodist_toc_fts(rowid, chapter_title, book_title, summary)
+                    VALUES (new.id, new.chapter_title, new.book_title, new.summary);
+                END;
+                CREATE TRIGGER IF NOT EXISTS methodist_toc_ad AFTER DELETE ON methodist_toc_index BEGIN
+                    INSERT INTO methodist_toc_fts(methodist_toc_fts, rowid, chapter_title, book_title, summary)
+                    VALUES ('delete', old.id, old.chapter_title, old.book_title, old.summary);
+                END;
+                CREATE TRIGGER IF NOT EXISTS methodist_toc_au AFTER UPDATE ON methodist_toc_index BEGIN
+                    INSERT INTO methodist_toc_fts(methodist_toc_fts, rowid, chapter_title, book_title, summary)
+                    VALUES ('delete', old.id, old.chapter_title, old.book_title, old.summary);
+                    INSERT INTO methodist_toc_fts(rowid, chapter_title, book_title, summary)
+                    VALUES (new.id, new.chapter_title, new.book_title, new.summary);
+                END;
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -300,6 +337,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_methodist_docs_cat ON methodist_documents(category);
                 CREATE INDEX IF NOT EXISTS idx_methodist_chunks_doc ON methodist_chunks(doc_id);
                 CREATE INDEX IF NOT EXISTS idx_methodist_qa_caller ON methodist_qa_memory(caller_type);
+                CREATE INDEX IF NOT EXISTS idx_methodist_toc_doc ON methodist_toc_index(doc_id);
+                CREATE INDEX IF NOT EXISTS idx_methodist_toc_cat ON methodist_toc_index(category);
                 """
             )
             await conn.commit()
@@ -2024,6 +2063,139 @@ class Database:
             )
             await conn.commit()
             return cursor.lastrowid
+
+    async def save_methodist_toc_entries(
+        self,
+        doc_id: int,
+        entries: list[dict[str, Any]],
+    ) -> int:
+        """Replace all TOC index entries for a specific document."""
+        async with self.connection() as conn:
+            await conn.execute("DELETE FROM methodist_toc_index WHERE doc_id = ?;", (doc_id,))
+            inserted = 0
+            for item in entries:
+                ch_title = (item.get("chapter_title") or "").strip()
+                if not ch_title:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO methodist_toc_index (
+                        doc_id, category, book_title, chapter_number,
+                        chapter_title, page_start, page_end, parent_title, summary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        doc_id,
+                        item.get("category", "textbooks"),
+                        item.get("book_title", ""),
+                        item.get("chapter_number"),
+                        ch_title,
+                        int(item.get("page_start", 1)),
+                        int(item.get("page_end", 1)),
+                        item.get("parent_title"),
+                        item.get("summary"),
+                    ),
+                )
+                inserted += 1
+            await conn.commit()
+            return inserted
+
+    async def search_methodist_toc(
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        """Search Table of Contents (TOC) using FTS5 BM25 or LIKE fallback."""
+        async with self.connection() as conn:
+            cleaned_terms = [t.strip().replace('"', '""') for t in query.split() if len(t.strip()) > 2]
+            if not cleaned_terms:
+                sql = """
+                    SELECT t.*, d.file_path, 0.0 AS score
+                    FROM methodist_toc_index t
+                    JOIN methodist_documents d ON t.doc_id = d.id
+                    WHERE (t.chapter_title LIKE ? OR t.book_title LIKE ? OR t.summary LIKE ?)
+                """
+                params: list[Any] = [f"%{query}%", f"%{query}%", f"%{query}%"]
+                if category:
+                    sql += " AND t.category = ?"
+                    params.append(category)
+                sql += " ORDER BY t.book_title ASC, t.page_start ASC LIMIT ?;"
+                params.append(limit)
+                cursor = await conn.execute(sql, tuple(params))
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+            fts_query = " OR ".join(f'"{term}"*' for term in cleaned_terms[:8])
+            try:
+                sql = """
+                    SELECT t.*, d.file_path, f.rank AS score
+                    FROM methodist_toc_fts f
+                    JOIN methodist_toc_index t ON f.rowid = t.id
+                    JOIN methodist_documents d ON t.doc_id = d.id
+                    WHERE methodist_toc_fts MATCH ?
+                """
+                params = [fts_query]
+                if category:
+                    sql += " AND t.category = ?"
+                    params.append(category)
+                sql += " ORDER BY rank ASC LIMIT ?;"
+                params.append(limit)
+                cursor = await conn.execute(sql, tuple(params))
+                rows = await cursor.fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+            except Exception:
+                pass
+
+            # Fallback to LIKE
+            sql = """
+                SELECT t.*, d.file_path, 0.0 AS score
+                FROM methodist_toc_index t
+                JOIN methodist_documents d ON t.doc_id = d.id
+                WHERE (t.chapter_title LIKE ? OR t.book_title LIKE ?)
+            """
+            params = [f"%{query}%", f"%{query}%"]
+            if category:
+                sql += " AND t.category = ?"
+                params.append(category)
+            sql += " ORDER BY t.book_title ASC, t.page_start ASC LIMIT ?;"
+            params.append(limit)
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_methodist_toc_for_doc(self, doc_id: int) -> list[dict[str, Any]]:
+        """Return structured TOC for a specific document."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM methodist_toc_index
+                WHERE doc_id = ?
+                ORDER BY page_start ASC;
+                """,
+                (doc_id,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def list_methodist_books_with_toc(self) -> list[dict[str, Any]]:
+        """Return list of all books/manuals with TOC entry counts."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT d.id AS doc_id, d.title, d.category, d.file_path, d.total_chunks,
+                       COUNT(t.id) AS toc_entries_count,
+                       MIN(t.page_start) AS min_page,
+                       MAX(t.page_end) AS max_page
+                FROM methodist_documents d
+                LEFT JOIN methodist_toc_index t ON d.id = t.doc_id
+                GROUP BY d.id
+                ORDER BY d.category ASC, d.title ASC;
+                """
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 
