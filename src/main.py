@@ -126,11 +126,25 @@ async def run_sentinel_cycle(
 
         # 6. Send Telegram Notification
         await notifier.send_schedule_diff_alert(diff, config.SCHEDULE_TARGET_ID)
+
+        # 7. Cross-validate timesheet records with updated SUAI schedule
+        try:
+            from src.connectors.aadhk.parser import AadhkIngestionService
+            ingestion = AadhkIngestionService(db)
+            reconcile_res = await ingestion.reconcile_all_conflicts()
+            if reconcile_res.get("conflicts_found", 0) > 0:
+                logger.warning(
+                    "Timesheet cross-validation after schedule update: %d conflict(s) found.",
+                    reconcile_res["conflicts_found"],
+                )
+        except Exception as e:
+            logger.debug("Timesheet cross-validation after schedule update skipped: %s", e)
     else:
         logger.info(
             "Schedule is unchanged (hash=%s). 0 duplicates generated, no sync needed.",
             diff.new_hash[:8],
         )
+
 
 
 async def run_telegram_collector_cycle(
@@ -204,11 +218,36 @@ async def run_email_collector_cycle(
         logger.exception("Error during email collection cycle: %s", e)
 
 
+async def run_aadhk_gdrive_sync_cycle(db: Database, notifier: TelegramNotifier) -> None:
+    """Run periodic synchronization of AADHk Time Recording database from Google Drive."""
+    try:
+        from src.connectors.gdrive.client import GoogleDriveClient
+        from src.connectors.aadhk.parser import AadhkIngestionService
+
+        client = GoogleDriveClient()
+        if not client.is_configured:
+            return
+
+        sync_res = await client.sync_aadhk_from_drive(db)
+        if sync_res.get("status") == "success":
+            ingest_info = sync_res.get("ingestion_result", {})
+            new_cnt = ingest_info.get("new_inserted_count", 0)
+            if new_cnt > 0:
+                logger.info("AADHk sync added %d new shift(s) from Google Drive.", new_cnt)
+                service = AadhkIngestionService(db)
+                reconcile_res = await service.reconcile_all_conflicts()
+                if reconcile_res.get("conflicts_found", 0) > 0:
+                    logger.warning("AADHk shifts have %d GUAP conflict(s).", reconcile_res["conflicts_found"])
+    except Exception as e:
+        logger.debug("AADHk background Google Drive sync skipped/failed: %s", e)
+
+
 async def run_morning_brief_cycle(
     db: Database,
     schedule_parser: ScheduleParser,
     summarizer: GeminiSummarizer,
     notifier: TelegramNotifier,
+
     force: bool = False,
 ) -> None:
     """Run morning executive brief cycle (daily at 08:00 MSK or triggered on startup)."""
@@ -506,6 +545,16 @@ async def main() -> None:
         id="evening_digest_job",
         replace_existing=True,
     )
+    # AADHk Google Drive sync runs every 2 hours
+    scheduler.add_job(
+        run_aadhk_gdrive_sync_cycle,
+        "interval",
+        hours=2,
+        args=[db, notifier],
+        id="aadhk_gdrive_sync_job",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         "Scheduler started. Morning brief at 08:00, Evening digest at 21:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min.",

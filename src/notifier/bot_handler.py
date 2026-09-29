@@ -95,12 +95,16 @@ class EmailBotHandler:
         self.router.message(Command("start", "help"))(self.handle_cmd_help)
         self.router.message(Command("emails", "inbox"))(self.handle_cmd_emails)
         self.router.message(Command("evening", "digest"))(self.handle_cmd_evening)
+        self.router.message(Command("timesheet", "tydex", "hours"))(self.handle_cmd_timesheet)
         self.router.message(Command("cancel", "cansel"))(self.handle_cmd_cancel)
 
         # Callbacks under email card
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
         self.router.callback_query(F.data.startswith("em:wr:"))(self.cb_write_reply)
         self.router.callback_query(F.data.startswith("em:th:"))(self.cb_view_thread)
+
+        # Callbacks under timesheet
+        self.router.callback_query(F.data == "ts:sync_gdrive")(self.cb_timesheet_sync)
 
         # Callbacks under draft card
         self.router.callback_query(F.data.startswith("dr:snd:"))(self.cb_send_reply)
@@ -125,12 +129,14 @@ class EmailBotHandler:
             "Сервис 24/7 ведет мониторинг расписания, почты и рабочих чатов.\n\n"
             "Доступные команды:\n"
             "• `/emails` — показать неотвеченные письма студентов и кафедры\n"
+            "• `/timesheet` — учет часов в «Тидекс» и наложения на пары ГУАП\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота\n\n"
             "После отправки ответа на письмо все карточки и служебные сообщения автоматически удаляются из чата, "
             "а статистика ответов сохраняется в вечернем дайджесте."
         )
         await self.notifier.send_message(text, chat_id=message.chat.id)
+
 
     async def handle_cmd_emails(self, message: Message) -> None:
         if not self._is_authorized(message.from_user.id):
@@ -684,3 +690,89 @@ class EmailBotHandler:
         except Exception as e:
             logger.exception("Error handling incoming document: %s", e)
             await message.answer(f"⚠️ Не удалось сохранить файл: {e}")
+
+    async def handle_cmd_timesheet(self, message: Message) -> None:
+        """Handle /timesheet, /tydex, /hours commands."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        from src.connectors.aadhk.parser import AadhkIngestionService
+
+        service = AadhkIngestionService(self.db)
+        await service.reconcile_all_conflicts()
+        report = await service.get_timesheet_report(project_name="Тидекс")
+        summary = report.get("summary", {})
+        conflicts = report.get("conflicts", [])
+
+        text_lines = [
+            "⏱️ **Учет времени: ООО «Тидекс»**\n",
+            f"• **Всего отработано:** `{summary.get('total_hours', 0.0):.2f}` ч ({summary.get('total_shifts', 0)} смен)",
+            f"• **Чистые часы (без наложений):** `{summary.get('clean_hours', 0.0):.2f}` ч",
+            f"• **Часов с наложениями:** `{summary.get('conflict_hours', 0.0):.2f}` ч",
+            f"• **Сумма выплат:** `{summary.get('total_amount', 0.0):,.2f}` ₽\n",
+        ]
+
+        if conflicts:
+            text_lines.append(f"⚠️ **Обнаруженные пересечения с парами ГУАП ({len(conflicts)}):**")
+            for c in conflicts[:5]:
+                st = str(c.get("start_time", ""))[:16].replace("T", " ")
+                et = str(c.get("end_time", ""))[11:16]
+                text_lines.append(f"• `{st} - {et}` ({c.get('duration_minutes', 0)} мин): {c.get('conflict_details', '')}")
+            text_lines.append("")
+        else:
+            text_lines.append("✅ **Пересечений с расписанием ГУАП не обнаружено!** (100% согласовано)\n")
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Синхронизировать с Google Drive", callback_data="ts:sync_gdrive")],
+            ]
+        )
+        msg_text = "\n".join(text_lines)
+        if self.notifier:
+            await self.notifier.send_message(msg_text, chat_id=message.chat.id, reply_markup=kb)
+        else:
+            await message.answer(msg_text, reply_markup=kb)
+
+    async def cb_timesheet_sync(self, callback: CallbackQuery) -> None:
+        """Handle inline callback to sync AADHk database directly from Google Drive."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+
+        await callback.answer("Синхронизация с Google Drive...")
+        from src.connectors.gdrive.client import GoogleDriveClient
+        from src.connectors.aadhk.parser import AadhkIngestionService
+
+        client = GoogleDriveClient()
+        if not client.is_configured:
+            await callback.message.answer("❌ Google Drive не настроен или отсутствует токен.")
+            return
+
+        sync_res = await client.sync_aadhk_from_drive(self.db)
+        if sync_res.get("status") != "success":
+            await callback.message.answer(f"⚠️ Ошибка синхронизации: {sync_res.get('message', 'Файл не найден на Google Диске')}")
+            return
+
+        service = AadhkIngestionService(self.db)
+        await service.reconcile_all_conflicts()
+        summary = await self.db.get_timesheet_summary(project_name="Тидекс")
+        conflicts = await self.db.get_timesheet_conflicts(limit=5)
+
+        text_lines = [
+            "🔄 **Синхронизация с Google Drive завершена!**\n",
+            f"• Файл: `{sync_res.get('file_name')}`",
+            f"• Новых смен добавлено: `{sync_res.get('ingestion_result', {}).get('new_inserted_count', 0)}`",
+            f"• Всего отработано: `{summary.get('total_hours', 0.0):.2f}` ч",
+            f"• Чистые часы: `{summary.get('clean_hours', 0.0):.2f}` ч",
+            f"• Начислено: `{summary.get('total_amount', 0.0):,.2f}` ₽\n",
+        ]
+        if conflicts:
+            text_lines.append(f"⚠️ **Наложения на пары ГУАП ({len(conflicts)}):**")
+            for c in conflicts[:3]:
+                st = str(c.get("start_time", ""))[:16].replace("T", " ")
+                text_lines.append(f"• `{st}`: {c.get('conflict_details', '')}")
+        else:
+            text_lines.append("✅ Все смены согласованы без наложений на пары.")
+
+        await callback.message.answer("\n".join(text_lines))
+

@@ -286,30 +286,45 @@ class AadhkIngestionService:
             conn.close()
 
     async def _load_suai_lessons(self) -> dict[str, list[dict[str, Any]]]:
-        """Loads SUAI schedule lessons mapped by ISO date (YYYY-MM-DD)."""
+        """Loads SUAI schedule lessons mapped by ISO date (YYYY-MM-DD) across all snapshots."""
         lessons_by_date: dict[str, list[dict[str, Any]]] = {}
-        snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
-        if not snap or not snap.get("raw_payload"):
-            return lessons_by_date
+        seen_lessons: set[tuple[str, str, str, str]] = set()
 
-        try:
-            payload = SchedulePayload.model_validate_json(snap["raw_payload"])
-            for day in payload.days:
-                date_str = day.date.isoformat()
-                lessons_by_date[date_str] = []
-                for les in day.lessons:
-                    start_dt = datetime.combine(les.date, les.start_time, tzinfo=ZoneInfo(config.TZ))
-                    end_dt = datetime.combine(les.date, les.end_time, tzinfo=ZoneInfo(config.TZ))
-                    lessons_by_date[date_str].append({
-                        "subject": les.subject,
-                        "type": les.lesson_type.value if hasattr(les.lesson_type, "value") else str(les.lesson_type),
-                        "room": les.room,
-                        "group": les.group or "",
-                        "start": start_dt,
-                        "end": end_dt,
-                    })
-        except Exception as e:
-            logger.warning("Failed parsing SUAI schedule for cross-validation: %s", e)
+        snapshots = []
+        if hasattr(self.db, "list_snapshots_by_prefix"):
+            snapshots = await self.db.list_snapshots_by_prefix("rasp_guap_")
+        if not snapshots:
+            snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+            if snap:
+                snapshots = [snap]
+
+        for snap in snapshots:
+            if not snap or not snap.get("raw_payload"):
+                continue
+            try:
+                payload = SchedulePayload.model_validate_json(snap["raw_payload"])
+                for day in payload.days:
+                    date_str = day.date.isoformat()
+                    if date_str not in lessons_by_date:
+                        lessons_by_date[date_str] = []
+                    for les in day.lessons:
+                        dedup_key = (date_str, str(les.start_time), les.subject, les.room or "")
+                        if dedup_key in seen_lessons:
+                            continue
+                        seen_lessons.add(dedup_key)
+
+                        start_dt = datetime.combine(les.date, les.start_time, tzinfo=ZoneInfo(config.TZ))
+                        end_dt = datetime.combine(les.date, les.end_time, tzinfo=ZoneInfo(config.TZ))
+                        lessons_by_date[date_str].append({
+                            "subject": les.subject,
+                            "type": les.lesson_type.value if hasattr(les.lesson_type, "value") else str(les.lesson_type),
+                            "room": les.room or "",
+                            "group": les.group or "",
+                            "start": start_dt,
+                            "end": end_dt,
+                        })
+            except Exception as e:
+                logger.warning("Failed parsing SUAI schedule snapshot: %s", e)
         return lessons_by_date
 
     def _check_schedule_conflict(
@@ -319,8 +334,8 @@ class AadhkIngestionService:
     ) -> str | None:
         """Check if a Tydex shift intersects with any SUAI lesson."""
         try:
-            start_dt = datetime.fromisoformat(shift["start_time"])
-            end_dt = datetime.fromisoformat(shift["end_time"])
+            start_dt = datetime.fromisoformat(str(shift["start_time"]))
+            end_dt = datetime.fromisoformat(str(shift["end_time"]))
             date_key = start_dt.date().isoformat()
 
             day_lessons = suai_lessons.get(date_key, [])
@@ -339,3 +354,74 @@ class AadhkIngestionService:
         except Exception as e:
             logger.debug("Error checking shift conflict: %s", e)
         return None
+
+    async def reconcile_all_conflicts(self) -> dict[str, Any]:
+        """Re-evaluate SUAI schedule conflicts across all timesheet records in database."""
+        suai_lessons_by_date = await self._load_suai_lessons()
+        records = await self.db.list_timesheet_records(limit=10000)
+
+        total_checked = len(records)
+        conflicts_found = 0
+        resolved_count = 0
+        updated_count = 0
+
+        for r in records:
+            rec_id = r["id"]
+            conflict_msg = self._check_schedule_conflict(r, suai_lessons_by_date)
+            new_conflict = bool(conflict_msg)
+            new_details = conflict_msg or ""
+
+            old_conflict = bool(r.get("has_guap_conflict"))
+            old_details = r.get("conflict_details") or ""
+
+            if new_conflict != old_conflict or (new_conflict and old_details != new_details):
+                await self.db.update_timesheet_conflict(rec_id, new_conflict, new_details)
+                updated_count += 1
+
+            if new_conflict:
+                conflicts_found += 1
+            elif old_conflict and not new_conflict:
+                resolved_count += 1
+
+        summary = await self.db.get_timesheet_summary()
+        logger.info(
+            "Reconciled %d timesheet records: %d conflicts, %d resolved, %d updated",
+            total_checked,
+            conflicts_found,
+            resolved_count,
+            updated_count,
+        )
+        return {
+            "total_checked": total_checked,
+            "conflicts_found": conflicts_found,
+            "resolved_count": resolved_count,
+            "updated_count": updated_count,
+            "total_hours": summary.get("total_hours", 0.0),
+            "clean_hours": summary.get("clean_hours", 0.0),
+            "conflict_hours": summary.get("conflict_hours", 0.0),
+            "total_amount": summary.get("total_amount", 0.0),
+        }
+
+    async def get_timesheet_report(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        project_name: str | None = "Тидекс",
+    ) -> dict[str, Any]:
+        """Generate comprehensive timesheet report with conflict details and daily breakdown."""
+        summary = await self.db.get_timesheet_summary(
+            start_date=start_date,
+            end_date=end_date,
+            project_name=project_name,
+        )
+        conflicts = await self.db.get_timesheet_conflicts(limit=20)
+        return {
+            "summary": summary,
+            "conflicts": conflicts,
+            "filter": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "project_name": project_name,
+            },
+        }
+

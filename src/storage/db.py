@@ -366,6 +366,23 @@ class Database:
                 return dict(row)
             return None
 
+    async def list_snapshots_by_prefix(self, source_prefix: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Retrieve snapshots where source_id starts with prefix, ordered chronologically."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, source_id, content_hash, raw_payload, captured_at
+                FROM content_snapshots
+                WHERE source_id LIKE ?
+                ORDER BY id ASC
+                LIMIT ?;
+                """,
+                (f"{source_prefix}%", limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
     async def record_calendar_sync(
         self,
         source_event_id: str,
@@ -1609,7 +1626,12 @@ class Database:
 
         total_minutes = sum(r.get("duration_minutes") or 0 for r in rows)
         total_hours = round(total_minutes / 60.0, 2)
+        total_amount = round(sum(r.get("amount") or 0.0 for r in rows), 2)
+
         conflicts = [r for r in rows if r.get("has_guap_conflict")]
+        conflict_minutes = sum(r.get("duration_minutes") or 0 for r in conflicts)
+        conflict_hours = round(conflict_minutes / 60.0, 2)
+        clean_hours = round(max(0.0, total_hours - conflict_hours), 2)
 
         by_task: dict[str, float] = {}
         for r in rows:
@@ -1620,10 +1642,32 @@ class Database:
         return {
             "total_shifts": len(rows),
             "total_hours": total_hours,
+            "clean_hours": clean_hours,
+            "conflict_hours": conflict_hours,
             "total_minutes": total_minutes,
+            "total_amount": total_amount,
             "conflicts_count": len(conflicts),
             "by_task": by_task,
         }
+
+    async def update_timesheet_conflict(
+        self,
+        record_id: int,
+        has_guap_conflict: bool,
+        conflict_details: str,
+    ) -> bool:
+        """Update conflict status and details for a specific timesheet record."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE timesheet_records
+                SET has_guap_conflict = ?, conflict_details = ?
+                WHERE id = ?;
+                """,
+                (1 if has_guap_conflict else 0, conflict_details, record_id),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
 
     async def get_timesheet_conflicts(self, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve timesheet records flagged with SUAI schedule conflicts."""
@@ -1634,6 +1678,7 @@ class Database:
                 (limit,),
             )
             return [dict(r) for r in await cursor.fetchall()]
+
 
 
 

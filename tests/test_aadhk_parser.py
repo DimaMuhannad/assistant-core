@@ -119,3 +119,110 @@ async def test_aadhk_ingestion_and_conflict_detection(tmp_path: Path):
     assert res2["new_inserted_count"] == 0
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_aadhk_mobile_times_schema_and_reconciliation(tmp_path: Path):
+    asst_db_path = tmp_path / "assistant_times.db"
+    db = Database(str(asst_db_path))
+    await db.init_db()
+
+    # 1. Create mock AADHk backup using mobile TIMES schema
+    aadhk_file = tmp_path / "com.aadhk.time_mobile.db"
+    conn = sqlite3.connect(str(aadhk_file))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE TIMES (
+            projectName TEXT,
+            notes TEXT,
+            remark TEXT,
+            amountPerhour FLOAT,
+            date1 TEXT,
+            date2 TEXT,
+            working INTEGER,
+            amount FLOAT
+        );
+        """
+    )
+    # Shift 1: 2026-09-28 10:00 - 14:00 (4 hours, 1882 rub)
+    cur.execute(
+        """
+        INSERT INTO TIMES VALUES (
+            'Работа', 'Эксперименты на терагерцовом спектрометре', '', 470.5,
+            '2026-09-28 10:00', '2026-09-28 14:00', 240, 1882.0
+        );
+        """
+    )
+    # Shift 2: 2026-09-29 15:00 - 18:00 (3 hours, 1411.5 rub)
+    cur.execute(
+        """
+        INSERT INTO TIMES VALUES (
+            'Тидекс', 'Обработка спектров пропускания', '', 470.5,
+            '2026-09-29 15:00', '2026-09-29 18:00', 180, 1411.5
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    service = AadhkIngestionService(db)
+    res = await service.ingest_backup_file(aadhk_file)
+    assert res["parsed_count"] == 2
+    assert res["new_inserted_count"] == 2
+    assert res["conflicts_count"] == 0  # No schedule in DB yet
+
+    summary = await db.get_timesheet_summary()
+    assert summary["total_shifts"] == 2
+    assert summary["total_hours"] == 7.0
+    assert summary["clean_hours"] == 7.0
+    assert summary["conflict_hours"] == 0.0
+    assert summary["total_amount"] == 3293.5
+
+    # 2. Add schedule snapshot covering 2026-09-28 (11:10 - 12:40 lab work)
+    sched_payload = SchedulePayload(
+        group_or_teacher_id="2903",
+        fetched_at=datetime.now(),
+        days=[
+            ScheduleDay(
+                date=date(2026, 9, 28),
+                lessons=[
+                    Lesson(
+                        subject="Распределенные системы",
+                        lesson_type=LessonType.LAB,
+                        date=date(2026, 9, 28),
+                        start_time=time(11, 10),
+                        end_time=time(12, 40),
+                        room="12-04",
+                        group="2241",
+                    )
+                ],
+            )
+        ],
+    )
+    await db.upsert_monitored_source(
+        source_id="rasp_guap_2903",
+        source_type="schedule_guap",
+        display_name="Расписание ГУАП",
+        config={"target_id": "2903"},
+    )
+    await db.save_snapshot("rasp_guap_2903", "hash_2903_28", sched_payload.model_dump_json())
+
+
+    # 3. Run reconciliation
+    rec_res = await service.reconcile_all_conflicts()
+    assert rec_res["total_checked"] == 2
+    assert rec_res["conflicts_found"] == 1
+    assert rec_res["clean_hours"] == 3.0  # Shift 2 is clean
+    assert rec_res["conflict_hours"] == 4.0  # Shift 1 overlaps (90 min overlap)
+
+    # 4. Check detailed report
+    report = await service.get_timesheet_report()
+    assert len(report["conflicts"]) == 1
+    conflict_desc = report["conflicts"][0]["conflict_details"]
+    assert "Распределенные системы" in conflict_desc
+    assert "90 мин" in conflict_desc
+    assert "12-04" in conflict_desc
+
+    await db.close()
+
