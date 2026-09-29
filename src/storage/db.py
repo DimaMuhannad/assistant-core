@@ -312,6 +312,17 @@ class Database:
                     VALUES (new.id, new.chapter_title, new.book_title, new.summary);
                 END;
 
+                CREATE TABLE IF NOT EXISTS bot_dialog_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    intent TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_dialog_user_date ON bot_dialog_history(user_id, created_at);
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -2197,7 +2208,58 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    # --- 13. Conversational Secretary Dialog History ---
 
+    async def save_dialog_message(
+        self,
+        user_id: int,
+        role: str,
+        content: str,
+        intent: str | None = None,
+    ) -> int:
+        """Save a user or assistant message to dialog history."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO bot_dialog_history (user_id, role, content, intent)
+                VALUES (?, ?, ?, ?);
+                """,
+                (user_id, role, content, intent),
+            )
+            await conn.commit()
+            return cursor.lastrowid
 
+    async def get_recent_dialog_history(
+        self,
+        user_id: int,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Retrieve recent conversation turns for a user in chronological order."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, user_id, role, content, intent, created_at
+                FROM (
+                    SELECT id, user_id, role, content, intent, created_at
+                    FROM bot_dialog_history
+                    WHERE user_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC;
+                """,
+                (user_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
+    async def clear_dialog_history(self, user_id: int) -> int:
+        """Clear conversation history for a user."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM bot_dialog_history WHERE user_id = ?;",
+                (user_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount
 

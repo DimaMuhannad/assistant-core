@@ -16,6 +16,8 @@ from aiogram.filters import Command
 from src.storage.db import Database
 from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
+from src.brain.secretary_dialog import SecretaryDialogEngine
+from src.brain.voice import VoiceProcessor
 from src.sender.email_sender import EmailSender
 from src.connectors.guap_lms.client import GuapLmsClient
 from src.notifier.telegram import (
@@ -60,6 +62,8 @@ class EmailBotHandler:
                     logger.warning("Could not initialize Bot with token: %s", e)
                     self.bot = None
         self.summarizer = summarizer or GeminiSummarizer()
+        self.dialog_engine = SecretaryDialogEngine(db=self.db)
+        self.voice_processor = VoiceProcessor()
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
@@ -146,8 +150,12 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("lms:del_confirm:"))(self.cb_lms_del_confirm)
         self.router.callback_query(F.data == "lms:create_menu")(self.cb_lms_create_menu)
 
-        # Interactive text messages (for edit or manual draft entry)
+        # Interactive text messages (for edit, commands, or conversational secretary)
+        self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
         self.router.message(F.text)(self.handle_user_text)
+
+        # Voice messages (audio transcription and conversational secretary)
+        self.router.message(F.voice)(self.handle_user_voice)
 
         # Photos and screenshots
         self.router.message(F.photo)(self.handle_user_photo)
@@ -159,9 +167,12 @@ class EmailBotHandler:
         if not self._is_authorized(message.from_user.id):
             return
         text = (
-            "🤖 **Академический ассистент ГУАП (Кафедра физики)**\n\n"
+            "🤖 **Персональный секретарь и ассистент ГУАП (Кафедра физики)**\n\n"
             "Сервис 24/7 ведет мониторинг расписания, почты, задач и личного кабинета pro.guap.ru.\n\n"
+            "💬 **Диалог в свободной форме:**\n"
+            "Вы можете писать или отправлять **голосовые сообщения** с любыми вопросами (расписание, аудитории, баланс часов в «Тидекс», письма, отчеты в LMS, ГОСТы, учебники, эффективный контракт).\n\n"
             "Доступные команды:\n"
+            "• `/clear` — сбросить контекст диалога с секретарем\n"
             "• `/tasks` — управление заданиями pro.guap.ru (публикация, скрытие, создание, удаление)\n"
             "• `/reports` — сданные студенческие отчеты, ожидающие проверки\n"
             "• `/lms_publish <№|id>` — опубликовать лабораторную работу для всех групп (или по ID)\n"
@@ -575,7 +586,10 @@ class EmailBotHandler:
                 if clean_q:
                     await self._handle_methodist_query(message, clean_q)
                     return
-            return  # Normal text message unrelated to email draft prompt
+
+            # Conversational dialogue with Secretary Assistant
+            await self._handle_secretary_dialog(message, message.text.strip())
+            return
 
         # 1. Clean up user's own typed message to keep chat spotless
         try:
@@ -948,6 +962,70 @@ class EmailBotHandler:
                 src_text = "\n\n📚 **Использованные первоисточники (выгрузка страниц):**\n" + "\n".join(unique_src[:4])
 
         await message.answer(f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}")
+
+    async def handle_cmd_clear_dialog(self, message: Message) -> None:
+        """Handle /clear or /reset to wipe conversational memory."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        await self.db.clear_dialog_history(message.from_user.id)
+        text = "🧹 **Память диалога успешно очищена.** Я готов к новым вопросам!"
+        if self.notifier:
+            await self.notifier.send_message(text, chat_id=message.chat.id)
+        else:
+            await message.answer(text)
+
+    async def _handle_secretary_dialog(self, message: Message, text: str) -> None:
+        """Handle conversational queries to Dmitry Popov's personal secretary."""
+        try:
+            await self.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        except Exception:
+            pass
+
+        answer = await self.dialog_engine.answer_user_message(
+            user_id=message.from_user.id,
+            message_text=text,
+        )
+
+        if self.notifier:
+            await self.notifier.send_message(answer, chat_id=message.chat.id)
+        else:
+            await message.answer(answer)
+
+    async def handle_user_voice(self, message: Message) -> None:
+        """Handle voice messages: transcribe audio and process via conversational secretary."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        try:
+            await self.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        except Exception:
+            pass
+
+        import io
+        try:
+            voice_file = await self.bot.get_file(message.voice.file_id)
+            voice_bytes_io = io.BytesIO()
+            await self.bot.download_file(voice_file.file_path, destination=voice_bytes_io)
+            voice_bytes = voice_bytes_io.getvalue()
+
+            voice_res = await self.voice_processor.transcribe(
+                voice_bytes,
+                duration_seconds=message.voice.duration,
+            )
+
+            if not voice_res.success or not voice_res.transcription:
+                await message.answer("⚠️ Не удалось распознать голосовое сообщение. Попробуйте написать текстом.")
+                return
+
+            recognized_text = voice_res.transcription.strip()
+            # Send preview of transcription
+            await message.answer(f"🎙️ *«{recognized_text}»*")
+
+            # Route to conversational secretary
+            await self._handle_secretary_dialog(message, recognized_text)
+        except Exception as e:
+            logger.exception("Error processing voice message: %s", e)
+            await message.answer(f"⚠️ Ошибка обработки голосового сообщения ({e}).")
 
     async def handle_cmd_methodist_books(self, message: Message) -> None:
         """Display list of indexed textbooks and lab manuals with TOC stats."""
