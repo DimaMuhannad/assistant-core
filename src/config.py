@@ -63,11 +63,13 @@ GMAIL_IMAP_PORT = int(os.getenv("GMAIL_IMAP_PORT", "993"))
 GMAIL_SMTP_SERVER = os.getenv("GMAIL_SMTP_SERVER", "smtp.gmail.com")
 GMAIL_SMTP_PORT = int(os.getenv("GMAIL_SMTP_PORT", "587"))
 
-# Mailbox 3: GUAP Corporate (guap.ru)
+# Mailbox 3: GUAP Corporate (guap.ru) & LMS pro.guap.ru
 GUAP_EMAIL = os.getenv("GUAP_EMAIL", "")
 GUAP_PASSWORD = os.getenv("GUAP_PASSWORD", "")
+GUAP_LK_PASSWORD = os.getenv("GUAP_LK_PASSWORD", "")
 GUAP_IMAP_SERVER = os.getenv("GUAP_IMAP_SERVER", "mail.guap.ru")
 GUAP_IMAP_PORT = int(os.getenv("GUAP_IMAP_PORT", "993"))
 GUAP_SMTP_SERVER = os.getenv("GUAP_SMTP_SERVER", "mail.guap.ru")
 GUAP_SMTP_PORT = int(os.getenv("GUAP_SMTP_PORT", "587"))
+
 
