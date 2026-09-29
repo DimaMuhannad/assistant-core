@@ -95,6 +95,7 @@ class EmailBotHandler:
         self.router.message(Command("start", "help"))(self.handle_cmd_help)
         self.router.message(Command("emails", "inbox"))(self.handle_cmd_emails)
         self.router.message(Command("evening", "digest"))(self.handle_cmd_evening)
+        self.router.message(Command("cancel", "cansel"))(self.handle_cmd_cancel)
 
         # Callbacks under email card
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
@@ -191,6 +192,35 @@ class EmailBotHandler:
         except Exception as e:
             logger.exception("Error generating evening digest: %s", e)
             await status_msg.edit_text(f"❌ Ошибка генерации дайджеста: {e}")
+
+    async def handle_cmd_cancel(self, message: Message) -> None:
+        """Cancel active draft edit/write prompt or ongoing interaction."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        state = self.waiting_input.pop(message.from_user.id, None)
+        if state and self.bot:
+            prompt_id = state.get("prompt_msg_id")
+            if prompt_id:
+                try:
+                    await self.bot.delete_message(chat_id=message.chat.id, message_id=prompt_id)
+                except Exception:
+                    pass
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        status_msg = await message.answer("🛑 **Действие отменено.** Чат очищен.")
+        if self.bot:
+            async def _cleanup():
+                await asyncio.sleep(4)
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+            asyncio.create_task(_cleanup())
 
     async def cb_suggest_reply(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):
