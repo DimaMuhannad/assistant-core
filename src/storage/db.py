@@ -140,6 +140,56 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    area TEXT NOT NULL DEFAULT 'ГУАП',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    target_date TEXT,
+                    key_result TEXT,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    area TEXT NOT NULL DEFAULT 'ГУАП',
+                    priority TEXT NOT NULL DEFAULT 'P2',
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    due_date TEXT,
+                    estimated_minutes INTEGER,
+                    context_tag TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                    what TEXT NOT NULL,
+                    person TEXT,
+                    check_date TEXT,
+                    context TEXT,
+                    source_type TEXT DEFAULT 'manual',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                    title TEXT NOT NULL,
+                    category TEXT DEFAULT 'general',
+                    content_markdown TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -150,9 +200,16 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_email_answered ON email_messages(is_answered);
                 CREATE INDEX IF NOT EXISTS idx_email_requires_action ON email_messages(requires_action);
                 CREATE INDEX IF NOT EXISTS idx_email_drafts_email_id ON email_drafts(email_id);
+                CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
+                CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+                CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+                CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+                CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+                CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
                 """
             )
             await conn.commit()
+            await self._seed_initial_data_if_empty(conn)
 
             # Migrate email_messages columns if missing
             cursor = await conn.execute("PRAGMA table_info(email_messages);")
@@ -1018,6 +1075,422 @@ class Database:
                 "total_answered_count": len(all_answered),
                 "bot_answered_count": len(bot_answered),
                 "pending_count": len(pending_actionable),
+            }
+
+    async def _seed_initial_data_if_empty(self, conn: aiosqlite.Connection) -> None:
+        """Seed initial projects, tasks, reminders and documents if empty."""
+        cursor = await conn.execute("SELECT COUNT(*) FROM projects;")
+        row = await cursor.fetchone()
+        if row and row[0] > 0:
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        # 1. Seed Projects
+        projects_data = [
+            ("ГУАП: Осенний семестр 2026 (Физика и ОПД)", "ГУАП", "active", "2027-01-31", "Проведение лекций, практик, лабораторных работ, прием зачетов и экзаменов", "Учебный процесс на кафедре физики №1 ГУАП (очники и заочники)."),
+            ("ГУАП: Эффективный контракт и методическая работа", "ГУАП", "active", "2027-06-30", "Выполнение плановых показателей публикационной активности и методических материалов", "Подготовка учебно-методических пособий и баллы эффективного контракта."),
+            ("Тидекс: Сектор приборов (разработка и учет)", "Тидекс", "active", "2026-12-31", "Выполнение R&D задач сектора приборов, разработка ПО и учет смен", "НИОКР в секторе приборов ООО «Тидекс», трекинг смен и задач."),
+            ("AI-ассистент: Автономный секретарь и Студия", "AI & Dev Projects", "active", "2026-10-31", "Запуск полного контура ассистента: почта, расписание, ЛК ГУАП, веб-кабинет", "Разработка веб-студии (chat-app) и серверного движка (assistant-core)."),
+            ("Научные публикации и исследования", "Наука и статьи", "active", "2027-04-30", "Подготовка и подача статей ВАК/Scopus по оптике и спектроскопии", "Исследования в области терагерцовой оптики и приборостроения."),
+        ]
+        
+        project_ids = {}
+        for name, area, status, target_date, key_result, desc in projects_data:
+            c = await conn.execute(
+                """
+                INSERT INTO projects (name, area, status, target_date, key_result, description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (name, area, status, target_date, key_result, desc, now_iso, now_iso),
+            )
+            project_ids[name] = c.lastrowid
+
+        # 2. Seed Tasks
+        tasks_data = [
+            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "Подготовка к занятиям в среду: Гастелло 15, ауд. 31-04а и 32-03 (ФОНТ и Физика)", "3 пары: 09:30 ФОНТ (м431к), 11:10 Физика (м562), 13:00 ФОНТ (м431к)", "ГУАП", "P1", "todo", "2026-09-30", 90, "ГУАП"),
+            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "Размещение заданий и дедлайнов в Личном кабинете преподавателя pro.guap.ru", "Опубликовать лабораторные работы и настроить сроки сдачи для учебных групп.", "ГУАП", "P2", "todo", "2026-10-03", 60, "Документы"),
+            (project_ids.get("Тидекс: Сектор приборов (разработка и учет)"), "Сверка и учет отработанных часов за сентябрь в секторе приборов Тидекс", "Проверить табель смен в AADHk Time Recording и сопоставить с сеткой занятий.", "Тидекс", "P2", "todo", "2026-10-01", 45, "Тидекс"),
+        ]
+        for pid, title, desc, area, prio, status, due, est, tag in tasks_data:
+            await conn.execute(
+                """
+                INSERT INTO tasks (project_id, title, description, area, priority, status, due_date, estimated_minutes, context_tag, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (pid, title, desc, area, prio, status, due, est, tag, now_iso, now_iso),
+            )
+
+        # 3. Seed Reminders (Waiting For)
+        reminders_data = [
+            (None, "Назначить дату онлайн-защиты лабораторных работ в Телемосте и отправить ссылку", "Светлана Парфирова (гр. м651ксв)", "2026-10-02", "ГУАП: Осенний семестр 2026 / Почта", "email", "active"),
+            (None, "Проверить присланные отчеты по практике 1 от старост групп м531 и м631к", "Старосты групп м531 / м631к", "2026-10-03", "Основы проектной деятельности", "tg_group", "active"),
+        ]
+        for tid, what, person, check_date, ctx, stype, status in reminders_data:
+            await conn.execute(
+                """
+                INSERT INTO reminders (task_id, what, person, check_date, context, source_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (tid, what, person, check_date, ctx, stype, status, now_iso, now_iso),
+            )
+
+        # 4. Seed Documents (Markdown notes / plans)
+        sample_doc_content = (
+            "# План учебной работы: Осенний семестр 2026\n\n"
+            "## 1. Дисциплины и аудиторная нагрузка\n"
+            "- **Физические основы нанотехнологий (ФОНТ):** гр. м431к (Лекции и Лабораторные работы, ауд. 31-04а, Гастелло 15).\n"
+            "- **Физика (общий курс):** гр. м562, м553, 8626, 1632.\n"
+            "- **Основы проектной деятельности (ОПД):** гр. м531, м631к.\n\n"
+            "## 2. Порядок приема лабораторных работ\n"
+            "1. Очники выполняют работы и защищают в аудиториях кафедры физики №1.\n"
+            "2. Для студентов очно-заочной формы (проживающих в других регионах):\n"
+            "   - Выполнение отчетов дистанционно и отправка по email.\n"
+            "   - Рецензирование и проверка замечаний.\n"
+            "   - Итоговая защита в онлайн-формате на платформе «Яндекс Телемост».\n"
+        )
+        await conn.execute(
+            """
+            INSERT INTO documents (project_id, title, category, content_markdown, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "План учебной работы: Осенний семестр 2026 (Кафедра физики №1)", "plan", sample_doc_content, now_iso, now_iso),
+        )
+        await conn.commit()
+
+    # --- Projects CRUD ---
+    async def list_projects(self, area: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        async with self.connection() as conn:
+            query = "SELECT * FROM projects WHERE 1=1"
+            params: list[Any] = []
+            if area:
+                query += " AND area = ?"
+                params.append(area)
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            query += " ORDER BY id ASC;"
+            cursor = await conn.execute(query, tuple(params))
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_project(self, project_id: int) -> dict[str, Any] | None:
+        async with self.connection() as conn:
+            cursor = await conn.execute("SELECT * FROM projects WHERE id = ?;", (project_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def create_project(
+        self,
+        name: str,
+        area: str = "ГУАП",
+        status: str = "active",
+        target_date: str | None = None,
+        key_result: str | None = None,
+        description: str | None = None,
+    ) -> int:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO projects (name, area, status, target_date, key_result, description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (name, area, status, target_date, key_result, description, now_iso, now_iso),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_project(self, project_id: int, **kwargs: Any) -> bool:
+        if not kwargs:
+            return False
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clauses = [f"{k} = ?" for k in kwargs.keys()]
+        values = list(kwargs.values()) + [project_id]
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"UPDATE projects SET {', '.join(set_clauses)} WHERE id = ?;",
+                tuple(values),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_project(self, project_id: int) -> bool:
+        async with self.connection() as conn:
+            cursor = await conn.execute("DELETE FROM projects WHERE id = ?;", (project_id,))
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    # --- Tasks CRUD ---
+    async def list_tasks(
+        self,
+        status: str | None = None,
+        area: str | None = None,
+        priority: str | None = None,
+        project_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self.connection() as conn:
+            query = """
+                SELECT t.*, p.name as project_name
+                FROM tasks t
+                LEFT JOIN projects p ON t.project_id = p.id
+                WHERE 1=1
+            """
+            params: list[Any] = []
+            if status:
+                query += " AND t.status = ?"
+                params.append(status)
+            if area:
+                query += " AND t.area = ?"
+                params.append(area)
+            if priority:
+                query += " AND t.priority = ?"
+                params.append(priority)
+            if project_id:
+                query += " AND t.project_id = ?"
+                params.append(project_id)
+            query += " ORDER BY CASE t.priority WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END, t.due_date ASC, t.id DESC;"
+            cursor = await conn.execute(query, tuple(params))
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_task(self, task_id: int) -> dict[str, Any] | None:
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT t.*, p.name as project_name
+                FROM tasks t
+                LEFT JOIN projects p ON t.project_id = p.id
+                WHERE t.id = ?;
+                """,
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def create_task(
+        self,
+        title: str,
+        project_id: int | None = None,
+        description: str | None = None,
+        area: str = "ГУАП",
+        priority: str = "P2",
+        status: str = "todo",
+        due_date: str | None = None,
+        estimated_minutes: int | None = None,
+        context_tag: str | None = None,
+    ) -> int:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO tasks (project_id, title, description, area, priority, status, due_date, estimated_minutes, context_tag, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (project_id, title, description, area, priority, status, due_date, estimated_minutes, context_tag, now_iso, now_iso),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_task(self, task_id: int, **kwargs: Any) -> bool:
+        if not kwargs:
+            return False
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clauses = [f"{k} = ?" for k in kwargs.keys()]
+        values = list(kwargs.values()) + [task_id]
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"UPDATE tasks SET {', '.join(set_clauses)} WHERE id = ?;",
+                tuple(values),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_task(self, task_id: int) -> bool:
+        async with self.connection() as conn:
+            cursor = await conn.execute("DELETE FROM tasks WHERE id = ?;", (task_id,))
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    # --- Reminders / Waiting For CRUD ---
+    async def list_reminders(self, status: str | None = None) -> list[dict[str, Any]]:
+        async with self.connection() as conn:
+            query = "SELECT * FROM reminders WHERE 1=1"
+            params: list[Any] = []
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            query += " ORDER BY status ASC, check_date ASC, id DESC;"
+            cursor = await conn.execute(query, tuple(params))
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_reminder(self, reminder_id: int) -> dict[str, Any] | None:
+        async with self.connection() as conn:
+            cursor = await conn.execute("SELECT * FROM reminders WHERE id = ?;", (reminder_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def create_reminder(
+        self,
+        what: str,
+        person: str | None = None,
+        check_date: str | None = None,
+        context: str | None = None,
+        source_type: str = "manual",
+        task_id: int | None = None,
+        status: str = "active",
+    ) -> int:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO reminders (task_id, what, person, check_date, context, source_type, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (task_id, what, person, check_date, context, source_type, status, now_iso, now_iso),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_reminder(self, reminder_id: int, **kwargs: Any) -> bool:
+        if not kwargs:
+            return False
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clauses = [f"{k} = ?" for k in kwargs.keys()]
+        values = list(kwargs.values()) + [reminder_id]
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"UPDATE reminders SET {', '.join(set_clauses)} WHERE id = ?;",
+                tuple(values),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_reminder(self, reminder_id: int) -> bool:
+        async with self.connection() as conn:
+            cursor = await conn.execute("DELETE FROM reminders WHERE id = ?;", (reminder_id,))
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    # --- Documents CRUD ---
+    async def list_documents(self, project_id: int | None = None) -> list[dict[str, Any]]:
+        async with self.connection() as conn:
+            query = """
+                SELECT d.id, d.project_id, d.title, d.category, d.created_at, d.updated_at,
+                       p.name as project_name, substr(d.content_markdown, 1, 150) as preview
+                FROM documents d
+                LEFT JOIN projects p ON d.project_id = p.id
+                WHERE 1=1
+            """
+            params: list[Any] = []
+            if project_id:
+                query += " AND d.project_id = ?"
+                params.append(project_id)
+            query += " ORDER BY d.updated_at DESC, d.id DESC;"
+            cursor = await conn.execute(query, tuple(params))
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_document(self, doc_id: int) -> dict[str, Any] | None:
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT d.*, p.name as project_name
+                FROM documents d
+                LEFT JOIN projects p ON d.project_id = p.id
+                WHERE d.id = ?;
+                """,
+                (doc_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def create_document(
+        self,
+        title: str,
+        content_markdown: str,
+        project_id: int | None = None,
+        category: str = "general",
+    ) -> int:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO documents (project_id, title, category, content_markdown, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (project_id, title, category, content_markdown, now_iso, now_iso),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_document(self, doc_id: int, **kwargs: Any) -> bool:
+        if not kwargs:
+            return False
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clauses = [f"{k} = ?" for k in kwargs.keys()]
+        values = list(kwargs.values()) + [doc_id]
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"UPDATE documents SET {', '.join(set_clauses)} WHERE id = ?;",
+                tuple(values),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def delete_document(self, doc_id: int) -> bool:
+        async with self.connection() as conn:
+            cursor = await conn.execute("DELETE FROM documents WHERE id = ?;", (doc_id,))
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    # --- Dashboard Summary ---
+    async def get_dashboard_summary(self) -> dict[str, Any]:
+        async with self.connection() as conn:
+            # P1 Focus tasks
+            cursor = await conn.execute(
+                """
+                SELECT t.*, p.name as project_name
+                FROM tasks t
+                LEFT JOIN projects p ON t.project_id = p.id
+                WHERE t.status != 'done' AND t.priority = 'P1'
+                ORDER BY t.due_date ASC LIMIT 5;
+                """
+            )
+            focus_tasks = [dict(r) for r in await cursor.fetchall()]
+
+            # Task counts by status
+            cursor = await conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM tasks GROUP BY status;"
+            )
+            task_status_counts = {row["status"]: row["cnt"] for row in await cursor.fetchall()}
+
+            # Task counts by area
+            cursor = await conn.execute(
+                "SELECT area, COUNT(*) as cnt FROM tasks WHERE status != 'done' GROUP BY area;"
+            )
+            task_area_counts = {row["area"]: row["cnt"] for row in await cursor.fetchall()}
+
+            # Active reminders
+            cursor = await conn.execute(
+                "SELECT * FROM reminders WHERE status = 'active' ORDER BY check_date ASC LIMIT 10;"
+            )
+            active_reminders = [dict(r) for r in await cursor.fetchall()]
+
+            # Active projects count
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM projects WHERE status = 'active';"
+            )
+            active_projects_count = (await cursor.fetchone())[0]
+
+            # Total documents count
+            cursor = await conn.execute("SELECT COUNT(*) FROM documents;")
+            total_documents_count = (await cursor.fetchone())[0]
+
+            return {
+                "focus_tasks": focus_tasks,
+                "task_status_counts": task_status_counts,
+                "task_area_counts": task_area_counts,
+                "active_reminders": active_reminders,
+                "active_projects_count": active_projects_count,
+                "total_documents_count": total_documents_count,
             }
 
 
