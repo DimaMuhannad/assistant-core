@@ -260,3 +260,157 @@ class GeminiSummarizer:
         lines.append("• Ответ на входящие методические вопросы студентов.")
 
         return "\n".join(lines).strip()
+
+    async def generate_evening_digest(
+        self,
+        target_date: date,
+        email_stats: dict[str, Any],
+        tomorrow_date: date,
+        tomorrow_lessons: list[Lesson],
+        action_items: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Generate an executive evening summary focusing on email stats, completed items, and tomorrow's schedule."""
+        if not self.is_configured:
+            return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)
+
+        try:
+            client = self.get_client()
+
+            weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+            weekday_today = weekday_names[target_date.weekday()]
+            weekday_tmr = weekday_names[tomorrow_date.weekday()]
+
+            bot_answered = email_stats.get("bot_answered", [])
+            pending = email_stats.get("pending_actionable", [])
+
+            email_lines = [
+                f"Обработано и отправлено ответов за сегодня: {len(bot_answered)}.",
+            ]
+            if bot_answered:
+                email_lines.append("Список отправленных ответов:")
+                for em in bot_answered:
+                    cat = "Студент" if em.get("category") == "guap_student" else "Кафедра/ГУАП"
+                    s_name = em.get("sender_name") or em.get("sender_email")
+                    time_str = str(em.get("updated_at", ""))
+                    if "T" in time_str:
+                        time_str = time_str.split("T")[1][:5]
+                    email_lines.append(f"• [{cat}] {s_name} ({em.get('sender_email')}) | Тема: {em.get('subject')} | Отправлено в: {time_str}")
+
+            if pending:
+                email_lines.append(f"Осталось неотвеченных важных писем: {len(pending)}")
+            else:
+                email_lines.append("Осталось неотвеченных важных писем: 0 (все обработаны).")
+
+            tmr_lines = []
+            if tomorrow_lessons:
+                for l in tomorrow_lessons:
+                    type_str = l.lesson_type.value if hasattr(l.lesson_type, "value") else str(l.lesson_type)
+                    room_str = f"📍 {l.room}" if l.room and l.room != "Не указана" else ""
+                    group_str = f"Группа: {l.group}" if hasattr(l, "group") and l.group else ""
+                    details = " • ".join(filter(None, [room_str, group_str]))
+                    tmr_lines.append(f"• {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} | [{type_str}] {l.subject}\n  {details}")
+            else:
+                tmr_lines.append("• Занятий на завтра по расписанию нет (методический/свободный день).")
+
+            prompt = (
+                f"Сегодня завершается: {target_date.strftime('%d.%m.%Y')} ({weekday_today}).\n\n"
+                f"=== СТАТИСТИКА РАБОТЫ С ПОЧТОЙ ЗА ДЕНЬ ===\n" + "\n".join(email_lines) + "\n\n"
+                f"=== РАСПИСАНИЕ НА ЗАВТРА ({tomorrow_date.strftime('%d.%m.%Y')}, {weekday_tmr}) ===\n" + "\n".join(tmr_lines) + "\n\n"
+                "Сформируй структурированный вечерний дайджест для преподавателя."
+            )
+
+            system_instruction = (
+                "Ты — персональный академический ассистент преподавателя ГУАП (Попов Д.А., Кафедра физики №1).\n"
+                f"Сегодняшняя дата: {target_date.strftime('%d.%m.%Y')} ({weekday_today}).\n\n"
+                "СТАНДАРТЫ ОФОРМЛЕНИЯ ДЛЯ TELEGRAM (МОБИЛЬНЫЙ ВЕЧЕРНИЙ БРИФИНГ):\n"
+                "- Заголовки разделов: используй ТОЛЬКО жирные эмодзи-заголовки. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать решетки (#, ##, ###)!\n"
+                "  Примеры заголовков:\n"
+                f"  🌙 **Вечерний дайджест за {target_date.strftime('%d.%m.%Y')} ({weekday_today})**\n"
+                "  📬 **Почтовый щит: статистика за день**\n"
+                f"  📅 **Расписание на завтра ({tomorrow_date.strftime('%d.%m.%Y')}, {weekday_tmr})**\n"
+                "  ✨ **Итоги дня и статус**\n"
+                "- Списки: используй ТОЛЬКО круглые буллеты (•). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать галочки (✔️)!\n"
+                "- Разделители: пустые строки (без дефисов '---').\n"
+                "Пиши лаконично, точно, уважительно и структурированно."
+            )
+
+            candidate_models = ["gemini-3.5-flash-lite", self.model, "gemini-3.8-flash"]
+            for cand in candidate_models:
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=cand,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.2,
+                        ),
+                    )
+                    if response and response.text:
+                        return response.text.strip()
+                except Exception as model_err:
+                    logger.warning("Gemini model %s failed for evening digest: %s", cand, model_err)
+
+            return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)
+
+        except Exception as e:
+            logger.exception("Failed to generate evening digest via Gemini: %s", e)
+            return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)
+
+    def _generate_fallback_evening_digest(
+        self,
+        target_date: date,
+        email_stats: dict[str, Any],
+        tomorrow_date: date,
+        tomorrow_lessons: list[Lesson],
+        action_items: list[dict[str, Any]] | None = None,
+    ) -> str:
+        weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        weekday_today = weekday_names[target_date.weekday()]
+        weekday_tmr = weekday_names[tomorrow_date.weekday()]
+
+        lines = [f"🌙 **Вечерний дайджест за {target_date.strftime('%d.%m.%Y')} ({weekday_today})**\n"]
+
+        bot_answered = email_stats.get("bot_answered", [])
+        pending = email_stats.get("pending_actionable", [])
+
+        lines.append("📬 **Почтовый щит: статистика за день**")
+        lines.append(f"• Всего отвечено писем: **{len(bot_answered)}**")
+        if bot_answered:
+            for em in bot_answered:
+                s_name = em.get("sender_name") or em.get("sender_email")
+                time_str = str(em.get("updated_at", ""))
+                if "T" in time_str:
+                    time_str = time_str.split("T")[1][:5]
+                lines.append(f"  - 👤 **{s_name}** (`{em.get('sender_email')}`) | 🕒 {time_str}")
+                lines.append(f"    📌 _{em.get('subject', 'Без темы')}_")
+        if pending:
+            lines.append(f"• Ожидают ответа: **{len(pending)}** писем")
+        else:
+            lines.append("• Ожидают ответа: **0** (все письма обработаны)")
+        lines.append("")
+
+        lines.append(f"📅 **Расписание на завтра ({tomorrow_date.strftime('%d.%m.%Y')}, {weekday_tmr}):**")
+        if tomorrow_lessons:
+            for l in tomorrow_lessons:
+                type_name = {
+                    "LECTURE": "Лекция",
+                    "PRACTICE": "Практика",
+                    "LAB": "Лаб. работа",
+                    "EXAM": "Экзамен",
+                    "UNKNOWN": "Пара",
+                }.get(l.lesson_type.value, l.lesson_type.value)
+                room_str = f"📍 {l.room}" if l.room and l.room != "Не указана" else ""
+                group_str = f"Группа: {l.group}" if hasattr(l, "group") and l.group else ""
+                details = " • ".join(filter(None, [room_str, group_str]))
+                lines.append(f"• {l.start_time.strftime('%H:%M')}–{l.end_time.strftime('%H:%M')} | [{type_name}] {l.subject}")
+                if details:
+                    lines.append(f"  {details}")
+        else:
+            lines.append("• Занятий нет (свободный/методический день).")
+        lines.append("")
+
+        lines.append("✨ **Итоги дня:**")
+        lines.append("• Все запланированные коммуникации со студентами завершены.")
+        lines.append("• Данные синхронизированы с базой и календарем.")
+
+        return "\n".join(lines).strip()

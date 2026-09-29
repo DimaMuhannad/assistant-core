@@ -197,7 +197,9 @@ async def run_email_collector_cycle(
             ]
             for email_item in academic_items:
                 logger.info("Sending actionable email card for email id=%s (%s)", email_item.get("id"), email_item.get("subject"))
-                await notifier.send_actionable_email_card(email_item)
+                sent_ids = await notifier.send_actionable_email_card(email_item)
+                if sent_ids:
+                    await db.set_email_card_msg_id(email_item["id"], sent_ids[-1])
     except Exception as e:
         logger.exception("Error during email collection cycle: %s", e)
 
@@ -267,10 +269,75 @@ async def run_morning_brief_cycle(
         logger.exception("Error during morning brief cycle: %s", e)
 
 
+async def run_evening_digest_cycle(
+    db: Database,
+    schedule_parser: ScheduleParser,
+    summarizer: GeminiSummarizer,
+    notifier: TelegramNotifier,
+    force: bool = False,
+) -> None:
+    """Run evening executive digest cycle (daily at 21:00 MSK or triggered on startup/CLI)."""
+    try:
+        from datetime import timedelta
+        now_local = datetime.now(ZoneInfo(config.TZ))
+        today = now_local.date()
+        tomorrow = today + timedelta(days=1)
+
+        if not force:
+            latest_digest = await db.get_latest_snapshot("daily_evening_digest")
+            if latest_digest and latest_digest.get("captured_at"):
+                digest_date_str = str(latest_digest["captured_at"])[:10]
+                if digest_date_str == today.isoformat():
+                    logger.info("Evening digest for %s was already sent today. Skipping.", today)
+                    return
+
+        logger.info("Starting evening executive digest cycle for %s...", today)
+
+        # 1. Email stats for today (including Maryashina & Parfirova sent today)
+        email_stats = await db.get_daily_email_stats(today)
+
+        # 2. Tomorrow's lessons
+        tomorrow_lessons: list[Lesson] = []
+        snap = await db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+        if snap and snap.get("raw_payload"):
+            try:
+                payload = SchedulePayload.model_validate_json(snap["raw_payload"])
+                for day in payload.days:
+                    if day.date == tomorrow:
+                        tomorrow_lessons = day.lessons
+            except Exception as se:
+                logger.warning("Failed to parse schedule payload for evening digest: %s", se)
+
+        # 3. Action items from monitored Telegram chats
+        action_items = await db.get_pending_action_items(limit=20)
+
+        # 4. Generate evening digest
+        digest_markdown = await summarizer.generate_evening_digest(
+            target_date=today,
+            email_stats=email_stats,
+            tomorrow_date=tomorrow,
+            tomorrow_lessons=tomorrow_lessons,
+            action_items=action_items,
+        )
+
+        # 5. Send via Telegram
+        sent = await notifier.send_evening_digest(digest_markdown)
+        if sent:
+            await db.save_snapshot(
+                source_id="daily_evening_digest",
+                content_hash=today.isoformat(),
+                raw_payload=digest_markdown,
+            )
+            logger.info("Evening digest for %s successfully sent to Telegram.", today)
+    except Exception as e:
+        logger.exception("Error during evening digest cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     parser.add_argument("--brief", action="store_true", help="Force send morning brief and exit")
+    parser.add_argument("--evening", action="store_true", help="Force send evening digest and exit")
     parser.add_argument("--send-email-cards", action="store_true", help="Send cards for all current actionable emails")
     parser.add_argument("--send-email-id", type=int, help="Send card for a specific email by ID")
     args = parser.parse_args()
@@ -289,12 +356,15 @@ async def main() -> None:
     )
     reply_generator = ReplyGenerator()
     email_sender = EmailSender()
+    summarizer = GeminiSummarizer()
     bot_handler = EmailBotHandler(
         db=db,
         reply_generator=reply_generator,
         email_sender=email_sender,
         notifier=notifier,
+        bot=bot,
         allowed_user_id=config.TELEGRAM_USER_ID,
+        summarizer=summarizer,
     )
     dp.include_router(bot_handler.router)
 
@@ -311,19 +381,28 @@ async def main() -> None:
     email_collector = EmailCollector(db=db)
     summarizer = GeminiSummarizer()
 
-    # Track morning brief source in DB
+    # Track morning and evening brief sources in DB
     await db.upsert_monitored_source(
         source_id="daily_morning_brief",
         source_type="briefing",
         display_name="Daily Morning Brief",
         config={"hour": 8, "minute": 0},
     )
+    await db.upsert_monitored_source(
+        source_id="daily_evening_digest",
+        source_type="briefing",
+        display_name="Daily Evening Digest",
+        config={"hour": 21, "minute": 0},
+    )
 
     if args.send_email_id:
         logger.info("Sending card for email ID=%d...", args.send_email_id)
         email_item = await db.get_email_by_id(args.send_email_id)
         if email_item:
-            await notifier.send_actionable_email_card(email_item)
+            sent_ids = await notifier.send_actionable_email_card(email_item)
+            if sent_ids:
+                await db.set_email_card_msg_id(email_item["id"], sent_ids[-1])
+                bot_handler.register_message(email_item["id"], sent_ids[-1])
             logger.info("Card sent for email ID=%d", args.send_email_id)
         else:
             logger.error("Email ID=%d not found in database", args.send_email_id)
@@ -337,7 +416,10 @@ async def main() -> None:
         for it in actionable:
             full_item = await db.get_email_by_id(it["id"])
             if full_item:
-                await notifier.send_actionable_email_card(full_item)
+                sent_ids = await notifier.send_actionable_email_card(full_item)
+                if sent_ids:
+                    await db.set_email_card_msg_id(full_item["id"], sent_ids[-1])
+                    bot_handler.register_message(full_item["id"], sent_ids[-1])
         logger.info("Sent %d actionable email card(s).", len(actionable))
         await bot.session.close()
         await db.close()
@@ -346,6 +428,14 @@ async def main() -> None:
     if args.brief:
         logger.info("Force sending morning brief via --brief flag...")
         await run_morning_brief_cycle(db, schedule_parser, summarizer, notifier, force=True)
+        await bot.session.close()
+        await telegram_collector.disconnect()
+        await db.close()
+        return
+
+    if args.evening:
+        logger.info("Force sending evening digest via --evening flag...")
+        await run_evening_digest_cycle(db, schedule_parser, summarizer, notifier, force=True)
         await bot.session.close()
         await telegram_collector.disconnect()
         await db.close()
@@ -406,9 +496,19 @@ async def main() -> None:
         id="morning_brief_job",
         replace_existing=True,
     )
+    # Evening digest runs daily at 21:00 MSK
+    scheduler.add_job(
+        run_evening_digest_cycle,
+        "cron",
+        hour=21,
+        minute=0,
+        args=[db, schedule_parser, summarizer, notifier],
+        id="evening_digest_job",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
-        "Scheduler started. Morning brief at 08:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min.",
+        "Scheduler started. Morning brief at 08:00, Evening digest at 21:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min.",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
     )
 

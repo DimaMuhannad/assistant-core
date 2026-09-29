@@ -152,3 +152,126 @@ async def test_bot_handler_authorization(in_memory_db: Database):
 
     assert handler._is_authorized(12345) is True
     assert handler._is_authorized(99999) is False
+
+
+@pytest.mark.asyncio
+async def test_daily_email_stats(in_memory_db: Database):
+    from datetime import date
+    now = datetime.now(timezone.utc)
+    # 1. Answered email
+    e1_id = await in_memory_db.upsert_email_message(
+        message_id="msg-ans-1@guap.ru",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Студент 1",
+        sender_email="stud1@guap.ru",
+        recipients_json='["scipopov@mail.ru"]',
+        subject="Отчет готов",
+        date_sent=now,
+        body_plain="Отчет прикреплен",
+        body_html=None,
+        snippet="Отчет",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-ans-1",
+        category="guap_student",
+        requires_action=True,
+    )
+    d1_id = await in_memory_db.create_email_draft(e1_id, "Спасибо, принято.")
+    await in_memory_db.update_email_draft(d1_id, status="sent")
+    await in_memory_db.mark_email_as_answered(e1_id)
+
+    # 2. Pending email
+    await in_memory_db.upsert_email_message(
+        message_id="msg-pend-1@guap.ru",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Студент 2",
+        sender_email="stud2@guap.ru",
+        recipients_json='["scipopov@mail.ru"]',
+        subject="Вопрос по теории",
+        date_sent=now,
+        body_plain="Поясните формулу",
+        body_html=None,
+        snippet="Вопрос",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-pend-1",
+        category="guap_student",
+        requires_action=True,
+    )
+
+    stats = await in_memory_db.get_daily_email_stats(date.today())
+    assert len(stats["bot_answered"]) == 1
+    assert stats["bot_answered"][0]["subject"] == "Отчет готов"
+    assert len(stats["pending_actionable"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_email_session(in_memory_db: Database):
+    mock_bot = AsyncMock()
+    notifier = TelegramNotifier(bot_token="123456:FAKE", user_id="12345")
+    handler = EmailBotHandler(
+        db=in_memory_db,
+        reply_generator=ReplyGenerator(api_key=""),
+        email_sender=EmailSender(),
+        notifier=notifier,
+        bot=mock_bot,
+        allowed_user_id=12345,
+    )
+    handler.session_messages[99] = {1001, 1002}
+    await handler.cleanup_email_session(chat_id=12345, email_id=99)
+    assert mock_bot.delete_message.await_count == 2
+    assert 99 not in handler.session_messages
+
+
+@pytest.mark.asyncio
+async def test_evening_digest_fallback():
+    from datetime import date, time
+    from src.brain.summarizer import GeminiSummarizer
+    from src.models.schedule import Lesson, LessonType
+
+    summarizer = GeminiSummarizer(api_key="")
+    test_lessons = [
+        Lesson(
+            subject="Физика",
+            lesson_type=LessonType.PRACTICE,
+            date=date(2026, 9, 30),
+            start_time=time(9, 30),
+            end_time=time(11, 0),
+            room="31-04а",
+            building="Гастелло 15",
+            teacher="Попов Д.А.",
+            group="м431к",
+        )
+    ]
+    email_stats = {
+        "bot_answered": [
+            {
+                "sender_name": "Мария Марьяшина",
+                "sender_email": "shineshane8@gmail.com",
+                "subject": "Вопрос",
+                "category": "guap_student",
+                "updated_at": "2026-09-29T10:00:00",
+            }
+        ],
+        "pending_actionable": [],
+    }
+
+    digest = await summarizer.generate_evening_digest(
+        target_date=date(2026, 9, 29),
+        email_stats=email_stats,
+        tomorrow_date=date(2026, 9, 30),
+        tomorrow_lessons=test_lessons,
+    )
+
+    assert "Вечерний дайджест" in digest
+    assert "Почтовый щит: статистика за день" in digest
+    assert "Мария Марьяшина" in digest
+    assert "Расписание на завтра" in digest
+    assert "Физика" in digest
+

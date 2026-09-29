@@ -165,11 +165,19 @@ class Database:
                 ("is_expired", "BOOLEAN DEFAULT FALSE"),
                 ("deadline_at", "TIMESTAMP"),
                 ("relevance_score", "REAL DEFAULT 1.0"),
+                ("card_message_id", "INTEGER"),
             ]
             for col_name, col_type in new_cols_messages:
                 if col_name not in existing_cols:
                     logger.info("Migrating email_messages: adding column %s", col_name)
                     await conn.execute(f"ALTER TABLE email_messages ADD COLUMN {col_name} {col_type};")
+
+            # Migrate email_drafts columns if missing
+            cursor = await conn.execute("PRAGMA table_info(email_drafts);")
+            existing_draft_cols = {row[1] for row in await cursor.fetchall()}
+            if "draft_message_id" not in existing_draft_cols:
+                logger.info("Migrating email_drafts: adding column draft_message_id")
+                await conn.execute("ALTER TABLE email_drafts ADD COLUMN draft_message_id INTEGER;")
 
             # Migrate email_threads columns if missing
             cursor = await conn.execute("PRAGMA table_info(email_threads);")
@@ -940,6 +948,77 @@ class Database:
             cursor = await conn.execute(query, tuple(params))
             await conn.commit()
             return cursor.rowcount > 0
+
+    async def set_email_card_msg_id(self, email_id: int, card_msg_id: int) -> None:
+        """Store Telegram message ID of the notification card for an email."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "UPDATE email_messages SET card_message_id = ? WHERE id = ?;",
+                (card_msg_id, email_id),
+            )
+            await conn.commit()
+
+    async def set_draft_msg_id(self, draft_id: int, draft_msg_id: int) -> None:
+        """Store Telegram message ID of the draft card."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "UPDATE email_drafts SET draft_message_id = ? WHERE id = ?;",
+                (draft_msg_id, draft_id),
+            )
+            await conn.commit()
+
+    async def get_daily_email_stats(self, target_date: Any) -> dict[str, Any]:
+        """Fetch statistics about emails processed and answered on target_date."""
+        from datetime import date
+        date_iso = target_date.isoformat() if hasattr(target_date, "isoformat") else str(target_date)[:10]
+
+        async with self.connection() as conn:
+            # 1. Answered via bot/drafts on this date
+            cursor = await conn.execute(
+                """
+                SELECT d.id as draft_id, d.email_id, d.updated_at, m.subject, m.sender_name,
+                       m.sender_email, m.category, m.account_id
+                FROM email_drafts d
+                JOIN email_messages m ON d.email_id = m.id
+                WHERE d.status = 'sent' AND substr(d.updated_at, 1, 10) = ?
+                ORDER BY d.updated_at ASC;
+                """,
+                (date_iso,),
+            )
+            bot_answered = [dict(r) for r in await cursor.fetchall()]
+
+            # 2. Total answered emails on this date (including external replies)
+            cursor = await conn.execute(
+                """
+                SELECT id, subject, sender_name, sender_email, replied_at, category, account_id
+                FROM email_messages
+                WHERE is_answered = 1 AND substr(replied_at, 1, 10) = ?
+                ORDER BY replied_at ASC;
+                """,
+                (date_iso,),
+            )
+            all_answered = [dict(r) for r in await cursor.fetchall()]
+
+            # 3. Remaining unanswered actionable emails
+            cursor = await conn.execute(
+                """
+                SELECT id, subject, sender_name, sender_email, date_sent, category
+                FROM email_messages
+                WHERE requires_action = 1 AND is_answered = 0 AND is_noise = 0 AND is_expired = 0
+                ORDER BY date_sent DESC;
+                """,
+            )
+            pending_actionable = [dict(r) for r in await cursor.fetchall()]
+
+            return {
+                "date": date_iso,
+                "bot_answered": bot_answered,
+                "all_answered": all_answered,
+                "pending_actionable": pending_actionable,
+                "total_answered_count": len(all_answered),
+                "bot_answered_count": len(bot_answered),
+                "pending_count": len(pending_actionable),
+            }
 
 
 

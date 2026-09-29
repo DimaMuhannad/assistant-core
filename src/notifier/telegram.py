@@ -113,10 +113,10 @@ class TelegramNotifier:
         text_markdown: str,
         reply_markup: Any | None = None,
         chat_id: str | int | None = None,
-    ) -> bool:
-        """Sends markdown formatted message using native Telegram entities with clean text fallback."""
+    ) -> list[int]:
+        """Sends markdown formatted message using native Telegram entities with clean text fallback. Returns list of sent message IDs."""
         if not self.is_configured:
-            return True
+            return []
 
         target_chat = chat_id or self.user_id
         should_close_bot = False
@@ -126,29 +126,34 @@ class TelegramNotifier:
             bot = Bot(token=self.bot_token)
             should_close_bot = True
 
+        sent_msg_ids: list[int] = []
         try:
             chunks = format_and_split_for_telegram(text_markdown)
             num_chunks = len(chunks)
             for idx, (chunk_text, aio_entities) in enumerate(chunks):
                 if chunk_text.strip():
                     is_last = (idx == num_chunks - 1)
-                    await bot.send_message(
+                    sent_msg = await bot.send_message(
                         chat_id=target_chat,
                         text=chunk_text,
                         entities=aio_entities,
                         reply_markup=reply_markup if is_last else None,
                     )
-            return True
+                    if sent_msg and hasattr(sent_msg, "message_id"):
+                        sent_msg_ids.append(sent_msg.message_id)
+            return sent_msg_ids
         except Exception as e:
             logger.warning("Native entities dispatch failed (%s), falling back to clean text", e)
             clean = re.sub(r"\[([^\]]+)\]\(file:///[^\)]+\)", r"\1", text_markdown)
             clean = re.sub(r"^[ \t]*[-*_—─]{3,}[ \t]*$", "", clean, flags=re.MULTILINE)
-            await bot.send_message(
+            fallback_msg = await bot.send_message(
                 chat_id=target_chat,
                 text=clean[:3900],
                 reply_markup=reply_markup,
             )
-            return True
+            if fallback_msg and hasattr(fallback_msg, "message_id"):
+                sent_msg_ids.append(fallback_msg.message_id)
+            return sent_msg_ids
         finally:
             if should_close_bot:
                 await bot.session.close()
@@ -158,16 +163,16 @@ class TelegramNotifier:
         text_markdown: str,
         reply_markup: Any | None = None,
         chat_id: str | int | None = None,
-    ) -> bool:
-        """Send formatted markdown message to user."""
+    ) -> list[int]:
+        """Send formatted markdown message to user. Returns list of message IDs."""
         return await self._send_rich_message(text_markdown, reply_markup=reply_markup, chat_id=chat_id)
 
     async def send_actionable_email_card(
         self,
         email_data: dict[str, Any],
         chat_id: str | int | None = None,
-    ) -> bool:
-        """Sends a card with FULL email text and interactive action buttons."""
+    ) -> list[int]:
+        """Sends a card with FULL email text and interactive action buttons. Returns sent message IDs."""
         email_id = email_data.get("id")
         sender_name = email_data.get("sender_name") or ""
         sender_email = email_data.get("sender_email") or ""
@@ -202,8 +207,8 @@ class TelegramNotifier:
         self,
         draft_data: dict[str, Any],
         chat_id: str | int | None = None,
-    ) -> bool:
-        """Sends a card with proposed reply draft and confirmation buttons."""
+    ) -> list[int]:
+        """Sends a card with proposed reply draft and confirmation buttons. Returns sent message IDs."""
         draft_id = draft_data.get("draft_id") or draft_data.get("id")
         sender_name = draft_data.get("sender_name") or ""
         sender_email = draft_data.get("sender_email") or ""
@@ -223,6 +228,13 @@ class TelegramNotifier:
 
         keyboard = build_draft_action_keyboard(draft_id) if draft_id else None
         return await self._send_rich_message(message_text, reply_markup=keyboard, chat_id=chat_id)
+
+    async def send_evening_digest(self, digest_markdown: str, chat_id: str | int | None = None) -> bool:
+        """Send evening executive summary to Telegram."""
+        if not digest_markdown:
+            return False
+        res = await self._send_rich_message(digest_markdown, chat_id=chat_id)
+        return len(res) > 0
 
     async def send_schedule_diff_alert(self, diff: ScheduleDiff, target_id: str) -> bool:
         """Send formatted alert when schedule changes are detected."""
