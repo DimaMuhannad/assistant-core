@@ -223,6 +223,58 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS methodist_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    file_path TEXT NOT NULL UNIQUE,
+                    content_hash TEXT NOT NULL,
+                    summary TEXT,
+                    key_terms TEXT,
+                    total_chunks INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS methodist_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    doc_id INTEGER NOT NULL REFERENCES methodist_documents(id) ON DELETE CASCADE,
+                    section_title TEXT,
+                    chunk_text TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS methodist_chunks_fts USING fts5(
+                    section_title,
+                    chunk_text,
+                    content='methodist_chunks',
+                    content_rowid='id'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS methodist_chunks_ai AFTER INSERT ON methodist_chunks BEGIN
+                    INSERT INTO methodist_chunks_fts(rowid, section_title, chunk_text) VALUES (new.id, new.section_title, new.chunk_text);
+                END;
+                CREATE TRIGGER IF NOT EXISTS methodist_chunks_ad AFTER DELETE ON methodist_chunks BEGIN
+                    INSERT INTO methodist_chunks_fts(methodist_chunks_fts, rowid, section_title, chunk_text) VALUES('delete', old.id, old.section_title, old.chunk_text);
+                END;
+                CREATE TRIGGER IF NOT EXISTS methodist_chunks_au AFTER UPDATE ON methodist_chunks BEGIN
+                    INSERT INTO methodist_chunks_fts(methodist_chunks_fts, rowid, section_title, chunk_text) VALUES('delete', old.id, old.section_title, old.chunk_text);
+                    INSERT INTO methodist_chunks_fts(rowid, section_title, chunk_text) VALUES (new.id, new.section_title, new.chunk_text);
+                END;
+
+                CREATE TABLE IF NOT EXISTS methodist_qa_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    caller_type TEXT NOT NULL DEFAULT 'user',
+                    caller_id TEXT,
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    sources_json TEXT,
+                    is_out_of_scope BOOLEAN DEFAULT FALSE,
+                    feedback_score INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -245,6 +297,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_lms_sub_report ON lms_submissions(report_id);
                 CREATE INDEX IF NOT EXISTS idx_lms_sub_task ON lms_submissions(task_id);
                 CREATE INDEX IF NOT EXISTS idx_lms_sub_notified ON lms_submissions(notified_at);
+                CREATE INDEX IF NOT EXISTS idx_methodist_docs_cat ON methodist_documents(category);
+                CREATE INDEX IF NOT EXISTS idx_methodist_chunks_doc ON methodist_chunks(doc_id);
+                CREATE INDEX IF NOT EXISTS idx_methodist_qa_caller ON methodist_qa_memory(caller_type);
                 """
             )
             await conn.commit()
@@ -1795,6 +1850,180 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    # --- Methodist Knowledge Base & Q&A Memory Methods ---
+
+    async def save_methodist_document(
+        self,
+        category: str,
+        title: str,
+        file_path: str,
+        content_hash: str,
+        summary: str = "",
+        key_terms: str = "",
+        total_chunks: int = 0,
+    ) -> int:
+        """Insert or update a methodist document record and return its ID."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT id FROM methodist_documents WHERE file_path = ?;",
+                (file_path,),
+            )
+            row = await cursor.fetchone()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if row:
+                doc_id = row[0]
+                await conn.execute(
+                    """
+                    UPDATE methodist_documents SET
+                        category = ?,
+                        title = ?,
+                        content_hash = ?,
+                        summary = ?,
+                        key_terms = ?,
+                        total_chunks = ?,
+                        updated_at = ?
+                    WHERE id = ?;
+                    """,
+                    (category, title, content_hash, summary, key_terms, total_chunks, now_iso, doc_id),
+                )
+                await conn.commit()
+                return doc_id
+            else:
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO methodist_documents (
+                        category, title, file_path, content_hash, summary, key_terms, total_chunks, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (category, title, file_path, content_hash, summary, key_terms, total_chunks, now_iso, now_iso),
+                )
+                await conn.commit()
+                return cursor.lastrowid
+
+    async def replace_methodist_chunks(
+        self,
+        doc_id: int,
+        chunks: list[dict[str, Any]],
+    ) -> int:
+        """Replace all text chunks for a specific methodist document."""
+        async with self.connection() as conn:
+            # Delete old chunks (triggers will automatically delete from FTS5)
+            await conn.execute("DELETE FROM methodist_chunks WHERE doc_id = ?;", (doc_id,))
+            inserted = 0
+            for idx, ch in enumerate(chunks):
+                sec_title = ch.get("section_title") or f"Раздел {idx + 1}"
+                chunk_text = ch.get("chunk_text") or ""
+                if not chunk_text.strip():
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO methodist_chunks (doc_id, section_title, chunk_text, chunk_index)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (doc_id, sec_title, chunk_text, idx),
+                )
+                inserted += 1
+            await conn.execute(
+                "UPDATE methodist_documents SET total_chunks = ? WHERE id = ?;",
+                (inserted, doc_id),
+            )
+            await conn.commit()
+            return inserted
+
+    async def search_methodist_fts(self, query: str, limit: int = 6) -> list[dict[str, Any]]:
+        """Full-text search over methodist chunks using FTS5 BM25 relevance ranking."""
+        async with self.connection() as conn:
+            # Clean and sanitize FTS5 query terms
+            cleaned_terms = [t.strip().replace('"', '""') for t in query.split() if len(t.strip()) > 2]
+            if not cleaned_terms:
+                # If short query, fallback to LIKE on title and text
+                cursor = await conn.execute(
+                    """
+                    SELECT c.id, c.doc_id, c.section_title, c.chunk_text, c.chunk_index,
+                           d.title AS doc_title, d.category AS doc_category, 0.0 AS score
+                    FROM methodist_chunks c
+                    JOIN methodist_documents d ON c.doc_id = d.id
+                    WHERE c.chunk_text LIKE ? OR c.section_title LIKE ? OR d.title LIKE ?
+                    LIMIT ?;
+                    """,
+                    (f"%{query}%", f"%{query}%", f"%{query}%", limit),
+                )
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+            # FTS MATCH expression: terms separated by OR for recall
+            fts_query = " OR ".join(f'"{term}"*' for term in cleaned_terms[:8])
+            try:
+                cursor = await conn.execute(
+                    """
+                    SELECT c.id, c.doc_id, c.section_title, c.chunk_text, c.chunk_index,
+                           d.title AS doc_title, d.category AS doc_category,
+                           rank AS score
+                    FROM methodist_chunks_fts f
+                    JOIN methodist_chunks c ON f.rowid = c.id
+                    JOIN methodist_documents d ON c.doc_id = d.id
+                    WHERE methodist_chunks_fts MATCH ?
+                    ORDER BY rank ASC
+                    LIMIT ?;
+                    """,
+                    (fts_query, limit),
+                )
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                # Fallback to LIKE if FTS expression has syntax quirk
+                cursor = await conn.execute(
+                    """
+                    SELECT c.id, c.doc_id, c.section_title, c.chunk_text, c.chunk_index,
+                           d.title AS doc_title, d.category AS doc_category, 0.0 AS score
+                    FROM methodist_chunks c
+                    JOIN methodist_documents d ON c.doc_id = d.id
+                    WHERE c.chunk_text LIKE ? OR d.title LIKE ?
+                    LIMIT ?;
+                    """,
+                    (f"%{query}%", f"%{query}%", limit),
+                )
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def list_methodist_documents(self, category: str | None = None) -> list[dict[str, Any]]:
+        """List indexed methodist documents."""
+        async with self.connection() as conn:
+            if category:
+                cursor = await conn.execute(
+                    "SELECT * FROM methodist_documents WHERE category = ? ORDER BY title ASC;",
+                    (category,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT * FROM methodist_documents ORDER BY category ASC, title ASC;"
+                )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def log_methodist_qa(
+        self,
+        caller_type: str,
+        question: str,
+        answer: str,
+        caller_id: str | None = None,
+        sources_json: str | None = None,
+        is_out_of_scope: bool = False,
+        feedback_score: int = 0,
+    ) -> int:
+        """Log a question-answer interaction in methodist QA memory."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO methodist_qa_memory (
+                    caller_type, caller_id, question, answer, sources_json, is_out_of_scope, feedback_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (caller_type, caller_id, question, answer, sources_json, 1 if is_out_of_scope else 0, feedback_score),
+            )
+            await conn.commit()
+            return cursor.lastrowid
 
 
 

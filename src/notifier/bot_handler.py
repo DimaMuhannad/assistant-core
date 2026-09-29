@@ -113,6 +113,11 @@ class EmailBotHandler:
         self.router.message(Command("lms_create"))(self.handle_cmd_lms_create)
         self.router.message(Command("lms_delete"))(self.handle_cmd_lms_delete)
 
+        # Methodist Commands
+        self.router.message(Command("methodist", "gost", "rpd"))(self.handle_cmd_methodist)
+        self.router.message(Command("methodist_teach"))(self.handle_cmd_methodist_teach)
+        self.router.message(Command("methodist_stats"))(self.handle_cmd_methodist_stats)
+
         # Callbacks under email card
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
         self.router.callback_query(F.data.startswith("em:wr:"))(self.cb_write_reply)
@@ -161,7 +166,10 @@ class EmailBotHandler:
             "• `/lms_create <группа> <название>` — создать новое задание\n"
             "• `/lms_delete <id>` — удалить задание по ID\n"
             "• `/emails` — показать неотвеченные письма студентов и кафедры\n"
-            "• `/timesheet` — учет часов в «Тидекс» и наложения на пары ГУАП\n"
+            "• `/methodist <вопрос>` — консультация с агентом-методистом (ГОСТы, РПД, БРС, титульники)\n"
+            "• `/methodist_teach <тема> | <текст>` — дообучение методиста новым правилам кафедры\n"
+            "• `/methodist_stats` — база знаний и проиндексированные регламенты\n"
+            "• `/timesheet` — табель и пейсинг выработки нормы в «Тидекс»\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота"
         )
@@ -557,6 +565,11 @@ class EmailBotHandler:
             if any(k in user_msg for k in ("смен", "табел", "тидекс", "часы", "часов", "выработк", "обнови данные")):
                 await self.handle_cmd_timesheet(message)
                 return
+            if user_msg.startswith(("@методист", "методист,", "методист ")) or any(k in user_msg for k in ("по госту", "титульн", "погрешност", "по брс", "правило оформления отчета")):
+                clean_q = re.sub(r"^@?методист[:,]?\s*", "", message.text.strip(), flags=re.IGNORECASE)
+                if clean_q:
+                    await self._handle_methodist_query(message, clean_q)
+                    return
             return  # Normal text message unrelated to email draft prompt
 
         # 1. Clean up user's own typed message to keep chat spotless
@@ -766,6 +779,20 @@ class EmailBotHandler:
                 except Exception as ie:
                     logger.debug("Document is not an AADHk backup or failed parsing: %s", ie)
 
+            # Check if this document is directed to Methodist Agent
+            c_lower = caption.lower()
+            if any(t in c_lower for t in ("#методист", "#рпд", "#гост", "#методичка", "методист")):
+                try:
+                    from src.brain.methodist import MethodistService
+                    ms = MethodistService(self.db)
+                    ing_res = await ms.ingest_file(dest_path)
+                    msg_parts.append("\n🎓 **Документ добавлен в базу знаний методиста:**")
+                    msg_parts.append(f"• Документ: `{ing_res['title']}`")
+                    msg_parts.append(f"• Категория: `{ing_res['category']}`")
+                    msg_parts.append(f"• Проиндексировано чанков в FTS5: **{ing_res['chunks_count']}**")
+                except Exception as me:
+                    logger.debug("Failed adding doc to methodist: %s", me)
+
             await message.answer("\n".join(msg_parts))
 
         except Exception as e:
@@ -859,6 +886,92 @@ class EmailBotHandler:
             text_lines.append("✅ Все смены согласованы без наложений на пары.")
 
         await callback.message.answer("\n".join(text_lines))
+
+    # -------------------------------------------------------------
+    # Methodist Agent Handlers (Educational Regulations, GOSTs, RPD)
+    # -------------------------------------------------------------
+
+    async def handle_cmd_methodist(self, message: Message) -> None:
+        """Handle /methodist, /gost, /rpd commands."""
+        parts = message.text.strip().split(maxsplit=1)
+        query = parts[1].strip() if len(parts) > 1 else ""
+        if not query:
+            text = (
+                "🎓 **Агент-методист кафедры физики ГУАП (Кафедра №1)**\n\n"
+                "Я специализируюсь на регламентах учебного процесса, РПД, ГОСТах оформления отчетов и БРС.\n\n"
+                "Примеры запросов:\n"
+                "• `/methodist какие поля и шрифт по ГОСТу для отчета?`\n"
+                "• `/methodist что обязательно должно быть на второй странице отчета?`\n"
+                "• `/methodist сколько баллов по БРС нужно для допуска к экзамену?`\n"
+                "• `/methodist как оформить титульный лист лабораторной?`\n\n"
+                "💡 *Вы также можете просто спросить меня в чате:* `@методист <вопрос>` или `Методист, ...`"
+            )
+            await message.answer(text)
+            return
+
+        await self._handle_methodist_query(message, query)
+
+    async def _handle_methodist_query(self, message: Message, query: str) -> None:
+        """Query MethodistService and return authoritative answer with citations."""
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        status_msg = await message.answer("🔍 *Методист кафедры сверяет регламенты и ГОСТы...*")
+        res = await service.ask(query, caller="tg_user", caller_id=str(message.from_user.id))
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        answer = res.get("answer", "")
+        sources = res.get("sources", [])
+        src_text = ""
+        if sources:
+            src_list = list({s.get("doc_title") for s in sources if s.get("doc_title")})
+            if src_list:
+                src_text = "\n\n📚 **Использованные первоисточники:**\n" + "\n".join(f"• _{s}_" for s in src_list[:3])
+
+        await message.answer(f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}")
+
+    async def handle_cmd_methodist_teach(self, message: Message) -> None:
+        """Handle /methodist_teach command to teach the agent a new rule."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) < 2 or "|" not in parts[1]:
+            await message.answer(
+                "⚠️ Формат дообучения методиста:\n"
+                "`/methodist_teach Заголовок правила | Текст регламента или указания`\n\n"
+                "Пример:\n"
+                "`/methodist_teach Правило допуска к лабе 3 | Для допуска студент обязан предоставить решенные задачи 1-3`"
+            )
+            return
+        title, content = parts[1].split("|", 1)
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        res = await service.teach_guideline(title.strip(), content.strip())
+        await message.answer(
+            f"✅ **Правило успешно усвоено методистом!**\n\n"
+            f"• Заголовок: `{title.strip()}`\n"
+            f"• Файл: `{res.get('file_path')}`\n"
+            f"• Проиндексировано чанков в FTS5: **{res.get('ingest_result', {}).get('chunks_count', 0)}**"
+        )
+
+    async def handle_cmd_methodist_stats(self, message: Message) -> None:
+        """Display indexed Methodist knowledge base statistics."""
+        from src.brain.methodist import MethodistService
+        service = MethodistService(self.db)
+        stats = await service.get_stats()
+        text_lines = [
+            "🎓 **База знаний агента-методиста кафедры физики:**\n",
+            f"• Всего документов: **{stats.get('total_documents', 0)}**",
+        ]
+        by_cat = stats.get("by_category", {})
+        for cat, cnt in by_cat.items():
+            text_lines.append(f"  — `{cat}`: {cnt} документов")
+        text_lines.append("\n📁 **Проиндексированные регламенты:**")
+        for d in stats.get("documents", [])[:10]:
+            text_lines.append(f"• {d['title']} ({d['chunks']} чанков)")
+        await message.answer("\n".join(text_lines))
 
     # -------------------------------------------------------------
     # LMS (pro.guap.ru) Management & Monitoring Methods
