@@ -484,6 +484,29 @@ class GuapLmsClient:
             else:
                 data[name] = selected_opts[0] if selected_opts else ""
 
+        # Extract initSelectedSubjects and initSelectedGroups from JS if select options are empty
+        m_subj = re.search(r"initSelectedSubjects\s*=\s*\[(.*?)\];", r_edit.text)
+        m_grp = re.search(r"initSelectedGroups\s*=\s*\[(.*?)\];", r_edit.text)
+        subjs_from_js = (
+            [s.strip().strip("'\"") for s in m_subj.group(1).split(",") if s.strip()]
+            if m_subj
+            else []
+        )
+        groups_from_js = (
+            [g.strip().strip("'\"") for g in m_grp.group(1).split(",") if g.strip()]
+            if m_grp
+            else []
+        )
+
+        if subjs_from_js and not data.get("subjects[]"):
+            data["subjects[]"] = subjs_from_js
+        if groups_from_js and not data.get("groups[]"):
+            data["groups[]"] = groups_from_js
+
+        # Ensure description is not empty
+        if not data.get("description"):
+            data["description"] = "Отчет по лабораторной работе (титульный лист, цель, измерения, расчет погрешностей, выводы)."
+
         if is_public:
             data["public"] = "on"
         else:
@@ -497,7 +520,8 @@ class GuapLmsClient:
 
         logger.info("Setting visibility for task %s to public=%s...", task_id, is_public)
         resp = self.session.post(action_url, data=data, files=files, headers=headers, timeout=self.timeout)
-        return resp.status_code == 200
+        success = resp.status_code == 200 and f"/tasks/{task_id}/show" in resp.url
+        return success
 
     def download_student_report(self, download_path_or_id: str | int, dest_file: str | Path) -> Path:
         """Download student's submitted report file (PDF, docx, etc.) for AI analysis."""

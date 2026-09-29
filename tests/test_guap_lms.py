@@ -234,6 +234,7 @@ def test_set_task_visibility():
         captured_data = data
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.url = "https://pro.guap.ru/inside/professor/tasks/101/show"
         return mock_resp
 
     with patch.object(client, "ensure_authenticated"):
