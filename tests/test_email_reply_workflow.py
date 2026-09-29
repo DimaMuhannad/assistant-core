@@ -205,7 +205,7 @@ async def test_daily_email_stats(in_memory_db: Database):
         requires_action=True,
     )
 
-    stats = await in_memory_db.get_daily_email_stats(date.today())
+    stats = await in_memory_db.get_daily_email_stats(now.date())
     assert len(stats["bot_answered"]) == 1
     assert stats["bot_answered"][0]["subject"] == "Отчет готов"
     assert len(stats["pending_actionable"]) == 1
