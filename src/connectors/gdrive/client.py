@@ -85,15 +85,34 @@ class GoogleDriveClient:
 
     def find_latest_aadhk_backup(self) -> dict[str, Any] | None:
         """Find the latest AADHk SQLite backup file on Google Drive."""
+        service = self.get_service()
+        # 1. First check if dedicated com.aadhk.time folder exists
+        folder_q = "name = 'com.aadhk.time' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        folders = service.files().list(q=folder_q, fields="files(id, name)").execute().get("files", [])
+        if folders:
+            folder_id = folders[0]["id"]
+            files_q = f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false"
+            folder_files = service.files().list(
+                q=files_q,
+                fields="files(id, name, mimeType, size, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=5,
+            ).execute().get("files", [])
+            if folder_files:
+                return folder_files[0]
+
+        # 2. General search excluding folders
         queries = [
-            "name contains 'aadhk' and trashed = false",
-            "name contains 'timerecording' and trashed = false",
-            "name contains '.db' and trashed = false",
+            "name contains 'timetracker' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+            "name contains 'aadhk' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+            "name contains 'timerecording' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+            "name contains '.db' and mimeType != 'application/vnd.google-apps.folder' and trashed = false",
         ]
         for q in queries:
             files = self.search_files(query=q, page_size=5)
-            if files:
-                return files[0]
+            non_folders = [f for f in files if f.get("mimeType") != "application/vnd.google-apps.folder"]
+            if non_folders:
+                return non_folders[0]
         return None
 
     def download_file(self, file_id: str, dest_path: str | Path) -> Path:

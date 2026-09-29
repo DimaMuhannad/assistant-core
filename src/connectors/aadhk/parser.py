@@ -146,6 +146,7 @@ class AadhkIngestionService:
             # Find time records table
             records_table = None
             for cand in (
+                "times",
                 "time_record",
                 "time_records",
                 "timerecord",
@@ -153,19 +154,22 @@ class AadhkIngestionService:
                 "records",
                 "record",
                 "tbl_time_record",
+                "tbl_times",
             ):
                 if cand in tables:
                     records_table = cand
                     break
 
             if not records_table:
-                # If no standard name found, look for table with startTime or start_time column
+                # If no standard name found, look for table with date1/date2 or start/end columns
                 for t in tables:
                     if t.startswith("sqlite_") or t.startswith("android_"):
                         continue
                     cursor.execute(f"PRAGMA table_info({t});")
                     cols = [c[1].lower() for c in cursor.fetchall()]
-                    if any("start" in c for c in cols) and any("end" in c for c in cols):
+                    if (any("start" in c for c in cols) and any("end" in c for c in cols)) or (
+                        "date1" in cols and "date2" in cols
+                    ):
                         records_table = t
                         break
 
@@ -173,7 +177,7 @@ class AadhkIngestionService:
                 logger.warning("Could not identify time records table in %s (found: %s)", db_path.name, tables)
                 return []
 
-            cursor.execute(f"SELECT * FROM {records_table};")
+            cursor.execute(f"SELECT rowid, * FROM {records_table};")
             raw_rows = cursor.fetchall()
             results: list[dict[str, Any]] = []
 
@@ -181,22 +185,22 @@ class AadhkIngestionService:
                 keys = r.keys()
                 # Find ID
                 ext_id = None
-                for k in ("_id", "id", "record_id", "recordId"):
-                    if k in keys:
+                for k in ("rowid", "_id", "id", "record_id", "recordId"):
+                    if k in keys and r[k] is not None:
                         ext_id = str(r[k])
                         break
 
                 # Find Start Time
                 start_val = None
-                for k in ("start_time", "startTime", "start", "check_in", "checkIn"):
-                    if k in keys:
+                for k in ("date1", "start_time", "startTime", "start", "check_in", "checkIn"):
+                    if k in keys and r[k]:
                         start_val = r[k]
                         break
 
                 # Find End Time
                 end_val = None
-                for k in ("end_time", "endTime", "end", "check_out", "checkOut"):
-                    if k in keys:
+                for k in ("date2", "end_time", "endTime", "end", "check_out", "checkOut"):
+                    if k in keys and r[k]:
                         end_val = r[k]
                         break
 
@@ -209,14 +213,43 @@ class AadhkIngestionService:
                 if dt_end < dt_start:
                     continue
 
-                duration_min = int((dt_end - dt_start).total_seconds() / 60)
+                duration_min = 0
+                if "working" in keys and r["working"] is not None and int(r["working"]) > 0:
+                    duration_min = int(r["working"])
+                else:
+                    duration_min = int((dt_end - dt_start).total_seconds() / 60)
+
+                # Rate and Amount
+                rate = 0.0
+                if "amountPerhour" in keys and r["amountPerhour"] is not None:
+                    try:
+                        rate = float(r["amountPerhour"])
+                    except (ValueError, TypeError):
+                        rate = 0.0
+
+                amount = 0.0
+                if "amount" in keys and r["amount"] is not None:
+                    try:
+                        amount = float(r["amount"])
+                    except (ValueError, TypeError):
+                        amount = 0.0
+                elif rate > 0 and duration_min > 0:
+                    amount = round(duration_min / 60.0 * rate, 2)
+
+                if duration_min <= 0 and amount <= 0:
+                    continue
 
                 # Project
                 proj_name = default_project
-                for k in ("project_id", "projectId", "project"):
-                    if k in keys and r[k] in projects_map:
-                        proj_name = projects_map[r[k]]
-                        break
+                if "projectName" in keys and r["projectName"]:
+                    p_val = str(r["projectName"]).strip()
+                    proj_name = default_project if p_val == "Работа" else p_val
+                else:
+                    for k in ("project_id", "projectId", "project"):
+                        if k in keys and r[k] in projects_map:
+                            p_val = projects_map[r[k]]
+                            proj_name = default_project if p_val == "Работа" else p_val
+                            break
 
                 # Task
                 task_name = "Исследования и разработка"
@@ -225,12 +258,13 @@ class AadhkIngestionService:
                         task_name = tasks_map[r[k]]
                         break
 
-                # Note / description
+                # Note / description / remark
                 note = ""
-                for k in ("note", "notes", "description", "comment"):
+                for k in ("notes", "remark", "note", "description", "comment"):
                     if k in keys and r[k]:
-                        note = str(r[k])
-                        break
+                        note = str(r[k]).strip()
+                        if note:
+                            break
 
                 results.append({
                     "source": "aadhk",
@@ -240,6 +274,8 @@ class AadhkIngestionService:
                     "start_time": dt_start.isoformat(),
                     "end_time": dt_end.isoformat(),
                     "duration_minutes": duration_min,
+                    "hourly_rate": rate,
+                    "amount": amount,
                     "note": note,
                     "has_guap_conflict": False,
                     "conflict_details": "",
