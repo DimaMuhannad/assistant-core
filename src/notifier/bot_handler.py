@@ -110,6 +110,12 @@ class EmailBotHandler:
         # Interactive text messages (for edit or manual draft entry)
         self.router.message(F.text)(self.handle_user_text)
 
+        # Photos and screenshots
+        self.router.message(F.photo)(self.handle_user_photo)
+
+        # Documents (files, images, txt, pdf)
+        self.router.message(F.document)(self.handle_user_document)
+
     async def handle_cmd_help(self, message: Message) -> None:
         if not self._is_authorized(message.from_user.id):
             return
@@ -547,3 +553,82 @@ class EmailBotHandler:
                 sent_ids = await self.notifier.send_draft_reply_card(draft_info, chat_id=message.chat.id)
                 for sid in sent_ids:
                     self.register_message(email_id, sid)
+
+    async def handle_user_photo(self, message: Message) -> None:
+        user_id = message.from_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        if not self.bot or not message.photo:
+            return
+
+        try:
+            largest_photo = message.photo[-1]
+            file_info = await self.bot.get_file(largest_photo.file_id)
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest_filename = f"screenshot_{timestamp_str}_{largest_photo.file_id[:8]}.jpg"
+            dest_path = f"/opt/chat-app/uploads/{dest_filename}"
+
+            await self.bot.download_file(file_info.file_path, destination=dest_path)
+            logger.info("Saved incoming photo to %s", dest_path)
+
+            caption = message.caption or ""
+            status_msg = await message.answer("📸 **Скриншот получен и сохранен!** Анализирую...")
+
+            analysis_text = ""
+            if self.summarizer and self.summarizer.is_configured:
+                try:
+                    with open(dest_path, "rb") as f:
+                        img_bytes = f.read()
+                    client = self.summarizer.get_client()
+                    from google.genai import types
+                    resp = await client.aio.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=[
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                            "Ты — персональный академический ассистент. Распознай весь ключевой текст на этом скриншоте (OCR), опиши суть и определи, есть ли здесь токен, ссылка, задача или расписание. Ответь лаконично."
+                        ]
+                    )
+                    analysis_text = resp.text.strip() if resp and resp.text else ""
+                except Exception as ve:
+                    logger.warning("Gemini vision analysis failed: %s", ve)
+
+            reply_parts = [f"📸 **Скриншот сохранен:** `{dest_filename}`"]
+            if caption:
+                reply_parts.append(f"💬 **Подпись:** {caption}")
+            if analysis_text:
+                reply_parts.append(f"\n🔍 **Распознанное содержимое:**\n{analysis_text}")
+
+            await status_msg.edit_text("\n\n".join(reply_parts))
+
+        except Exception as e:
+            logger.exception("Error handling incoming photo: %s", e)
+            await message.answer(f"⚠️ Не удалось сохранить скриншот: {e}")
+
+    async def handle_user_document(self, message: Message) -> None:
+        user_id = message.from_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        if not self.bot or not message.document:
+            return
+
+        try:
+            doc = message.document
+            file_info = await self.bot.get_file(doc.file_id)
+            dest_filename = doc.file_name or f"doc_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            dest_path = f"/opt/chat-app/uploads/{dest_filename}"
+
+            await self.bot.download_file(file_info.file_path, destination=dest_path)
+            logger.info("Saved incoming document to %s", dest_path)
+
+            caption = message.caption or ""
+            msg = f"📄 **Файл сохранен:** `{dest_filename}` ({round(doc.file_size / 1024, 1) if doc.file_size else 0} KB)"
+            if caption:
+                msg += f"\n💬 **Подпись:** {caption}"
+
+            await message.answer(msg)
+
+        except Exception as e:
+            logger.exception("Error handling incoming document: %s", e)
+            await message.answer(f"⚠️ Не удалось сохранить файл: {e}")
