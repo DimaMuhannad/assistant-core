@@ -425,3 +425,72 @@ class AadhkIngestionService:
             },
         }
 
+    async def get_monthly_pacing(
+        self,
+        year: int | None = None,
+        month: int | None = None,
+        daily_norm: float = 8.5,
+        project_name: str | None = "Тидекс",
+    ) -> dict[str, Any]:
+        """Calculates workdays, worked hours, elapsed pace, and required daily rate to meet monthly norm."""
+        import calendar
+        now = datetime.now(ZoneInfo(config.TZ))
+        cur_year = year or now.year
+        cur_month = month or now.month
+
+        # Calculate total workdays in month (Mon-Fri)
+        num_days = calendar.monthrange(cur_year, cur_month)[1]
+        all_workdays = [
+            datetime(cur_year, cur_month, d, tzinfo=ZoneInfo(config.TZ)).date()
+            for d in range(1, num_days + 1)
+            if datetime(cur_year, cur_month, d, tzinfo=ZoneInfo(config.TZ)).weekday() < 5
+        ]
+        total_workdays = len(all_workdays)
+        monthly_norm_hours = total_workdays * daily_norm
+
+        # Query records for this month
+        start_date = f"{cur_year:04d}-{cur_month:02d}-01"
+        end_date = f"{cur_year:04d}-{cur_month:02d}-{num_days:02d}T23:59:59"
+        records = await self.db.list_timesheet_records(
+            start_date=start_date,
+            end_date=end_date,
+            project_name=project_name,
+            limit=1000,
+        )
+
+        total_minutes = sum(r.get("duration_minutes", 0) for r in records)
+        worked_hours = round(total_minutes / 60.0, 2)
+        total_amount = sum(r.get("amount", 0.0) for r in records)
+
+        # Elapsed workdays up to today
+        today_date = now.date()
+        elapsed_workdays = [d for d in all_workdays if d <= today_date]
+        elapsed_workdays_count = len(elapsed_workdays)
+        expected_hours_to_date = round(elapsed_workdays_count * daily_norm, 2)
+        delta_pacing = round(worked_hours - expected_hours_to_date, 2)
+
+        # Remaining workdays strictly after today
+        remaining_workdays = [d for d in all_workdays if d > today_date]
+        remaining_days_count = len(remaining_workdays)
+        remaining_hours_to_norm = max(0.0, round(monthly_norm_hours - worked_hours, 2))
+
+        required_daily_pacing = 0.0
+        if remaining_days_count > 0 and remaining_hours_to_norm > 0:
+            required_daily_pacing = round(remaining_hours_to_norm / remaining_days_count, 2)
+
+        return {
+            "year": cur_year,
+            "month": cur_month,
+            "total_workdays": total_workdays,
+            "monthly_norm_hours": monthly_norm_hours,
+            "elapsed_workdays": elapsed_workdays_count,
+            "expected_hours_to_date": expected_hours_to_date,
+            "worked_hours": worked_hours,
+            "total_amount": round(total_amount, 2),
+            "total_shifts": len(records),
+            "delta_pacing": delta_pacing,
+            "remaining_workdays": remaining_days_count,
+            "remaining_hours_to_norm": remaining_hours_to_norm,
+            "required_daily_pacing": required_daily_pacing,
+        }
+

@@ -554,6 +554,9 @@ class EmailBotHandler:
                 target_code = "all" if target == "все" else target
                 await self._execute_visibility_change(message, target_code, is_public=False)
                 return
+            if any(k in user_msg for k in ("смен", "табел", "тидекс", "часы", "часов", "выработк", "обнови данные")):
+                await self.handle_cmd_timesheet(message)
+                return
             return  # Normal text message unrelated to email draft prompt
 
         # 1. Clean up user's own typed message to keep chat spotless
@@ -778,27 +781,30 @@ class EmailBotHandler:
 
         service = AadhkIngestionService(self.db)
         await service.reconcile_all_conflicts()
-        report = await service.get_timesheet_report(project_name="Тидекс")
-        summary = report.get("summary", {})
-        conflicts = report.get("conflicts", [])
+        pacing = await service.get_monthly_pacing(project_name="Тидекс")
+
+        month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+        cur_m_name = month_names[pacing["month"]].capitalize()
+        delta_sign = "+" if pacing["delta_pacing"] >= 0 else ""
 
         text_lines = [
-            "⏱️ **Учет времени: ООО «Тидекс»**\n",
-            f"• **Всего отработано:** `{summary.get('total_hours', 0.0):.2f}` ч ({summary.get('total_shifts', 0)} смен)",
-            f"• **Чистые часы (без наложений):** `{summary.get('clean_hours', 0.0):.2f}` ч",
-            f"• **Часов с наложениями:** `{summary.get('conflict_hours', 0.0):.2f}` ч",
-            f"• **Сумма выплат:** `{summary.get('total_amount', 0.0):,.2f}` ₽\n",
+            f"⏱️ **Табель и баланс: ООО «Тидекс» ({cur_m_name} {pacing['year']})**\n",
+            f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по 8.5 ч)",
+            f"• **Фактически зачтено:** `{pacing['worked_hours']:.2f}` ч ({pacing['total_shifts']} дней/смен)",
+            f"• **Ожидаемый темп на сегодня:** `{pacing['expected_hours_to_date']:.1f}` ч ({pacing['elapsed_workdays']} дней)",
+            f"• **Текущий баланс нормы (ΔH):** `{delta_sign}{pacing['delta_pacing']:.2f}` ч",
+            f"• **Начислено за месяц:** `{pacing['total_amount']:,.2f}` ₽\n",
         ]
 
-        if conflicts:
-            text_lines.append(f"⚠️ **Обнаруженные пересечения с парами ГУАП ({len(conflicts)}):**")
-            for c in conflicts[:5]:
-                st = str(c.get("start_time", ""))[:16].replace("T", " ")
-                et = str(c.get("end_time", ""))[11:16]
-                text_lines.append(f"• `{st} - {et}` ({c.get('duration_minutes', 0)} мин): {c.get('conflict_details', '')}")
-            text_lines.append("")
+        if pacing["remaining_workdays"] > 0:
+            text_lines.append(f"🎯 **План на остаток месяца ({pacing['remaining_workdays']} раб. дн.):**")
+            text_lines.append(f"• Осталось закрыть: `{pacing['remaining_hours_to_norm']:.2f}` ч")
+            text_lines.append(f"• Необходимый темп: `{pacing['required_daily_pacing']:.2f}` ч/день\n")
         else:
-            text_lines.append("✅ **Пересечений с расписанием ГУАП не обнаружено!** (100% согласовано)\n")
+            if pacing["remaining_hours_to_norm"] == 0:
+                text_lines.append("🎉 **Месячная норма полностью выполнена без недоработок!**\n")
+            else:
+                text_lines.append(f"⚠️ **Недоработка за месяц:** `{pacing['remaining_hours_to_norm']:.2f}` ч\n")
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[

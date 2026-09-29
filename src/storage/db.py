@@ -1562,7 +1562,34 @@ class Database:
                         "SELECT id FROM timesheet_records WHERE source = ? AND external_record_id = ? LIMIT 1;",
                         (r.get("source", "aadhk"), ext_id),
                     )
-                    if await cursor.fetchone():
+                    existing = await cursor.fetchone()
+                    if existing:
+                        existing_id = existing[0]
+                        await conn.execute(
+                            """
+                            UPDATE timesheet_records SET
+                                project_name = ?,
+                                task_name = ?,
+                                start_time = ?,
+                                end_time = ?,
+                                duration_minutes = ?,
+                                hourly_rate = ?,
+                                amount = ?,
+                                note = ?
+                            WHERE id = ?;
+                            """,
+                            (
+                                r.get("project_name", "Тидекс"),
+                                r.get("task_name", "Разработка и исследования"),
+                                r.get("start_time"),
+                                r.get("end_time"),
+                                r.get("duration_minutes", 0),
+                                r.get("hourly_rate", 0.0),
+                                r.get("amount", 0.0),
+                                r.get("note", ""),
+                                existing_id,
+                            ),
+                        )
                         continue
 
                 await conn.execute(
