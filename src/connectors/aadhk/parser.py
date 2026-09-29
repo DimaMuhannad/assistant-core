@@ -1,0 +1,305 @@
+"""AADHk Time Recording SQLite parser and cross-validation service."""
+
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from src import config
+from src.models.schedule import SchedulePayload, Lesson
+from src.storage.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def parse_timestamp_val(val: Any, tz_str: str = config.TZ) -> datetime | None:
+    """Parse various timestamp representations (millis, seconds, strings)."""
+    if val is None:
+        return None
+    try:
+        # Numeric timestamp
+        if isinstance(val, (int, float)):
+            if val > 1e11:  # Milliseconds
+                return datetime.fromtimestamp(val / 1000.0, tz=ZoneInfo(tz_str))
+            elif val > 1e8:  # Seconds
+                return datetime.fromtimestamp(val, tz=ZoneInfo(tz_str))
+
+        # String representation
+        s = str(val).strip()
+        if s.isdigit():
+            num = int(s)
+            if num > 1e11:
+                return datetime.fromtimestamp(num / 1000.0, tz=ZoneInfo(tz_str))
+            return datetime.fromtimestamp(num, tz=ZoneInfo(tz_str))
+
+        # Date string formats
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.strptime(s, fmt)
+                return dt.replace(tzinfo=ZoneInfo(tz_str))
+            except ValueError:
+                continue
+    except Exception as e:
+        logger.debug("Failed to parse timestamp '%s': %s", val, e)
+    return None
+
+
+class AadhkIngestionService:
+    """Service for parsing AADHk Time Recording SQLite databases and validating with SUAI."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def ingest_backup_file(
+        self,
+        backup_file_path: str | Path,
+        default_project: str = "Тидекс",
+    ) -> dict[str, Any]:
+        """Parse AADHk backup SQLite file, cross-validate with SUAI timetable, and save to db."""
+        p = Path(backup_file_path)
+        if not p.is_file():
+            raise FileNotFoundError(f"Backup file not found: {backup_file_path}")
+
+        # 1. Fetch current SUAI schedule for cross-validation
+        suai_lessons_by_date = await self._load_suai_lessons()
+
+        # 2. Extract records from AADHk SQLite
+        parsed_shifts = self._extract_shifts_from_sqlite(p, default_project=default_project)
+        logger.info("Extracted %d shifts from AADHk file %s", len(parsed_shifts), p.name)
+
+        # 3. Cross-validate with SUAI schedule
+        conflicts_count = 0
+        for shift in parsed_shifts:
+            conflict_msg = self._check_schedule_conflict(shift, suai_lessons_by_date)
+            if conflict_msg:
+                shift["has_guap_conflict"] = True
+                shift["conflict_details"] = conflict_msg
+                conflicts_count += 1
+
+        # 4. Save to database
+        saved_count = await self.db.save_timesheet_records_batch(parsed_shifts)
+        logger.info("Saved %d new timesheet records into database (%d conflicts)", saved_count, conflicts_count)
+
+        # 5. Calculate summary metrics
+        summary = await self.db.get_timesheet_summary()
+        return {
+            "parsed_count": len(parsed_shifts),
+            "new_inserted_count": saved_count,
+            "conflicts_count": conflicts_count,
+            "total_hours": summary.get("total_hours", 0.0),
+            "by_task": summary.get("by_task", {}),
+        }
+
+    def _extract_shifts_from_sqlite(
+        self,
+        db_path: Path,
+        default_project: str = "Тидекс",
+    ) -> list[dict[str, Any]]:
+        """Connect to SQLite backup and dynamically map tables."""
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [row["name"].lower() for row in cursor.fetchall()]
+
+            # Determine projects mapping
+            projects_map: dict[Any, str] = {}
+            for t_proj in ("project", "projects", "tbl_project"):
+                if t_proj in tables:
+                    try:
+                        cursor.execute(f"SELECT * FROM {t_proj};")
+                        for r in cursor.fetchall():
+                            keys = r.keys()
+                            pid = r["_id"] if "_id" in keys else (r["id"] if "id" in keys else None)
+                            name = r["name"] if "name" in keys else (r["title"] if "title" in keys else default_project)
+                            if pid is not None and name:
+                                projects_map[pid] = str(name)
+                        break
+                    except Exception as e:
+                        logger.debug("Failed querying project table %s: %s", t_proj, e)
+
+            # Determine tasks mapping
+            tasks_map: dict[Any, str] = {}
+            for t_task in ("task", "tasks", "tbl_task"):
+                if t_task in tables:
+                    try:
+                        cursor.execute(f"SELECT * FROM {t_task};")
+                        for r in cursor.fetchall():
+                            keys = r.keys()
+                            tid = r["_id"] if "_id" in keys else (r["id"] if "id" in keys else None)
+                            name = r["name"] if "name" in keys else (r["title"] if "title" in keys else None)
+                            if tid is not None and name:
+                                tasks_map[tid] = str(name)
+                        break
+                    except Exception as e:
+                        logger.debug("Failed querying task table %s: %s", t_task, e)
+
+            # Find time records table
+            records_table = None
+            for cand in (
+                "time_record",
+                "time_records",
+                "timerecord",
+                "timerecords",
+                "records",
+                "record",
+                "tbl_time_record",
+            ):
+                if cand in tables:
+                    records_table = cand
+                    break
+
+            if not records_table:
+                # If no standard name found, look for table with startTime or start_time column
+                for t in tables:
+                    if t.startswith("sqlite_") or t.startswith("android_"):
+                        continue
+                    cursor.execute(f"PRAGMA table_info({t});")
+                    cols = [c[1].lower() for c in cursor.fetchall()]
+                    if any("start" in c for c in cols) and any("end" in c for c in cols):
+                        records_table = t
+                        break
+
+            if not records_table:
+                logger.warning("Could not identify time records table in %s (found: %s)", db_path.name, tables)
+                return []
+
+            cursor.execute(f"SELECT * FROM {records_table};")
+            raw_rows = cursor.fetchall()
+            results: list[dict[str, Any]] = []
+
+            for r in raw_rows:
+                keys = r.keys()
+                # Find ID
+                ext_id = None
+                for k in ("_id", "id", "record_id", "recordId"):
+                    if k in keys:
+                        ext_id = str(r[k])
+                        break
+
+                # Find Start Time
+                start_val = None
+                for k in ("start_time", "startTime", "start", "check_in", "checkIn"):
+                    if k in keys:
+                        start_val = r[k]
+                        break
+
+                # Find End Time
+                end_val = None
+                for k in ("end_time", "endTime", "end", "check_out", "checkOut"):
+                    if k in keys:
+                        end_val = r[k]
+                        break
+
+                dt_start = parse_timestamp_val(start_val)
+                dt_end = parse_timestamp_val(end_val)
+
+                if not dt_start or not dt_end:
+                    continue
+
+                if dt_end < dt_start:
+                    continue
+
+                duration_min = int((dt_end - dt_start).total_seconds() / 60)
+
+                # Project
+                proj_name = default_project
+                for k in ("project_id", "projectId", "project"):
+                    if k in keys and r[k] in projects_map:
+                        proj_name = projects_map[r[k]]
+                        break
+
+                # Task
+                task_name = "Исследования и разработка"
+                for k in ("task_id", "taskId", "task"):
+                    if k in keys and r[k] in tasks_map:
+                        task_name = tasks_map[r[k]]
+                        break
+
+                # Note / description
+                note = ""
+                for k in ("note", "notes", "description", "comment"):
+                    if k in keys and r[k]:
+                        note = str(r[k])
+                        break
+
+                results.append({
+                    "source": "aadhk",
+                    "external_record_id": ext_id or f"gen_{int(dt_start.timestamp())}",
+                    "project_name": proj_name,
+                    "task_name": task_name,
+                    "start_time": dt_start.isoformat(),
+                    "end_time": dt_end.isoformat(),
+                    "duration_minutes": duration_min,
+                    "note": note,
+                    "has_guap_conflict": False,
+                    "conflict_details": "",
+                })
+
+            return results
+        finally:
+            conn.close()
+
+    async def _load_suai_lessons(self) -> dict[str, list[dict[str, Any]]]:
+        """Loads SUAI schedule lessons mapped by ISO date (YYYY-MM-DD)."""
+        lessons_by_date: dict[str, list[dict[str, Any]]] = {}
+        snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+        if not snap or not snap.get("raw_payload"):
+            return lessons_by_date
+
+        try:
+            payload = SchedulePayload.model_validate_json(snap["raw_payload"])
+            for day in payload.days:
+                date_str = day.date.isoformat()
+                lessons_by_date[date_str] = []
+                for les in day.lessons:
+                    start_dt = datetime.combine(les.date, les.start_time, tzinfo=ZoneInfo(config.TZ))
+                    end_dt = datetime.combine(les.date, les.end_time, tzinfo=ZoneInfo(config.TZ))
+                    lessons_by_date[date_str].append({
+                        "subject": les.subject,
+                        "type": les.lesson_type.value if hasattr(les.lesson_type, "value") else str(les.lesson_type),
+                        "room": les.room,
+                        "group": les.group or "",
+                        "start": start_dt,
+                        "end": end_dt,
+                    })
+        except Exception as e:
+            logger.warning("Failed parsing SUAI schedule for cross-validation: %s", e)
+        return lessons_by_date
+
+    def _check_schedule_conflict(
+        self,
+        shift: dict[str, Any],
+        suai_lessons: dict[str, list[dict[str, Any]]],
+    ) -> str | None:
+        """Check if a Tydex shift intersects with any SUAI lesson."""
+        try:
+            start_dt = datetime.fromisoformat(shift["start_time"])
+            end_dt = datetime.fromisoformat(shift["end_time"])
+            date_key = start_dt.date().isoformat()
+
+            day_lessons = suai_lessons.get(date_key, [])
+            for les in day_lessons:
+                l_start = les["start"]
+                l_end = les["end"]
+                # Check interval overlap: max(start1, start2) < min(end1, end2)
+                overlap_start = max(start_dt, l_start)
+                overlap_end = min(end_dt, l_end)
+                if overlap_start < overlap_end:
+                    overlap_minutes = int((overlap_end - overlap_start).total_seconds() / 60)
+                    return (
+                        f"Пересечение с парой ГУАП ({overlap_minutes} мин): "
+                        f"{les['subject']} ({les['type']}), ауд. {les['room']} [{les['group']}]"
+                    )
+        except Exception as e:
+            logger.debug("Error checking shift conflict: %s", e)
+        return None

@@ -190,6 +190,23 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS timesheet_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL DEFAULT 'aadhk',
+                    external_record_id TEXT,
+                    project_name TEXT NOT NULL DEFAULT 'Тидекс',
+                    task_name TEXT,
+                    start_time TIMESTAMP NOT NULL,
+                    end_time TIMESTAMP NOT NULL,
+                    duration_minutes INTEGER NOT NULL,
+                    hourly_rate REAL DEFAULT 0.0,
+                    amount REAL DEFAULT 0.0,
+                    note TEXT,
+                    has_guap_conflict BOOLEAN DEFAULT FALSE,
+                    conflict_details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sync_records_source_event_id ON calendar_sync_records(source_event_id);
@@ -206,6 +223,9 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
                 CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
                 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+                CREATE INDEX IF NOT EXISTS idx_timesheet_start ON timesheet_records(start_time);
+                CREATE INDEX IF NOT EXISTS idx_timesheet_project ON timesheet_records(project_name);
+                CREATE INDEX IF NOT EXISTS idx_timesheet_conflict ON timesheet_records(has_guap_conflict);
                 """
             )
             await conn.commit()
@@ -1492,6 +1512,129 @@ class Database:
                 "active_projects_count": active_projects_count,
                 "total_documents_count": total_documents_count,
             }
+
+    async def save_timesheet_records_batch(self, records: list[dict[str, Any]]) -> int:
+        """Batch insert timesheet records, avoiding duplicates by source and external_record_id."""
+        if not records:
+            return 0
+        inserted = 0
+        async with aiosqlite.connect(self.db_path) as conn:
+            for r in records:
+                ext_id = str(r.get("external_record_id") or "")
+                if ext_id:
+                    cursor = await conn.execute(
+                        "SELECT id FROM timesheet_records WHERE source = ? AND external_record_id = ? LIMIT 1;",
+                        (r.get("source", "aadhk"), ext_id),
+                    )
+                    if await cursor.fetchone():
+                        continue
+
+                await conn.execute(
+                    """
+                    INSERT INTO timesheet_records (
+                        source, external_record_id, project_name, task_name,
+                        start_time, end_time, duration_minutes, hourly_rate,
+                        amount, note, has_guap_conflict, conflict_details
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        r.get("source", "aadhk"),
+                        ext_id or None,
+                        r.get("project_name", "Тидекс"),
+                        r.get("task_name", "Разработка и исследования"),
+                        r.get("start_time"),
+                        r.get("end_time"),
+                        r.get("duration_minutes", 0),
+                        r.get("hourly_rate", 0.0),
+                        r.get("amount", 0.0),
+                        r.get("note", ""),
+                        1 if r.get("has_guap_conflict") else 0,
+                        r.get("conflict_details", ""),
+                    ),
+                )
+                inserted += 1
+            await conn.commit()
+        return inserted
+
+    async def list_timesheet_records(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        project_name: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List timesheet records with optional date range and project filter."""
+        query = "SELECT * FROM timesheet_records WHERE 1=1"
+        params: list[Any] = []
+        if start_date:
+            query += " AND start_time >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND start_time <= ?"
+            params.append(end_date)
+        if project_name:
+            query += " AND project_name LIKE ?"
+            params.append(f"%{project_name}%")
+        query += " ORDER BY start_time DESC LIMIT ?;"
+        params.append(limit)
+
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(query, tuple(params))
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_timesheet_summary(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        project_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate total hours, shifts count, breakdown by task, and conflicts."""
+        query = "SELECT * FROM timesheet_records WHERE 1=1"
+        params: list[Any] = []
+        if start_date:
+            query += " AND start_time >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND start_time <= ?"
+            params.append(end_date)
+        if project_name:
+            query += " AND project_name LIKE ?"
+            params.append(f"%{project_name}%")
+
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(query, tuple(params))
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        total_minutes = sum(r.get("duration_minutes") or 0 for r in rows)
+        total_hours = round(total_minutes / 60.0, 2)
+        conflicts = [r for r in rows if r.get("has_guap_conflict")]
+
+        by_task: dict[str, float] = {}
+        for r in rows:
+            t = r.get("task_name") or "Основная работа"
+            dur = (r.get("duration_minutes") or 0) / 60.0
+            by_task[t] = round(by_task.get(t, 0.0) + dur, 2)
+
+        return {
+            "total_shifts": len(rows),
+            "total_hours": total_hours,
+            "total_minutes": total_minutes,
+            "conflicts_count": len(conflicts),
+            "by_task": by_task,
+        }
+
+    async def get_timesheet_conflicts(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve timesheet records flagged with SUAI schedule conflicts."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                "SELECT * FROM timesheet_records WHERE has_guap_conflict = 1 ORDER BY start_time DESC LIMIT ?;",
+                (limit,),
+            )
+            return [dict(r) for r in await cursor.fetchall()]
+
 
 
 

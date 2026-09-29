@@ -623,11 +623,33 @@ class EmailBotHandler:
             logger.info("Saved incoming document to %s", dest_path)
 
             caption = message.caption or ""
-            msg = f"📄 **Файл сохранен:** `{dest_filename}` ({round(doc.file_size / 1024, 1) if doc.file_size else 0} KB)"
+            msg_parts = [f"📄 **Файл сохранен:** `{dest_filename}` ({round(doc.file_size / 1024, 1) if doc.file_size else 0} KB)"]
             if caption:
-                msg += f"\n💬 **Подпись:** {caption}"
+                msg_parts.append(f"💬 **Подпись:** {caption}")
 
-            await message.answer(msg)
+            # Check if this is an AADHk Time Recording SQLite backup
+            fname_lower = dest_filename.lower()
+            if fname_lower.endswith(".db") or "aadhk" in fname_lower or "time" in fname_lower:
+                try:
+                    from src.connectors.aadhk.parser import AadhkIngestionService
+                    ingestion = AadhkIngestionService(self.db)
+                    res = await ingestion.ingest_backup_file(dest_path)
+                    if res["parsed_count"] > 0:
+                        msg_parts.append("\n⏱️ **Учет времени AADHk («Тидекс») успешно импортирован:**")
+                        msg_parts.append(f"• Распознано смен: **{res['parsed_count']}** (новых: {res['new_inserted_count']})")
+                        msg_parts.append(f"• Суммарное время: **{res['total_hours']} ч.**")
+                        if res.get("by_task"):
+                            msg_parts.append("• **По задачам:**")
+                            for tname, thours in res["by_task"].items():
+                                msg_parts.append(f"  — {tname}: {thours} ч.")
+                        if res["conflicts_count"] > 0:
+                            msg_parts.append(f"\n⚠️ **Обнаружены коллизии с расписанием ГУАП:** {res['conflicts_count']} шт.")
+                        else:
+                            msg_parts.append("\n✔️ **Коллизий с занятиями ГУАП нет** (наложения отсутствуют).")
+                except Exception as ie:
+                    logger.debug("Document is not an AADHk backup or failed parsing: %s", ie)
+
+            await message.answer("\n".join(msg_parts))
 
         except Exception as e:
             logger.exception("Error handling incoming document: %s", e)
