@@ -4,6 +4,7 @@ import logging
 import signal
 import sys
 from datetime import datetime, timezone, date, time as dt_time
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 # Ensure project root is first in sys.path and remove script directory to avoid shadowing stdlib 'calendar'
@@ -25,6 +26,7 @@ from src.calendar.client import GoogleCalendarClient
 from src.notifier.telegram import TelegramNotifier
 from src.collector.tg_collector import TelegramCollector
 from src.collector.email_collector import EmailCollector
+from src.brain.summarizer import GeminiSummarizer
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
 
@@ -205,9 +207,75 @@ async def run_email_collector_cycle(
         logger.exception("Error during email collection cycle: %s", e)
 
 
+async def run_morning_brief_cycle(
+    db: Database,
+    schedule_parser: ScheduleParser,
+    summarizer: GeminiSummarizer,
+    notifier: TelegramNotifier,
+    force: bool = False,
+) -> None:
+    """Run morning executive brief cycle (daily at 08:00 MSK or triggered on startup)."""
+    try:
+        now_local = datetime.now(ZoneInfo(config.TZ))
+        today = now_local.date()
+
+        if not force:
+            latest_brief = await db.get_latest_snapshot("daily_morning_brief")
+            if latest_brief and latest_brief.get("captured_at"):
+                brief_date_str = str(latest_brief["captured_at"])[:10]
+                if brief_date_str == today.isoformat():
+                    logger.info("Morning brief for %s was already sent today. Skipping.", today)
+                    return
+
+        logger.info("Starting morning executive brief cycle for %s...", today)
+
+        # 1. Lessons for today & upcoming
+        today_lessons: list[Lesson] = []
+        upcoming_lessons: list[tuple[date, Lesson]] = []
+        snap = await db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+        if snap and snap.get("raw_payload"):
+            try:
+                payload = SchedulePayload.model_validate_json(snap["raw_payload"])
+                for day in payload.days:
+                    if day.date == today:
+                        today_lessons = day.lessons
+                    elif day.date > today and not upcoming_lessons:
+                        upcoming_lessons = [(day.date, l) for l in day.lessons]
+            except Exception as se:
+                logger.warning("Failed to parse schedule payload for brief: %s", se)
+
+        # 2. Actionable emails (unanswered student/dept letters)
+        actionable_emails = await db.list_actionable_emails(limit=10)
+
+        # 3. Action items from monitored Telegram chats
+        action_items = await db.get_pending_action_items(limit=20)
+
+        # 4. Generate brief via summarizer
+        brief_markdown = await summarizer.generate_morning_brief(
+            target_date=today,
+            lessons=today_lessons,
+            action_items=action_items,
+            actionable_emails=actionable_emails,
+            upcoming_lessons=upcoming_lessons,
+        )
+
+        # 5. Send via Telegram
+        sent = await notifier.send_daily_brief(brief_markdown)
+        if sent:
+            await db.save_snapshot(
+                source_id="daily_morning_brief",
+                content_hash=today.isoformat(),
+                raw_payload=brief_markdown,
+            )
+            logger.info("Morning brief for %s successfully sent to Telegram.", today)
+    except Exception as e:
+        logger.exception("Error during morning brief cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
+    parser.add_argument("--brief", action="store_true", help="Force send morning brief and exit")
     args = parser.parse_args()
 
     logger.info("Assistant Worker starting up...")
@@ -230,11 +298,32 @@ async def main() -> None:
     )
     telegram_collector = TelegramCollector(db=db)
     email_collector = EmailCollector(db=db)
+    summarizer = GeminiSummarizer()
 
-    # Run initial cycle
+    # Track morning brief source in DB
+    await db.upsert_monitored_source(
+        source_id="daily_morning_brief",
+        source_type="briefing",
+        display_name="Daily Morning Brief",
+        config={"hour": 8, "minute": 0},
+    )
+
+    if args.brief:
+        logger.info("Force sending morning brief via --brief flag...")
+        await run_morning_brief_cycle(db, schedule_parser, summarizer, notifier, force=True)
+        await telegram_collector.disconnect()
+        await db.close()
+        return
+
+    # Run initial cycles
     await run_sentinel_cycle(db, schedule_parser, calendar_client, notifier)
     await run_telegram_collector_cycle(db, telegram_collector, notifier)
     await run_email_collector_cycle(db, email_collector, notifier)
+
+    # If current time is between 08:00 and 12:00 MSK and today's brief was not sent, send it now
+    now_local = datetime.now(ZoneInfo(config.TZ))
+    if 8 <= now_local.hour < 12:
+        await run_morning_brief_cycle(db, schedule_parser, summarizer, notifier, force=False)
 
     if args.once:
         logger.info("Executed single cycle (--once). Shutting down.")
@@ -270,9 +359,19 @@ async def main() -> None:
         id="email_collector_job",
         replace_existing=True,
     )
+    # Morning brief runs daily at 08:00 MSK
+    scheduler.add_job(
+        run_morning_brief_cycle,
+        "cron",
+        hour=8,
+        minute=0,
+        args=[db, schedule_parser, summarizer, notifier],
+        id="morning_brief_job",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
-        "Scheduler started. Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min. Press Ctrl+C to terminate.",
+        "Scheduler started. Morning brief at 08:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min. Press Ctrl+C to terminate.",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
     )
 

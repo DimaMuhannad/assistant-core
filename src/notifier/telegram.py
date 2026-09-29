@@ -82,6 +82,10 @@ class TelegramNotifier:
         finally:
             await bot.session.close()
 
+    async def send_message(self, text_markdown: str) -> bool:
+        """Send formatted markdown message to user."""
+        return await self._send_rich_message(text_markdown)
+
     async def send_schedule_diff_alert(self, diff: ScheduleDiff, target_id: str) -> bool:
         """Send formatted alert when schedule changes are detected."""
         if not diff.has_changes:
