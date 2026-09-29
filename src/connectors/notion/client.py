@@ -26,7 +26,7 @@ class NotionAsyncClient:
         api_key: str | None = None,
         timeout: float = 15.0,
     ) -> None:
-        self.api_key = api_key or config.NOTION_API_KEY
+        self.api_key = api_key if api_key is not None else config.NOTION_API_KEY
         self.timeout = timeout
         self._headers = {
             "Authorization": f"Bearer {self.api_key}",
