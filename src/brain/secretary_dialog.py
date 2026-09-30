@@ -27,6 +27,7 @@ from google.genai import types
 from src import config
 from src.storage.db import Database
 from src.brain.methodist import MethodistService
+from src.brain.key_rotator import key_rotator
 from src.models.schedule import SchedulePayload, Lesson
 
 logger = logging.getLogger(__name__)
@@ -80,11 +81,9 @@ class SecretaryDialogEngine:
         return bool(self.api_key and not self.api_key.startswith("AIzaSyYour"))
 
     def get_client(self) -> genai.Client:
-        if self._client is None:
-            if not self.api_key:
-                raise ValueError("GEMINI_API_KEY is not configured.")
-            self._client = genai.Client(api_key=self.api_key)
-        return self._client
+        if self._client is not None:
+            return self._client
+        return key_rotator.get_client()
 
     async def _get_schedule_context(self, now_local: datetime) -> str:
         """Fetch schedule ground truth for today and next 7 days."""
@@ -676,13 +675,18 @@ class SecretaryDialogEngine:
                 f"{grounding_context}"
             )
         else:
-            candidate_models = [self.model, "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-lite-latest"]
+            candidate_models = [
+                self.model,
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-flash-lite-latest",
+                "gemini-3.6-flash",
+            ]
             unique_models = []
             for m in candidate_models:
                 if m not in unique_models:
                     unique_models.append(m)
 
-            client = self.get_client()
             answer_text = ""
 
             for attempt, mod in enumerate(unique_models):
@@ -694,14 +698,20 @@ class SecretaryDialogEngine:
                     if "3.8" in mod or "3.7" in mod or "2.5" in mod:
                         cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
 
-                    resp = await asyncio.wait_for(
-                        client.aio.models.generate_content(
-                            model=mod,
-                            contents=user_prompt,
-                            config=types.GenerateContentConfig(**cfg_kwargs),
-                        ),
-                        timeout=25.0,
-                    )
+                    async def _make_dialog_call(client: genai.Client) -> Any:
+                        return await asyncio.wait_for(
+                            client.aio.models.generate_content(
+                                model=mod,
+                                contents=user_prompt,
+                                config=types.GenerateContentConfig(**cfg_kwargs),
+                            ),
+                            timeout=6.0,
+                        )
+
+                    if self._client is not None:
+                        resp = await _make_dialog_call(self._client)
+                    else:
+                        resp = await key_rotator.execute_with_failover(_make_dialog_call)
                     answer_text = (resp.text or "").strip()
                     if answer_text:
                         logger.info("Successfully generated secretary dialog answer via %s (attempt %d)", mod, attempt + 1)
@@ -709,7 +719,7 @@ class SecretaryDialogEngine:
                 except Exception as e:
                     logger.warning("Attempt %d with model %s failed in dialog: %s", attempt + 1, mod, e)
                     if attempt < len(unique_models) - 1:
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(0.5)
                     else:
                         answer_text = (
                             "⚠️ Сервис генерации временно недоступен из-за ограничений сети/квот.\n\n"

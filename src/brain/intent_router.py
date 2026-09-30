@@ -21,6 +21,7 @@ from google.genai import types
 
 from src import config
 from src.storage.db import Database
+from src.brain.key_rotator import key_rotator
 
 logger = logging.getLogger(__name__)
 
@@ -103,11 +104,9 @@ class FastIntentRouter:
         return bool(self.api_key and not self.api_key.startswith("AIzaSyYour"))
 
     def get_client(self) -> genai.Client:
-        if self._client is None:
-            if not self.api_key:
-                raise ValueError("GEMINI_API_KEY is not configured.")
-            self._client = genai.Client(api_key=self.api_key)
-        return self._client
+        if self._client is not None:
+            return self._client
+        return key_rotator.get_client()
 
     async def route(self, user_id: int, message_text: str) -> IntentResult:
         """Route an incoming message to an action without persisting conversation context."""
@@ -140,13 +139,12 @@ class FastIntentRouter:
             return res
 
         # 2. Candidate models fallback chain
-        client = self.get_client()
         candidate_models = [
             self.model,
-            "gemini-3.8-flash",
             "gemini-3.5-flash-lite",
-            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
             "gemini-flash-lite-latest",
+            "gemini-3.6-flash",
         ]
         unique_models = []
         for m in candidate_models:
@@ -167,14 +165,20 @@ class FastIntentRouter:
                 if "3.8" in mod or "3.7" in mod:
                     cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
 
-                resp = await asyncio.wait_for(
-                    client.aio.models.generate_content(
-                        model=mod,
-                        contents=f'Входящее сообщение: "{cleaned}"',
-                        config=types.GenerateContentConfig(**cfg_kwargs),
-                    ),
-                    timeout=5.0,
-                )
+                async def _make_call(client: genai.Client) -> Any:
+                    return await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=mod,
+                            contents=f'Входящее сообщение: "{cleaned}"',
+                            config=types.GenerateContentConfig(**cfg_kwargs),
+                        ),
+                        timeout=4.0,
+                    )
+
+                if self._client is not None:
+                    resp = await _make_call(self._client)
+                else:
+                    resp = await key_rotator.execute_with_failover(_make_call)
                 self._model_cooldowns.pop(mod, None)
                 latency_ms = (time.perf_counter() - t0) * 1000.0
                 text_resp = (resp.text or "").strip()

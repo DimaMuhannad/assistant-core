@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load .env file
-load_dotenv(BASE_DIR / ".env")
+# Load .env file with override
+load_dotenv(BASE_DIR / ".env", override=True)
 
 TZ = os.getenv("TZ", "Europe/Moscow")
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
@@ -31,7 +31,14 @@ if not os.path.isabs(TELEGRAM_SESSION_PATH):
     TELEGRAM_SESSION_PATH = str(BASE_DIR / TELEGRAM_SESSION_PATH)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+_RAW_KEYS = os.getenv("GEMINI_API_KEYS", "")
+GEMINI_API_KEYS = [k.strip() for k in _RAW_KEYS.split(",") if k.strip()]
+if not GEMINI_API_KEYS and GEMINI_API_KEY:
+    GEMINI_API_KEYS = [GEMINI_API_KEY]
+if not GEMINI_API_KEY and GEMINI_API_KEYS:
+    GEMINI_API_KEY = GEMINI_API_KEYS[0]
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # Speech-to-Text (STT) Settings
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

@@ -34,7 +34,7 @@ def get_headers() -> dict[str, str]:
 
 
 async def find_task(client: httpx.AsyncClient, query_or_id: str) -> dict[str, Any] | None:
-    """Find task page by ID or partial title match."""
+    """Find task page by ID, number (#23) or partial title match."""
     # Check if direct page_id
     clean_id = query_or_id.replace("-", "").strip()
     if len(clean_id) == 32:
@@ -45,7 +45,19 @@ async def find_task(client: httpx.AsyncClient, query_or_id: str) -> dict[str, An
         except Exception:
             pass
 
-    # Search in issues DB
+    # Check if number like "23" or "#23"
+    q_num = query_or_id.lstrip("#").strip()
+    if q_num.isdigit():
+        resp = await client.post(
+            f"/databases/{ISSUES_DB_ID}/query",
+            json={"filter": {"property": "№", "number": {"equals": int(q_num)}}},
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                return results[0]
+
+    # Search in issues DB by title
     resp = await client.post(
         f"/databases/{ISSUES_DB_ID}/query",
         json={"filter": {"property": "Issue", "title": {"contains": query_or_id}}},

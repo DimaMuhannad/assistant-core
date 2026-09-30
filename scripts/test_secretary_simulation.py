@@ -34,8 +34,7 @@ class SecretarySimulationRunner:
             bot_token=config.TELEGRAM_BOT_TOKEN,
             user_id=config.TELEGRAM_USER_ID,
         )
-        # Use gemini-3.5-flash as default to bypass 429 quota exhaustion on 3.8
-        self.model = "gemini-3.5-flash"
+        self.model = config.GEMINI_MODEL
         self.router = FastIntentRouter(db=self.db, model=self.model)
         self.dialog_engine = SecretaryDialogEngine(db=self.db, model=self.model)
         self.target_chat_id = config.TELEGRAM_USER_ID
