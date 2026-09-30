@@ -550,6 +550,7 @@ async def main() -> None:
         lms_client=lms_client,
     )
     dp.include_router(bot_handler.router)
+    await bot_handler.setup_bot_commands()
 
     schedule_parser = ScheduleParser(
         base_url=config.SCHEDULE_URL,
