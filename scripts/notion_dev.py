@@ -3,9 +3,13 @@
 import argparse
 import asyncio
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import config
 
@@ -15,6 +19,7 @@ logger = logging.getLogger("notion_dev")
 NOTION_VERSION = "2022-06-28"
 BASE_URL = "https://api.notion.com/v1"
 ISSUES_DB_ID = "3eaa2e48-40a0-81e9-ad37-e793caf99ece"
+MILESTONES_DB_ID = "3eaa2e48-40a0-81a3-b558-e2c77659ddcb"
 
 
 def get_headers() -> dict[str, str]:
@@ -65,31 +70,69 @@ async def get_next_issue_number(client: httpx.AsyncClient) -> int:
     return 1
 
 
+async def find_milestone(client: httpx.AsyncClient, query: str) -> str | None:
+    """Find milestone page ID by phase number, title or exact ID."""
+    clean_id = query.replace("-", "").strip()
+    if len(clean_id) == 32:
+        return query
+
+    # Try exact or partial title match
+    resp = await client.post(
+        f"/databases/{MILESTONES_DB_ID}/query",
+        json={"filter": {"property": "Milestone", "title": {"contains": query}}},
+    )
+    if resp.status_code == 200:
+        results = resp.json().get("results", [])
+        if results:
+            return results[0]["id"]
+
+    # Also handle phase number like 'Phase 9' or '9'
+    digits = "".join([c for c in query if c.isdigit()])
+    if digits:
+        resp = await client.post(
+            f"/databases/{MILESTONES_DB_ID}/query",
+            json={"filter": {"property": "Milestone", "title": {"contains": f"Phase {digits}"}}},
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                return results[0]["id"]
+    return None
+
+
 async def create_issue(
     title: str,
     module: str = "LMS pro.guap.ru (Academic)",
     priority: str = "P1 - High",
     issue_type: str = "🚀 feat (Feature)",
     status: str = "In Progress",
+    milestone: str | None = None,
 ) -> dict[str, Any]:
     """Create a new issue in Notion Issues DB."""
     async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
         next_num = await get_next_issue_number(client)
+        props: dict[str, Any] = {
+            "Issue": {"title": [{"text": {"content": title}}]},
+            "Module": {"select": {"name": module}},
+            "Priority": {"select": {"name": priority}},
+            "Type": {"select": {"name": issue_type}},
+            "Status": {"status": {"name": status}},
+            "№": {"number": next_num},
+        }
+        if milestone:
+            m_id = await find_milestone(client, milestone)
+            if m_id:
+                props["Milestone"] = {"relation": [{"id": m_id}]}
+            else:
+                logger.warning("Milestone '%s' not found, creating issue without milestone link.", milestone)
         payload = {
             "parent": {"database_id": ISSUES_DB_ID},
-            "properties": {
-                "Issue": {"title": [{"text": {"content": title}}]},
-                "Module": {"select": {"name": module}},
-                "Priority": {"select": {"name": priority}},
-                "Type": {"select": {"name": issue_type}},
-                "Status": {"status": {"name": status}},
-                "№": {"number": next_num},
-            },
+            "properties": props,
         }
         resp = await client.post("/pages", json=payload)
         resp.raise_for_status()
         data = resp.json()
-        logger.info("Created issue #%02d '%s' (ID: %s, Status: %s)", next_num, title, data["id"], status)
+        logger.info("Created issue #%02d '%s' (ID: %s, Status: %s, Milestone: %s)", next_num, title, data["id"], status, milestone)
         return data
 
 
@@ -300,6 +343,7 @@ if __name__ == "__main__":
     p_create.add_argument("--priority", default="P1 - High", help="Priority")
     p_create.add_argument("--type", default="🚀 feat (Feature)", help="Type")
     p_create.add_argument("--status", default="In Progress", help="Initial status")
+    p_create.add_argument("--milestone", default=None, help="Milestone name, phase number (e.g. 10 or 'Phase 10') or page ID")
 
     # start
     p_start = subparsers.add_parser("start")
@@ -322,19 +366,18 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    loop = asyncio.get_event_loop()
     if args.cmd == "list":
-        res = loop.run_until_complete(list_tasks(args.status, getattr(args, "reverse", False)))
+        res = asyncio.run(list_tasks(args.status, getattr(args, "reverse", False)))
         for t in res:
             num_str = f"#{t['num']:02d}" if t.get("num") is not None else "[-]"
             print(f"{num_str} [{t['status']:<11}] [{t['priority']:<11}] [{t['module']:<30}] {t['title']} ({t['commit']})")
     elif args.cmd == "create":
-        loop.run_until_complete(create_issue(args.title, args.module, args.priority, args.type, args.status))
+        asyncio.run(create_issue(args.title, args.module, args.priority, args.type, args.status, getattr(args, "milestone", None)))
     elif args.cmd == "start":
-        loop.run_until_complete(start_task(args.task))
+        asyncio.run(start_task(args.task))
     elif args.cmd == "finish":
-        loop.run_until_complete(finish_task(args.task, args.commit, args.changeset, args.decisions, args.quality, args.debt))
+        asyncio.run(finish_task(args.task, args.commit, args.changeset, args.decisions, args.quality, args.debt))
     elif args.cmd == "block":
-        loop.run_until_complete(block_task(args.task, args.error, args.hypotheses))
+        asyncio.run(block_task(args.task, args.error, args.hypotheses))
     else:
         parser.print_help()
