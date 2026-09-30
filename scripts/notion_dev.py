@@ -52,6 +52,19 @@ async def find_task(client: httpx.AsyncClient, query_or_id: str) -> dict[str, An
     return None
 
 
+async def get_next_issue_number(client: httpx.AsyncClient) -> int:
+    """Fetch highest issue number and return next incremental number."""
+    resp = await client.post(
+        f"/databases/{ISSUES_DB_ID}/query",
+        json={"sorts": [{"property": "№", "direction": "descending"}], "page_size": 1},
+    )
+    if resp.status_code == 200:
+        results = resp.json().get("results", [])
+        if results and results[0]["properties"].get("№", {}).get("number"):
+            return results[0]["properties"]["№"]["number"] + 1
+    return 1
+
+
 async def create_issue(
     title: str,
     module: str = "LMS pro.guap.ru (Academic)",
@@ -61,6 +74,7 @@ async def create_issue(
 ) -> dict[str, Any]:
     """Create a new issue in Notion Issues DB."""
     async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
+        next_num = await get_next_issue_number(client)
         payload = {
             "parent": {"database_id": ISSUES_DB_ID},
             "properties": {
@@ -69,12 +83,13 @@ async def create_issue(
                 "Priority": {"select": {"name": priority}},
                 "Type": {"select": {"name": issue_type}},
                 "Status": {"status": {"name": status}},
+                "№": {"number": next_num},
             },
         }
         resp = await client.post("/pages", json=payload)
         resp.raise_for_status()
         data = resp.json()
-        logger.info("Created issue '%s' (ID: %s, Status: %s)", title, data["id"], status)
+        logger.info("Created issue #%02d '%s' (ID: %s, Status: %s)", next_num, title, data["id"], status)
         return data
 
 
@@ -242,9 +257,11 @@ async def block_task(task_query: str, error_log: str, hypotheses: str) -> dict[s
         return resp.json()
 
 
-async def list_tasks(status: str | None = None) -> list[dict[str, Any]]:
-    """List issues from Notion Issues DB."""
-    payload: dict[str, Any] = {}
+async def list_tasks(status: str | None = None, reverse: bool = False) -> list[dict[str, Any]]:
+    """List issues from Notion Issues DB sorted chronologically by default."""
+    payload: dict[str, Any] = {
+        "sorts": [{"property": "№", "direction": "descending" if reverse else "ascending"}]
+    }
     if status:
         payload["filter"] = {"property": "Status", "status": {"equals": status}}
 
@@ -255,6 +272,7 @@ async def list_tasks(status: str | None = None) -> list[dict[str, Any]]:
         return [
             {
                 "id": t["id"],
+                "num": t["properties"].get("№", {}).get("number") if t["properties"].get("№") else None,
                 "title": t["properties"]["Issue"]["title"][0]["plain_text"] if t["properties"]["Issue"]["title"] else "",
                 "status": t["properties"]["Status"]["status"]["name"] if t["properties"].get("Status") else "",
                 "type": t["properties"]["Type"]["select"]["name"] if t["properties"].get("Type", {}).get("select") else "",
@@ -273,6 +291,7 @@ if __name__ == "__main__":
     # list
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--status", help="Filter by status (Backlog, Ready for Dev, In Progress, Done)")
+    p_list.add_argument("--reverse", action="store_true", help="Sort in reverse chronological order (newest first)")
 
     # create
     p_create = subparsers.add_parser("create")
@@ -305,9 +324,10 @@ if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
     if args.cmd == "list":
-        res = loop.run_until_complete(list_tasks(args.status))
+        res = loop.run_until_complete(list_tasks(args.status, getattr(args, "reverse", False)))
         for t in res:
-            print(f"[{t['status']:<12}] [{t['priority']:<11}] [{t['module']:<30}] {t['title']} ({t['commit']})")
+            num_str = f"#{t['num']:02d}" if t.get("num") is not None else "[-]"
+            print(f"{num_str} [{t['status']:<11}] [{t['priority']:<11}] [{t['module']:<30}] {t['title']} ({t['commit']})")
     elif args.cmd == "create":
         loop.run_until_complete(create_issue(args.title, args.module, args.priority, args.type, args.status))
     elif args.cmd == "start":
