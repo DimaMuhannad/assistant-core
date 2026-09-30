@@ -112,6 +112,44 @@ async def find_milestone(client: httpx.AsyncClient, query: str) -> str | None:
     return None
 
 
+PROJECTS_CACHE: dict[str, str] = {
+    "ai": "3eaa2e48-40a0-8135-842c-e6147b608116",
+    "assistant": "3eaa2e48-40a0-8135-842c-e6147b608116",
+    "chat-app": "3eaa2e48-40a0-8135-842c-e6147b608116",
+    "tydex": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
+    "тидекс": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
+    "guap": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
+    "гуап": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
+    "science": "3eaa2e48-40a0-8178-82cb-f063652f8318",
+    "наука": "3eaa2e48-40a0-8178-82cb-f063652f8318",
+}
+
+
+async def find_project(client: httpx.AsyncClient, query: str) -> str | None:
+    """Find project page ID by short key, name, or UUID."""
+    clean_id = query.replace("-", "").strip()
+    if len(clean_id) == 32:
+        return query
+
+    q_lower = query.lower().strip()
+    if q_lower in PROJECTS_CACHE:
+        return PROJECTS_CACHE[q_lower]
+
+    projects_db_id = getattr(config, "NOTION_PROJECTS_DB_ID", "3eaa2e48-40a0-8147-8973-cd2fcd8bda47")
+    try:
+        resp = await client.post(
+            f"/databases/{projects_db_id}/query",
+            json={"filter": {"property": "Name", "title": {"contains": query}}},
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                return results[0]["id"]
+    except Exception:
+        pass
+    return None
+
+
 async def create_issue(
     title: str,
     module: str = "LMS pro.guap.ru (Academic)",
@@ -119,6 +157,7 @@ async def create_issue(
     issue_type: str = "🚀 feat (Feature)",
     status: str = "In Progress",
     milestone: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Create a new issue in Notion Issues DB."""
     async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
@@ -137,6 +176,17 @@ async def create_issue(
                 props["Milestone"] = {"relation": [{"id": m_id}]}
             else:
                 logger.warning("Milestone '%s' not found, creating issue without milestone link.", milestone)
+        if project:
+            p_ids = []
+            for p_item in [p.strip() for p in project.split(",") if p.strip()]:
+                pid = await find_project(client, p_item)
+                if pid:
+                    p_ids.append(pid)
+                else:
+                    logger.warning("Project '%s' not resolved.", p_item)
+            if p_ids:
+                props["Project"] = {"relation": [{"id": pid} for pid in p_ids]}
+
         payload = {
             "parent": {"database_id": ISSUES_DB_ID},
             "properties": props,
@@ -144,7 +194,7 @@ async def create_issue(
         resp = await client.post("/pages", json=payload)
         resp.raise_for_status()
         data = resp.json()
-        logger.info("Created issue #%02d '%s' (ID: %s, Status: %s, Milestone: %s)", next_num, title, data["id"], status, milestone)
+        logger.info("Created issue #%02d '%s' (ID: %s, Status: %s, Milestone: %s, Project: %s)", next_num, title, data["id"], status, milestone, project)
         return data
 
 
@@ -312,15 +362,28 @@ async def block_task(task_query: str, error_log: str, hypotheses: str) -> dict[s
         return resp.json()
 
 
-async def list_tasks(status: str | None = None, reverse: bool = False) -> list[dict[str, Any]]:
+async def list_tasks(status: str | None = None, reverse: bool = False, project: str | None = None) -> list[dict[str, Any]]:
     """List issues from Notion Issues DB sorted chronologically by default."""
     payload: dict[str, Any] = {
         "sorts": [{"property": "№", "direction": "descending" if reverse else "ascending"}]
     }
+    filters = []
     if status:
-        payload["filter"] = {"property": "Status", "status": {"equals": status}}
+        filters.append({"property": "Status", "status": {"equals": status}})
 
     async with httpx.AsyncClient(base_url=BASE_URL, headers=get_headers(), timeout=20.0) as client:
+        if project:
+            pid = await find_project(client, project)
+            if pid:
+                filters.append({"property": "Project", "relation": {"contains": pid}})
+            else:
+                logger.warning("Project '%s' not found for filtering.", project)
+
+        if len(filters) == 1:
+            payload["filter"] = filters[0]
+        elif len(filters) > 1:
+            payload["filter"] = {"and": filters}
+
         resp = await client.post(f"/databases/{ISSUES_DB_ID}/query", json=payload)
         resp.raise_for_status()
         tasks = resp.json().get("results", [])
@@ -334,6 +397,7 @@ async def list_tasks(status: str | None = None, reverse: bool = False) -> list[d
                 "priority": t["properties"]["Priority"]["select"]["name"] if t["properties"].get("Priority", {}).get("select") else "",
                 "module": t["properties"]["Module"]["select"]["name"] if t["properties"].get("Module", {}).get("select") else "",
                 "commit": t["properties"]["Git Commit"]["rich_text"][0]["plain_text"] if t["properties"].get("Git Commit", {}).get("rich_text") else "",
+                "projects": [r["id"] for r in t["properties"].get("Project", {}).get("relation", [])] if t["properties"].get("Project") else [],
             }
             for t in tasks
         ]
@@ -346,6 +410,7 @@ if __name__ == "__main__":
     # list
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--status", help="Filter by status (Backlog, Ready for Dev, In Progress, Done)")
+    p_list.add_argument("--project", help="Filter by project key or name (ai, tydex, guap, science)")
     p_list.add_argument("--reverse", action="store_true", help="Sort in reverse chronological order (newest first)")
 
     # create
@@ -356,6 +421,7 @@ if __name__ == "__main__":
     p_create.add_argument("--type", default="🚀 feat (Feature)", help="Type")
     p_create.add_argument("--status", default="In Progress", help="Initial status")
     p_create.add_argument("--milestone", default=None, help="Milestone name, phase number (e.g. 10 or 'Phase 10') or page ID")
+    p_create.add_argument("--project", default=None, help="Project name or key (e.g. 'ai', 'tydex', 'guap', 'science' or comma-separated)")
 
     # start
     p_start = subparsers.add_parser("start")
@@ -379,12 +445,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cmd == "list":
-        res = asyncio.run(list_tasks(args.status, getattr(args, "reverse", False)))
+        res = asyncio.run(list_tasks(args.status, getattr(args, "reverse", False), getattr(args, "project", None)))
         for t in res:
             num_str = f"#{t['num']:02d}" if t.get("num") is not None else "[-]"
             print(f"{num_str} [{t['status']:<11}] [{t['priority']:<11}] [{t['module']:<30}] {t['title']} ({t['commit']})")
     elif args.cmd == "create":
-        asyncio.run(create_issue(args.title, args.module, args.priority, args.type, args.status, getattr(args, "milestone", None)))
+        asyncio.run(create_issue(args.title, args.module, args.priority, args.type, args.status, getattr(args, "milestone", None), getattr(args, "project", None)))
     elif args.cmd == "start":
         asyncio.run(start_task(args.task))
     elif args.cmd == "finish":
