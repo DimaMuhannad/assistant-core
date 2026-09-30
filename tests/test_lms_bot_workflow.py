@@ -291,3 +291,39 @@ async def test_lms_natural_language_triggers(in_memory_db: Database):
 
     await handler.handle_user_text(msg_pub)
     # Checks visibility change call
+
+
+@pytest.mark.asyncio
+async def test_cmd_lms_reports_instant_cached_response(in_memory_db: Database):
+    """Verify that /reports returns instantly from SQLite without blocking network scraping."""
+    await in_memory_db.record_lms_submission(
+        report_id=888,
+        task_id=3418,
+        task_title="Попов: Лабораторная работа №1",
+        student_name="Сидоров Сидор",
+        group_name="1632",
+        status="Ожидает проверки",
+        upload_date="2026-09-30 11:00",
+        download_url="/inside/professor/reports/888/download",
+    )
+
+    mock_lms = MagicMock()
+    notifier = TelegramNotifier(bot_token="fake:token", user_id="12345")
+    handler = EmailBotHandler(db=in_memory_db, notifier=notifier, allowed_user_id=12345, lms_client=mock_lms)
+
+    mock_msg = AsyncMock()
+    mock_msg.from_user.id = 12345
+
+    await handler.handle_cmd_lms_reports(mock_msg)
+
+    # Crucial check: LMS client network scraping was NOT called
+    mock_lms.list_tasks.assert_not_called()
+    mock_lms.get_task_details.assert_not_called()
+
+    # Message answered with cached submissions
+    mock_msg.answer.assert_called_once()
+    answer_text = mock_msg.answer.call_args[0][0]
+    assert "Сидоров Сидор" in answer_text
+    assert "Лабораторная работа №1" in answer_text
+    assert "Всего отчетов: **1**" in answer_text
+    assert "lms:sync_reports" in str(mock_msg.answer.call_args[1].get("reply_markup"))

@@ -117,7 +117,7 @@ async def test_router_fallback_on_model_quota_error(test_db):
     )
     router._client = mock_client
 
-    res = await router.route(user_id=101, message_text="вечерний дайджест")
+    res = await router.route(user_id=101, message_text="Подведи вечерние итоги дня, пожалуйста")
 
     assert res.action == "evening"
     assert res.model == "gemini-3.5-flash-lite"
@@ -209,3 +209,42 @@ async def test_bot_handler_dispatch_to_methodist(test_db):
     await handler.handle_user_text(mock_msg)
 
     handler._handle_methodist_query.assert_awaited_once_with(mock_msg, "как оформить титульный лист")
+
+
+@pytest.mark.asyncio
+async def test_router_markdown_fenced_json_parsing(test_db):
+    """Verify that extract_json_object cleanly handles Markdown code fences."""
+    router = FastIntentRouter(db=test_db, api_key="test-api-key")
+
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.text = '```json\n{\n  "action": "lms_reports",\n  "confidence": 0.96,\n  "reason": "Запрос непроверенных отчетов"\n}\n```'
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_resp)
+    router._client = mock_client
+
+    res = await router.route(user_id=123, message_text="кто из студентов сдал отчеты?")
+    assert res.action == "lms_reports"
+    assert res.confidence == 0.96
+    assert "непроверенных отчетов" in res.reason
+
+
+@pytest.mark.asyncio
+async def test_router_new_deterministic_shortcuts(test_db):
+    """Verify instant zero-latency routing for standard Russian commands and shortcuts."""
+    router = FastIntentRouter(db=test_db, api_key="test-api-key")
+
+    res_ts = await router.route(user_id=123, message_text="табель")
+    assert res_ts.action == "timesheet"
+    assert res_ts.model == "fast-rule"
+
+    res_ev = await router.route(user_id=123, message_text="вечерний дайджест")
+    assert res_ev.action == "evening"
+    assert res_ev.model == "fast-rule"
+
+    res_em = await router.route(user_id=123, message_text="почта")
+    assert res_em.action == "emails"
+    assert res_em.model == "fast-rule"
+
+    res_rep = await router.route(user_id=123, message_text="отчеты")
+    assert res_rep.action == "lms_reports"
+    assert res_rep.model == "fast-rule"

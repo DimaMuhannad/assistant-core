@@ -155,6 +155,7 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("lms:hide:"))(self.cb_lms_hide_action)
         self.router.callback_query(F.data == "lms:reports")(self.cb_lms_reports)
         self.router.callback_query(F.data == "lms:refresh")(self.cb_lms_refresh)
+        self.router.callback_query(F.data == "lms:sync_reports")(self.cb_sync_lms_reports)
         self.router.callback_query(F.data == "lms:del_prompt")(self.cb_lms_del_prompt)
         self.router.callback_query(F.data.startswith("lms:del_confirm:"))(self.cb_lms_del_confirm)
         self.router.callback_query(F.data == "lms:create_menu")(self.cb_lms_create_menu)
@@ -1452,42 +1453,39 @@ class EmailBotHandler:
             await status_msg.edit_text(f"⚠️ Ошибка при загрузке заданий: {e}")
 
     async def handle_cmd_lms_reports(self, message: Message) -> None:
-        """Handle /reports command."""
+        """Handle /reports command with instant cached SQLite response."""
         if not self._is_authorized(message.from_user.id):
             return
 
-        status_msg = await message.answer("🔍 Проверяю сданные отчеты на pro.guap.ru...")
         try:
-            submissions = await self.db.list_lms_submissions(limit=25)
-            if not submissions:
-                tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
-                public_tasks = [t for t in tasks if t.get("is_public")]
-                for pt in public_tasks:
-                    details = await asyncio.to_thread(self.lms_client.get_task_details, pt["id"])
-                    for rep in details.get("reports", []):
-                        if rep.get("report_id"):
-                            await self.db.record_lms_submission(
-                                report_id=rep["report_id"],
-                                task_id=pt["id"],
-                                task_title=pt["title"],
-                                student_name=rep["student_name"],
-                                group_name=rep["group"],
-                                status=rep["status"],
-                                upload_date=rep.get("upload_date", ""),
-                                check_date=rep.get("check_date", ""),
-                                download_url=rep.get("download_url", ""),
-                            )
-                submissions = await self.db.list_lms_submissions(limit=25)
+            submissions = await self.db.list_lms_submissions(limit=30)
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="🔄 Синхронизировать с ЛК", callback_data="lms:sync_reports"),
+                        InlineKeyboardButton(text="👁️ Задания", callback_data="lms:pub_menu"),
+                    ]
+                ]
+            )
 
             if not submissions:
-                await status_msg.edit_text(
-                    "📥 **Сданных студенческих отчетов пока нет.**\n\n"
-                    "Как только студенты загрузят первые работы, бот мгновенно уведомит вас в чате."
+                await message.answer(
+                    "📥 **Сданных студенческих отчетов в базе пока нет.**\n\n"
+                    "Фоновый демон `assistant-worker` периодически сканирует pro.guap.ru. "
+                    "Вы также можете запустить ручную синхронизацию по кнопке ниже:",
+                    reply_markup=kb,
                 )
                 return
 
-            lines = [f"📥 **Сданные студенческие отчеты ({len(submissions)}):**\n"]
-            for s in submissions:
+            pending_cnt = sum(1 for s in submissions if "ожидает" in s.get("status", "").lower() or not s.get("check_date"))
+            checked_cnt = len(submissions) - pending_cnt
+
+            lines = [
+                f"📥 **Сданные студенческие отчеты (из локальной базы):**",
+                f"• Всего отчетов: **{len(submissions)}** (⏳ ожидают проверки: **{pending_cnt}**, ✅ проверено: **{checked_cnt}**)\n",
+            ]
+            for s in submissions[:15]:
                 st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
                 lines.append(
                     f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
@@ -1495,10 +1493,13 @@ class EmailBotHandler:
                     f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
                     f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
                 )
-            await status_msg.edit_text("\n".join(lines))
+            if len(submissions) > 15:
+                lines.append(f"_... и еще {len(submissions) - 15} отчетов в базе._\n")
+
+            await message.answer("\n".join(lines).strip(), reply_markup=kb)
         except Exception as e:
-            logger.exception("Error checking reports: %s", e)
-            await status_msg.edit_text(f"⚠️ Ошибка при проверке отчетов: {e}")
+            logger.exception("Error checking cached reports: %s", e)
+            await message.answer(f"⚠️ Ошибка при проверке отчетов: {e}")
 
     async def handle_cmd_lms_publish(self, message: Message) -> None:
         """Handle /lms_publish command."""
@@ -1640,6 +1641,63 @@ class EmailBotHandler:
             await callback.message.edit_text(overview, reply_markup=kb)
         except Exception as e:
             await callback.message.answer(f"⚠️ Ошибка обновления: {e}")
+
+    async def cb_sync_lms_reports(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+        await callback.answer("🔄 Запущена фоновая синхронизация с pro.guap.ru...", show_alert=False)
+        asyncio.create_task(self._sync_lms_reports_bg(callback.message))
+
+    async def _sync_lms_reports_bg(self, message: Message) -> None:
+        try:
+            tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+            public_tasks = [t for t in tasks if t.get("is_public")]
+            for pt in public_tasks:
+                details = await asyncio.to_thread(self.lms_client.get_task_details, pt["id"])
+                for rep in details.get("reports", []):
+                    if rep.get("report_id"):
+                        await self.db.record_lms_submission(
+                            report_id=rep["report_id"],
+                            task_id=pt["id"],
+                            task_title=pt["title"],
+                            student_name=rep["student_name"],
+                            group_name=rep["group"],
+                            status=rep["status"],
+                            upload_date=rep.get("upload_date", ""),
+                            check_date=rep.get("check_date", ""),
+                            download_url=rep.get("download_url", ""),
+                        )
+            submissions = await self.db.list_lms_submissions(limit=30)
+            pending_cnt = sum(1 for s in submissions if "ожидает" in s.get("status", "").lower() or not s.get("check_date"))
+            checked_cnt = len(submissions) - pending_cnt
+
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="🔄 Синхронизировать с ЛК", callback_data="lms:sync_reports"),
+                        InlineKeyboardButton(text="👁️ Задания", callback_data="lms:pub_menu"),
+                    ]
+                ]
+            )
+            lines = [
+                f"📥 **Сданные студенческие отчеты (обновлено из pro.guap.ru):**",
+                f"• Всего в базе: **{len(submissions)}** (⏳ ожидают: **{pending_cnt}**, ✅ проверено: **{checked_cnt}**)\n",
+            ]
+            for s in submissions[:15]:
+                st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
+                lines.append(
+                    f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
+                    f"  📌 {s['task_title']}\n"
+                    f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
+                    f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                )
+            if len(submissions) > 15:
+                lines.append(f"_... и еще {len(submissions) - 15} отчетов в базе._\n")
+
+            await message.edit_text("\n".join(lines).strip(), reply_markup=kb)
+        except Exception as e:
+            logger.exception("Error during background LMS sync: %s", e)
 
     async def cb_lms_del_prompt(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):

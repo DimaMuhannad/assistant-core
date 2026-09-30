@@ -74,6 +74,34 @@ VALID_ACTIONS = {
 }
 
 
+import re
+
+
+def extract_json_object(text: str) -> dict[str, Any] | None:
+    """Robust JSON extraction from LLM response handling markdown fences or leading/trailing text."""
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Strip markdown code blocks ```json ... ```
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    # Match any {...}
+    m = re.search(r"(\{[\s\S]*\})", text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    return None
+
+
 @dataclass
 class IntentResult:
     action: str
@@ -120,6 +148,61 @@ class FastIntentRouter:
                 action="clear_dialog",
                 confidence=1.0,
                 reason="Детерминированный сброс диалога",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/timesheet", "табель", "покажи табель", "часы тидекс", "выработка", "норма часов", "баланс часов", "карточка тидекс"):
+            res = IntentResult(
+                action="timesheet",
+                confidence=1.0,
+                reason="Детерминированный шорткат табеля",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/evening", "/digest", "вечерний дайджест", "вечерняя сводка", "итоги дня", "дебрифинг"):
+            res = IntentResult(
+                action="evening",
+                confidence=1.0,
+                reason="Детерминированный шорткат вечернего дайджеста",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/emails", "почта", "письма", "неотвеченные письма", "список писем", "входящие письма"):
+            res = IntentResult(
+                action="emails",
+                confidence=1.0,
+                reason="Детерминированный шорткат почты",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/tasks", "/lms_tasks", "задания", "список заданий", "управление заданиями", "меню заданий"):
+            res = IntentResult(
+                action="lms_tasks",
+                confidence=1.0,
+                reason="Детерминированный шорткат заданий LMS",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/reports", "/submissions", "отчеты", "сданные отчеты", "проверь отчеты", "работы студентов"):
+            res = IntentResult(
+                action="lms_reports",
+                confidence=1.0,
+                reason="Детерминированный шорткат отчетов LMS",
                 model="fast-rule",
                 latency_ms=0.0,
             )
@@ -182,7 +265,9 @@ class FastIntentRouter:
                 self._model_cooldowns.pop(mod, None)
                 latency_ms = (time.perf_counter() - t0) * 1000.0
                 text_resp = (resp.text or "").strip()
-                data = json.loads(text_resp)
+                data = extract_json_object(text_resp)
+                if not data:
+                    raise ValueError(f"Could not parse valid JSON from model response: {text_resp[:120]}")
 
                 action = data.get("action", "secretary")
                 if action not in VALID_ACTIONS:
