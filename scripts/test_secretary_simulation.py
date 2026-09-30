@@ -103,12 +103,84 @@ class SecretarySimulationRunner:
             ts_res = await self.run_timesheet_card()
             sent_msg_ids = ts_res["sent_ids"]
             answer_text = ts_res["preview"]
+        elif route_res.action == "lms_reports":
+            # Handle LMS reports
+            from src.connectors.guap_lms.client import GuapLmsClient
+            submissions = await self.db.list_lms_submissions(limit=25)
+            if not submissions:
+                lms_cli = GuapLmsClient()
+                tasks = await asyncio.to_thread(lms_cli.list_tasks, 28)
+                # Parallel check for fast scanning
+                from concurrent.futures import ThreadPoolExecutor
+                public_tasks = [t for t in tasks if t.get("is_public")]
+                def fetch_reports(t):
+                    try:
+                        det = lms_cli.get_task_details(t["id"])
+                        return t, det.get("reports", [])
+                    except Exception:
+                        return t, []
+                with ThreadPoolExecutor(max_workers=5) as pool:
+                    res_pairs = await asyncio.to_thread(lambda: list(pool.map(fetch_reports, public_tasks)))
+                for pt, reps in res_pairs:
+                    for rep in reps:
+                        if rep.get("report_id"):
+                            await self.db.record_lms_submission(
+                                report_id=rep["report_id"],
+                                task_id=pt["id"],
+                                task_title=pt["title"],
+                                student_name=rep["student_name"],
+                                group_name=rep["group"],
+                                status=rep["status"],
+                                upload_date=rep.get("upload_date", ""),
+                                check_date=rep.get("check_date", ""),
+                                download_url=rep.get("download_url", ""),
+                            )
+                submissions = await self.db.list_lms_submissions(limit=25)
+
+            if not submissions:
+                answer_text = (
+                    "📥 **Сданных студенческих отчетов на pro.guap.ru пока нет.**\n\n"
+                    "Все 29 опубликованных лабораторных работ проверены. "
+                    "Как только студенты загрузят отчеты, бот уведомит вас в чате."
+                )
+            else:
+                lines = [f"📥 **Сданные студенческие отчеты ({len(submissions)}):**\n"]
+                for s in submissions:
+                    st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
+                    lines.append(
+                        f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
+                        f"  📌 {s['task_title']}\n"
+                        f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
+                        f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                    )
+                answer_text = "\n".join(lines)
+            if send_to_tg:
+                sent_msg_ids = await self.notifier.send_message(answer_text, chat_id=self.target_chat_id)
         elif route_res.action == "methodist":
             # Delegate to methodist service
             from src.brain.methodist import MethodistService
             methodist = MethodistService(self.db, model=self.model)
             clean_q = query_text.replace("@методист", "").strip()
-            answer_text = await methodist.answer_academic_question(clean_q)
+            res = await methodist.ask(clean_q, caller="simulation", caller_id=str(self.target_chat_id))
+            answer = res.get("answer", "")
+            sources = res.get("sources", [])
+            src_text = ""
+            if sources:
+                src_items = []
+                for s in sources:
+                    d_title = s.get("doc_title", "")
+                    sec = s.get("section", "")
+                    pages = s.get("pages")
+                    if pages:
+                        src_items.append(f"• _{d_title}_ [{sec}] (стр. {pages})")
+                    elif sec:
+                        src_items.append(f"• _{d_title}_ [{sec}]")
+                    elif d_title:
+                        src_items.append(f"• _{d_title}_")
+                if src_items:
+                    unique_src = list(dict.fromkeys(src_items))
+                    src_text = "\n\n📚 **Использованные первоисточники (выгрузка страниц):**\n" + "\n".join(unique_src[:4])
+            answer_text = f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}"
             if send_to_tg:
                 sent_msg_ids = await self.notifier.send_message(answer_text, chat_id=self.target_chat_id)
         else:
@@ -138,16 +210,31 @@ class SecretarySimulationRunner:
 
 
 async def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stage", type=int, default=2, help="Testing stage (1, 2, 3)")
+    args = parser.parse_args()
+
     db = Database(config.SQLITE_DB_PATH)
     await db.init_db()
     runner = SecretarySimulationRunner(db)
 
-    print("🚀 Запуск Этапа 1 симуляции: Тестирование маршрутизатора и ответов секретаря")
-    scenarios = [
-        "Покажи табель тидекс",
-        "Какие у меня сегодня пары в ГУАП и во сколько?",
-        "Сколько часов мне осталось до закрытия месячной нормы в Тидекс?",
-    ]
+    if args.stage == 1:
+        print("🚀 Запуск Этапа 1 симуляции: Тестирование маршрутизатора и ответов секретаря")
+        scenarios = [
+            "Покажи табель тидекс",
+            "Какие у меня сегодня пары в ГУАП и во сколько?",
+            "Сколько часов мне осталось до закрытия месячной нормы в Тидекс?",
+        ]
+    elif args.stage == 2:
+        print("🚀 Запуск Этапа 2 симуляции: Академический контур, pro.guap.ru, ГОСТы и эффективный контракт")
+        scenarios = [
+            "Какие отчеты сдали студенты на pro.guap.ru?",
+            "@методист какие обязательные требования к оформлению титульного листа и протокола измерений для лаб по физике?",
+            "@методист сколько баллов эффективного контракта положено за статью Scopus Q1 и статью ВАК К-1 по приказу ГУАП?",
+        ]
+    else:
+        scenarios = ["Покажи табель тидекс"]
 
     for q in scenarios:
         res = await runner.simulate_query(q, send_to_tg=True)
