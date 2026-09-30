@@ -288,13 +288,23 @@ async def run_morning_brief_cycle(
         # 3. Action items from monitored Telegram chats
         action_items = await db.get_pending_action_items(limit=20)
 
-        # 4. Generate brief via summarizer
+        # 4. Timesheet pacing
+        timesheet_pacing = None
+        try:
+            from src.connectors.aadhk.parser import AadhkIngestionService
+            aadhk_svc = AadhkIngestionService(db)
+            timesheet_pacing = await aadhk_svc.get_monthly_pacing(project_name="Тидекс")
+        except Exception as pe:
+            logger.debug("Failed to get timesheet pacing for morning brief: %s", pe)
+
+        # 5. Generate brief via summarizer
         brief_markdown = await summarizer.generate_morning_brief(
             target_date=today,
             lessons=today_lessons,
             action_items=action_items,
             actionable_emails=actionable_emails,
             upcoming_lessons=upcoming_lessons,
+            timesheet_pacing=timesheet_pacing,
         )
 
         # 5. Send via Telegram

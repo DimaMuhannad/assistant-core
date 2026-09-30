@@ -466,8 +466,25 @@ class AadhkIngestionService:
         today_date = now.date()
         elapsed_workdays = [d for d in all_workdays if d <= today_date]
         elapsed_workdays_count = len(elapsed_workdays)
-        expected_hours_to_date = round(elapsed_workdays_count * daily_norm, 2)
-        delta_pacing = round(worked_hours - expected_hours_to_date, 2)
+        # Morning delta formula (Dmitry's standard: elapsed_workdays * 8.5 - worked_hours)
+        morning_delta = round(expected_hours_to_date - worked_hours, 2)
+
+        # Determine latest recorded date in timesheet
+        latest_work_date = None
+        for r in records:
+            s_time = r.get("start_time")
+            if s_time:
+                d_str = str(s_time)[:10]
+                if not latest_work_date or d_str > latest_work_date:
+                    latest_work_date = d_str
+
+        if latest_work_date:
+            try:
+                latest_date_formatted = datetime.strptime(latest_work_date, "%Y-%m-%d").strftime("%d.%m")
+            except Exception:
+                latest_date_formatted = str(latest_work_date)
+        else:
+            latest_date_formatted = today_date.strftime("%d.%m")
 
         # Remaining workdays strictly after today
         remaining_workdays = [d for d in all_workdays if d > today_date]
@@ -489,6 +506,9 @@ class AadhkIngestionService:
             "total_amount": round(total_amount, 2),
             "total_shifts": len(records),
             "delta_pacing": delta_pacing,
+            "morning_delta": morning_delta,
+            "latest_work_date": latest_work_date,
+            "latest_date_formatted": latest_date_formatted,
             "remaining_workdays": remaining_days_count,
             "remaining_hours_to_norm": remaining_hours_to_norm,
             "required_daily_pacing": required_daily_pacing,
