@@ -64,6 +64,7 @@ class EmailBotHandler:
                     self.bot = None
         self.summarizer = summarizer or GeminiSummarizer()
         self.dialog_engine = SecretaryDialogEngine(db=self.db)
+        self.secretary_dialog = self.dialog_engine
         self.voice_processor = VoiceProcessor()
         self.intent_router = FastIntentRouter(db=self.db)
 

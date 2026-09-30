@@ -722,7 +722,7 @@ async def main() -> None:
         "cron",
         hour=4,
         minute=0,
-        args=[db, bot_handler.secretary_dialog],
+        args=[db, bot_handler.dialog_engine],
         id="nightly_reset_and_priming_job",
         replace_existing=True,
     )
