@@ -15,6 +15,7 @@ Coordinates:
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ SECRETARY_SYSTEM_PROMPT = """Ты — персональный цифровой 
    - Табель AADHk ООО «Тидекс».
 2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО заявлять «у меня нет прямого технического доступа к вашей почте или Telegram» или советовать пользователю «настройте фильтр поиска самостоятельно» или говорить «если вы найдете шаблоны...».
 3. Все результаты поиска по почте, Telegram и локальным файлам уже переданы тебе ниже в блоке оперативных системных данных. Опирайся на них и цитируй конкретные даты, отправителей, темы и документы!
+4. Долгосрочная память (Таблица memory_facts): Содержит фундаментальные факты и договоренности (норма Тидекс 8.5ч/день, день отпуска 25.09, требование 2 страниц отчета с подписанным протоколом, регламент эффективного контракта). Опирайся на эти факты при ответах.
 
 СТИЛЬ И ТОН ОБЩЕНИЯ:
 - Обращайся к Дмитрию Александровичу уважительно, на «вы» (или по имени-отчеству при уместности).
@@ -374,6 +376,24 @@ class SecretaryDialogEngine:
             blocks.append(local_files_ctx)
         blocks.append(lms_ctx)
 
+        # 5. Long-term memory facts retrieval (active rules and relevant matches)
+        try:
+            matched_facts = await self.db.search_and_touch_memory_facts(user_msg, limit=5)
+            forever_facts = await self.db.get_active_memory_facts(limit=4)
+
+            all_facts_dict = {f["id"]: f for f in forever_facts}
+            for f in matched_facts:
+                all_facts_dict[f["id"]] = f
+
+            if all_facts_dict:
+                mem_lines = ["🧠 ДОЛГОСРОЧНАЯ ПАМЯТЬ СЕКРЕТАРЯ (ПРАВИЛА И ДОГОВОРЕННОСТИ):"]
+                for f in all_facts_dict.values():
+                    cat_tag = f"[{f['category']}]" if f.get("category") else ""
+                    mem_lines.append(f"• {cat_tag} {f['fact_text']}")
+                blocks.append("\n".join(mem_lines))
+        except Exception as me_err:
+            logger.debug("Memory facts retrieval skipped: %s", me_err)
+
         # Check if query needs deep Methodist assistance (exclude pure search/administrative requests)
         is_search_or_admin_query = any(k in user_msg.lower() for k in (
             "поищи", "найди", "поиск", "почт", "письм", "телеграм", "telegram", "чат", "групп",
@@ -400,6 +420,186 @@ class SecretaryDialogEngine:
 
         return "\n\n".join(blocks), matched_files
 
+    async def prime_morning_context(self, target_date: date | None = None) -> str:
+        """Pre-compute rich morning context for the day and cache it in daily_primed_context."""
+        now_local = datetime.now(ZoneInfo(config.TZ))
+        t_date = target_date or now_local.date()
+        date_key = t_date.isoformat()
+
+        # 1. Schedule for target_date
+        sched_summary = await self._get_schedule_context(now_local)
+
+        # 2. Tydex pacing
+        tydex_summary = await self._get_tydex_context()
+
+        # 3. Email overview
+        email_summary = await self._get_email_overview()
+
+        # 4. Long-term memory active facts
+        facts = await self.db.get_active_memory_facts(limit=12)
+        facts_lines = [f"• [{f['category']}] {f['fact_text']}" for f in facts]
+        facts_block = "\n".join(facts_lines) if facts_lines else "Нет зафиксированных фактов."
+
+        primed_summary = (
+            f"🌅 **ПРОГРЕТЫЙ СУТОЧНЫЙ КОНТЕКСТ ДНЯ НА {t_date.strftime('%d.%m.%Y')}**\n\n"
+            f"{sched_summary}\n\n"
+            f"{tydex_summary}\n\n"
+            f"{email_summary}\n\n"
+            f"🧠 **АКТИВНЫЕ ПРАВИЛА ИЗ ДОЛГОСРОЧНОЙ ПАМЯТИ:**\n"
+            f"{facts_block}"
+        )
+
+        payload = {
+            "date": date_key,
+            "facts_count": len(facts),
+            "generated_at": now_local.isoformat(),
+        }
+
+        await self.db.save_primed_context(
+            date_key=date_key,
+            summary_text=primed_summary,
+            payload_json=json.dumps(payload, ensure_ascii=False),
+        )
+        logger.info("Daily context primed and cached for date %s", date_key)
+        return primed_summary
+
+    async def _handle_manual_fact_addition(self, user_msg: str) -> str | None:
+        """Handle explicit manual fact additions like 'запомни: ...' or 'сохрани в память: ...'."""
+        pattern = r'^(?:запомни|сохрани в память|запиши в память|зафиксируй в памяти)\s*(?:(навсегда|на\s+всегда)|на\s+(\d+)?\s*(год|года|лет|мес|месяц|месяца|месяцев|недел|недели|недель|дн|дня|дней))?[:\s]+(.+)$'
+        match = re.match(pattern, user_msg.strip(), re.IGNORECASE)
+        if not match:
+            return None
+
+        is_forever = bool(match.group(1))
+        num_str = match.group(2)
+        unit = (match.group(3) or "").lower()
+        fact_raw = match.group(4).strip()
+
+        if not fact_raw:
+            return "Пожалуйста, укажите текст факта после команды (например, «Запомни: норма выработки в Тидексе 8.5 часов»). "
+
+        raw_lower = fact_raw.lower()
+        if any(w in raw_lower for w in ("тидекс", "табель", "часы", "норм", "выработк", "смен")):
+            category = "tydex"
+        elif any(w in raw_lower for w in ("гуап", "студент", "кафедр", "лаб", "отчет", "гост", "рпд", "брс", "фонт", "опд")):
+            category = "academic"
+        else:
+            category = "general"
+
+        retention_policy = "standard"
+        protect_until = None
+        now = datetime.now(timezone.utc)
+
+        if is_forever or "навсегда" in raw_lower or "вечно" in raw_lower:
+            retention_policy = "forever"
+        elif unit or "на год" in raw_lower:
+            amount = int(num_str) if num_str else 1
+            days = 365 * amount if ('год' in unit or 'лет' in unit or 'на год' in raw_lower) else (30 * amount if 'мес' in unit else (7 * amount if 'недел' in unit else amount))
+            retention_policy = "temporary"
+            protect_until = now + timedelta(days=days)
+
+        fact_id = await self.db.add_memory_fact(
+            fact_text=fact_raw,
+            category=category,
+            retention_policy=retention_policy,
+            protect_until=protect_until,
+        )
+
+        pol_desc = "навсегда" if retention_policy == "forever" else (f"защищено до {protect_until.strftime('%d.%m.%Y')}" if protect_until else "стандартная (с еженедельной ревизией)")
+        return (
+            f"🧠 **Зафиксировал в долгосрочной памяти (ID: {fact_id}):**\n\n"
+            f"«{fact_raw}»\n\n"
+            f"• Категория: `{category}`\n"
+            f"• Политика хранения: `{pol_desc}`\n\n"
+            f"Этот факт сохранен и будет учитываться во всех будущих диалогах и утренних брифингах."
+        )
+
+    async def _handle_memory_review_command(self, user_msg: str) -> str | None:
+        """Parse and apply weekly memory review commands like 'удалить: 1, 3', 'запомнить на год: 2'."""
+        pattern = r'(?:удалить|стереть|забудь|delete|запомнить|сохранить|заменить|продлить)\s*(?:на\s+(?:год|года|лет|мес|месяц|месяца|месяцев|недел|недели|недель|дн|дня|дней|всегда|навсегда))?[:\s]+[0-9,\s-]+'
+        if not re.search(pattern, user_msg, re.IGNORECASE):
+            return None
+
+        pending = await self.db.get_pending_memory_review()
+        if not pending or not pending.get("items"):
+            return None
+
+        items = pending["items"]
+        index_to_fact = {item["index"]: item for item in items}
+
+        def parse_indices(raw_str: str) -> list[int]:
+            indices = set()
+            parts = [p.strip() for p in raw_str.split(',') if p.strip()]
+            for p in parts:
+                if '-' in p:
+                    range_match = re.match(r'^(\d+)\s*-\s*(\d+)$', p)
+                    if range_match:
+                        start, end = int(range_match.group(1)), int(range_match.group(2))
+                        for idx in range(min(start, end), max(start, end) + 1):
+                            indices.add(idx)
+                elif p.isdigit():
+                    indices.add(int(p))
+            return sorted(list(indices))
+
+        actions_performed: list[tuple[str, int, str]] = []
+        now = datetime.now(timezone.utc)
+
+        lines = [l.strip() for l in user_msg.replace(';', '\n').split('\n') if l.strip()]
+        for line in lines:
+            m_del = re.search(r'(?:удалить|стереть|забудь|delete)[:\s]+([0-9,\s-]+)', line, re.IGNORECASE)
+            if m_del:
+                for idx in parse_indices(m_del.group(1)):
+                    if idx in index_to_fact:
+                        f = index_to_fact[idx]
+                        await self.db.update_memory_fact_retention(f["fact_id"], "delete")
+                        actions_performed.append(("удалено", idx, f["text"]))
+
+            m_forever = re.search(r'(?:запомнить|сохранить)\s+(?:навсегда|на\s+всегда|вечно)[:\s]+([0-9,\s-]+)', line, re.IGNORECASE)
+            if m_forever:
+                for idx in parse_indices(m_forever.group(1)):
+                    if idx in index_to_fact:
+                        f = index_to_fact[idx]
+                        await self.db.update_memory_fact_retention(f["fact_id"], "forever")
+                        actions_performed.append(("сохранено навсегда", idx, f["text"]))
+                continue
+
+            m_dur = re.search(r'(?:запомнить|сохранить|заменить|продлить)\s+на\s+(\d+)?\s*(год|года|лет|мес|месяц|месяца|месяцев|недел|недели|недель|дн|дня|дней)[:\s]+([0-9,\s-]+)', line, re.IGNORECASE)
+            if m_dur:
+                amount = int(m_dur.group(1)) if m_dur.group(1) else 1
+                unit = m_dur.group(2).lower()
+                days = 365 * amount if ('год' in unit or 'лет' in unit) else (30 * amount if 'мес' in unit else (7 * amount if 'недел' in unit else amount))
+                protect_until = now + timedelta(days=days)
+                label = f"защита на {amount} {unit}"
+                for idx in parse_indices(m_dur.group(3)):
+                    if idx in index_to_fact:
+                        f = index_to_fact[idx]
+                        await self.db.update_memory_fact_retention(f["fact_id"], "protect", protect_until)
+                        actions_performed.append((label, idx, f["text"]))
+
+        if not actions_performed:
+            return None
+
+        await self.db.resolve_pending_memory_review(pending["review_date"])
+
+        deleted_cnt = sum(1 for a, _, _ in actions_performed if a == "удалено")
+        forever_cnt = sum(1 for a, _, _ in actions_performed if a == "сохранено навсегда")
+        protected_cnt = len(actions_performed) - deleted_cnt - forever_cnt
+
+        summary_parts = []
+        if deleted_cnt:
+            summary_parts.append(f"• 🗑️ Удалено из активной памяти: **{deleted_cnt}**")
+        if protected_cnt:
+            summary_parts.append(f"• 🛡️ Установлена временная защита: **{protected_cnt}**")
+        if forever_cnt:
+            summary_parts.append(f"• ♾️ Сохранено навсегда: **{forever_cnt}**")
+
+        return (
+            "🧠 **Ревизия долгосрочной памяти успешно проведена!**\n\n"
+            "Дмитрий Александрович, я применил ваши указания:\n"
+            + "\n".join(summary_parts) + "\n\n"
+            "База фактов актуализирована. Неупомянутые записи сохраняются в обычном режиме до следующей плановой ревизии."
+        )
+
     async def answer_user_message(
         self,
         user_id: int,
@@ -417,6 +617,30 @@ class SecretaryDialogEngine:
             await self.db.clear_dialog_history(user_id)
             msg = "🧹 **Контекст диалога успешно очищен.** Я готов к новым вопросам!"
             return (msg, []) if return_files else msg
+
+        # Handle memory list command
+        if cleaned_text.lower() in ("/memory", "память", "/facts", "покажи память", "факты"):
+            facts = await self.db.get_active_memory_facts(limit=30)
+            if not facts:
+                msg = "🧠 База долгосрочной памяти пуста."
+                return (msg, []) if return_files else msg
+            lines = ["🧠 **База долгосрочной памяти секретаря (активные записи):**\n"]
+            for i, f in enumerate(facts, 1):
+                pol = "навсегда" if f["retention_policy"] == "forever" else ("защищено" if f.get("protect_until") else "стандарт")
+                cat_tag = f"[{f['category']}]" if f.get("category") else ""
+                lines.append(f"{i}. `{cat_tag}` ({pol}, обращений: {f['access_count']})\n   {f['fact_text']}")
+            msg = "\n".join(lines)
+            return (msg, []) if return_files else msg
+
+        # Handle weekly memory review response
+        review_res = await self._handle_memory_review_command(cleaned_text)
+        if review_res:
+            return (review_res, []) if return_files else review_res
+
+        # Handle manual fact addition
+        fact_add_res = await self._handle_manual_fact_addition(cleaned_text)
+        if fact_add_res:
+            return (fact_add_res, []) if return_files else fact_add_res
 
         now_local = datetime.now(ZoneInfo(config.TZ))
 

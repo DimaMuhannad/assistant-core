@@ -31,6 +31,7 @@ from src.brain.summarizer import GeminiSummarizer
 from src.brain.reply_generator import ReplyGenerator
 from src.sender.email_sender import EmailSender
 from src.notifier.bot_handler import EmailBotHandler
+from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.connectors.guap_lms.client import GuapLmsClient
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
@@ -433,11 +434,81 @@ async def run_lms_monitor_cycle(
         logger.exception("Error in LMS submissions monitor cycle: %s", e)
 
 
+async def run_nightly_reset_and_priming_cycle(
+    db: Database,
+    secretary: SecretaryDialogEngine,
+) -> None:
+    """Run nightly dialogue history reset and prime daily context for the morning at 04:00 MSK."""
+    try:
+        logger.info("Starting nightly reset and priming cycle at 04:00 MSK...")
+        archived_count = await db.archive_dialog_history()
+        logger.info("Archived %d dialogue turns from previous sessions.", archived_count)
+
+        primed_summary = await secretary.prime_morning_context()
+        logger.info("Daily context primed successfully (length: %d chars).", len(primed_summary))
+    except Exception as e:
+        logger.exception("Error in run_nightly_reset_and_priming_cycle: %s", e)
+
+
+async def run_weekly_memory_review_cycle(
+    db: Database,
+    notifier: TelegramNotifier,
+) -> None:
+    """Run weekly Sunday review of long-term memory facts for Dmitry Aleksandrovich."""
+    try:
+        logger.info("Checking long-term memory candidates for weekly Sunday review...")
+        candidates = await db.get_memory_facts_for_review()
+        if not candidates:
+            logger.info("No candidates for memory review this Sunday. Memory is clean.")
+            return
+
+        review_items = []
+        review_lines = [
+            "🧠 **Сегодня день ревизии долгосрочной памяти с секретарем**\n",
+            "Дмитрий Александрович, я проанализировал базу долговременных фактов. Обнаружены записи, дедлайн которых истек более недели назад или к которым давно не было обращений:\n",
+        ]
+
+        for idx, c in enumerate(candidates, 1):
+            review_items.append({
+                "index": idx,
+                "fact_id": c["id"],
+                "text": c["fact_text"],
+                "category": c["category"],
+            })
+            deadline_info = f"дедлайн: {str(c['deadline'])[:10]}" if c.get("deadline") else "без дедлайна"
+            review_lines.append(
+                f"{idx}. `[{c['category']}]` {c['fact_text']}\n"
+                f"   *(обращений: {c['access_count']}, {deadline_info})*"
+            )
+
+        review_lines.append("\n✍️ **Как поступить?** Вы можете ответить в чат в течение дня, например:")
+        review_lines.append("• `удалить: 1, 3`")
+        review_lines.append("• `запомнить на год: 2`")
+        review_lines.append("• `запомнить навсегда: 4, 6-9`")
+        review_lines.append("\n*Если вы не дадите ответ сегодня, память полностью сохраняется и ревизия перенесется на следующее воскресенье.*")
+
+        today_str = datetime.now(ZoneInfo(config.TZ)).date().isoformat()
+        await db.save_pending_memory_review(review_date=today_str, items=review_items)
+
+        msg_text = "\n".join(review_lines)
+        if config.TELEGRAM_USER_ID:
+            await notifier.bot.send_message(
+                chat_id=int(config.TELEGRAM_USER_ID),
+                text=msg_text,
+                parse_mode="Markdown",
+            )
+            logger.info("Sent weekly memory review alert with %d items.", len(review_items))
+    except Exception as e:
+        logger.exception("Error in run_weekly_memory_review_cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     parser.add_argument("--brief", action="store_true", help="Force send morning brief and exit")
     parser.add_argument("--evening", action="store_true", help="Force send evening digest and exit")
+    parser.add_argument("--prime", action="store_true", help="Force pre-compute daily morning context frame and exit")
+    parser.add_argument("--review", action="store_true", help="Force trigger weekly memory review check and exit")
     parser.add_argument("--send-email-cards", action="store_true", help="Send cards for all current actionable emails")
     parser.add_argument("--send-email-id", type=int, help="Send card for a specific email by ID")
     args = parser.parse_args()
@@ -543,6 +614,24 @@ async def main() -> None:
         await db.close()
         return
 
+    if args.prime:
+        logger.info("Force priming daily context via --prime flag...")
+        sec = SecretaryDialogEngine(db=db)
+        summary = await sec.prime_morning_context()
+        print(summary)
+        await bot.session.close()
+        await telegram_collector.disconnect()
+        await db.close()
+        return
+
+    if args.review:
+        logger.info("Force checking weekly memory review via --review flag...")
+        await run_weekly_memory_review_cycle(db, notifier)
+        await bot.session.close()
+        await telegram_collector.disconnect()
+        await db.close()
+        return
+
     # Run initial cycles
     await run_sentinel_cycle(db, schedule_parser, calendar_client, notifier)
     await run_telegram_collector_cycle(db, telegram_collector, notifier)
@@ -627,10 +716,31 @@ async def main() -> None:
         id="aadhk_gdrive_sync_job",
         replace_existing=True,
     )
+    # Nightly reset & morning priming runs daily at 04:00 MSK
+    scheduler.add_job(
+        run_nightly_reset_and_priming_cycle,
+        "cron",
+        hour=4,
+        minute=0,
+        args=[db, bot_handler.secretary_dialog],
+        id="nightly_reset_and_priming_job",
+        replace_existing=True,
+    )
+    # Weekly Sunday memory review runs every Sunday at 09:00 MSK
+    scheduler.add_job(
+        run_weekly_memory_review_cycle,
+        "cron",
+        day_of_week="sun",
+        hour=9,
+        minute=0,
+        args=[db, notifier],
+        id="weekly_memory_review_job",
+        replace_existing=True,
+    )
 
     scheduler.start()
     logger.info(
-        "Scheduler started. Morning brief at 08:00, Evening digest at 21:00, Schedule polling every %d hour(s), Telegram chats every 30 min, Email every 15 min.",
+        "Scheduler started. Reset/Priming at 04:00, Morning brief at 08:00, Evening digest at 21:00, Sunday Memory review at 09:00, Polling every %d hour(s).",
         config.SCHEDULE_POLL_INTERVAL_HOURS,
     )
 

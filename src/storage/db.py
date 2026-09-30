@@ -2,7 +2,7 @@ import logging
 import os
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator
 import aiosqlite
@@ -318,10 +318,42 @@ class Database:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     intent TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_archived BOOLEAN DEFAULT FALSE
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fact_text TEXT NOT NULL,
+                    category TEXT DEFAULT 'general',
+                    created_at TIMESTAMP NOT NULL,
+                    last_accessed_at TIMESTAMP NOT NULL,
+                    access_count INTEGER DEFAULT 0,
+                    deadline TIMESTAMP,
+                    retention_policy TEXT DEFAULT 'standard',
+                    protect_until TIMESTAMP,
+                    is_active BOOLEAN DEFAULT TRUE
+                );
+
+                CREATE TABLE IF NOT EXISTS daily_primed_context (
+                    date_key TEXT PRIMARY KEY,
+                    summary_text TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS pending_memory_reviews (
+                    review_date TEXT PRIMARY KEY,
+                    items_json TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP,
+                    status TEXT DEFAULT 'pending'
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_dialog_user_date ON bot_dialog_history(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_active ON memory_facts(is_active, protect_until);
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_category ON memory_facts(category);
+                CREATE INDEX IF NOT EXISTS idx_memory_facts_deadline ON memory_facts(deadline);
 
                 CREATE INDEX IF NOT EXISTS idx_snapshots_source_id ON content_snapshots(source_id);
                 CREATE INDEX IF NOT EXISTS idx_snapshots_content_hash ON content_snapshots(content_hash);
@@ -391,6 +423,14 @@ class Database:
                 if col_name not in existing_thread_cols:
                     logger.info("Migrating email_threads: adding column %s", col_name)
                     await conn.execute(f"ALTER TABLE email_threads ADD COLUMN {col_name} {col_type};")
+
+            # Migrate bot_dialog_history columns if missing
+            cursor = await conn.execute("PRAGMA table_info(bot_dialog_history);")
+            existing_dialog_cols = {row[1] for row in await cursor.fetchall()}
+            if "is_archived" not in existing_dialog_cols:
+                logger.info("Migrating bot_dialog_history: adding column is_archived")
+                await conn.execute("ALTER TABLE bot_dialog_history ADD COLUMN is_archived BOOLEAN DEFAULT FALSE;")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_dialog_archived ON bot_dialog_history(user_id, is_archived);")
 
             # Migrate calendar_sync_records if it contains UNIQUE constraint on google_event_id
             cursor = await conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='calendar_sync_records';")
@@ -2301,16 +2341,18 @@ class Database:
         self,
         user_id: int,
         limit: int = 10,
+        active_only: bool = True,
     ) -> list[dict[str, Any]]:
         """Retrieve recent conversation turns for a user in chronological order."""
         async with self.connection() as conn:
+            where_clause = "WHERE user_id = ? AND (is_archived IS NULL OR is_archived = FALSE)" if active_only else "WHERE user_id = ?"
             cursor = await conn.execute(
-                """
-                SELECT id, user_id, role, content, intent, created_at
+                f"""
+                SELECT id, user_id, role, content, intent, created_at, is_archived
                 FROM (
-                    SELECT id, user_id, role, content, intent, created_at
+                    SELECT id, user_id, role, content, intent, created_at, is_archived
                     FROM bot_dialog_history
-                    WHERE user_id = ?
+                    {where_clause}
                     ORDER BY id DESC
                     LIMIT ?
                 )
@@ -2322,12 +2364,376 @@ class Database:
             return [dict(r) for r in rows]
 
     async def clear_dialog_history(self, user_id: int) -> int:
-        """Clear conversation history for a user."""
+        """Archive conversation history for a user to start a fresh daily context."""
         async with self.connection() as conn:
             cursor = await conn.execute(
-                "DELETE FROM bot_dialog_history WHERE user_id = ?;",
+                "UPDATE bot_dialog_history SET is_archived = TRUE WHERE user_id = ? AND (is_archived IS NULL OR is_archived = FALSE);",
                 (user_id,),
             )
             await conn.commit()
             return cursor.rowcount
+
+    async def archive_dialog_history(self, user_id: int | None = None) -> int:
+        """Archive active dialog history turns (used in daily 04:00 reset)."""
+        async with self.connection() as conn:
+            if user_id:
+                cursor = await conn.execute(
+                    "UPDATE bot_dialog_history SET is_archived = TRUE WHERE user_id = ? AND (is_archived IS NULL OR is_archived = FALSE);",
+                    (user_id,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "UPDATE bot_dialog_history SET is_archived = TRUE WHERE (is_archived IS NULL OR is_archived = FALSE);",
+                )
+            await conn.commit()
+            return cursor.rowcount
+
+    # --- 14. Long-Term Memory Facts & Review Pipeline ---
+
+    async def add_memory_fact(
+        self,
+        fact_text: str,
+        category: str = "general",
+        deadline: datetime | None = None,
+        retention_policy: str = "standard",
+        protect_until: datetime | None = None,
+    ) -> int:
+        """Add a persistent fact or rule to long-term memory."""
+        now = datetime.now(timezone.utc)
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO memory_facts (
+                    fact_text, category, created_at, last_accessed_at, access_count,
+                    deadline, retention_policy, protect_until, is_active
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, TRUE);
+                """,
+                (fact_text.strip(), category, now, now, deadline, retention_policy, protect_until),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_active_memory_facts(
+        self,
+        category: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve active memory facts ordered by retention and access count."""
+        async with self.connection() as conn:
+            if category:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, fact_text, category, created_at, last_accessed_at,
+                           access_count, deadline, retention_policy, protect_until, is_active
+                    FROM memory_facts
+                    WHERE is_active = TRUE AND category = ?
+                    ORDER BY 
+                        CASE WHEN retention_policy = 'forever' THEN 1 ELSE 2 END,
+                        access_count DESC, id DESC
+                    LIMIT ?;
+                    """,
+                    (category, limit),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT id, fact_text, category, created_at, last_accessed_at,
+                           access_count, deadline, retention_policy, protect_until, is_active
+                    FROM memory_facts
+                    WHERE is_active = TRUE
+                    ORDER BY 
+                        CASE WHEN retention_policy = 'forever' THEN 1 ELSE 2 END,
+                        access_count DESC, id DESC
+                    LIMIT ?;
+                    """,
+                    (limit,),
+                )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def search_and_touch_memory_facts(
+        self,
+        query: str,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Search relevant active memory facts and increment their access counter (LFU/LRU)."""
+        cleaned = query.strip()
+        if not cleaned:
+            return []
+
+        STOPWORDS = {
+            "поищи", "найди", "поиск", "ищи", "посмотри", "глянь", "проверь", "проверить", "найти",
+            "почте", "почта", "почту", "почты", "почтой", "письмо", "письма", "писем", "письмах",
+            "сообщение", "сообщения", "сообщений", "сообщениях",
+            "группе", "группа", "группу", "группы", "группах",
+            "чате", "чат", "чата", "чаты", "чатах", "телеграм", "telegram", "телеге",
+            "или", "что", "где", "когда", "есть", "было", "были", "был", "была", "какие", "какой", "какая", "какое",
+            "скинь", "пришли", "отправь", "дай", "покажи", "пожалуйста", "секретарь", "бот",
+            "для", "про", "обо", "обоих", "все", "всё", "всех", "мне", "нам", "вас", "вашей", "нашей", "его", "ее", "её",
+        }
+
+        def stem_token(w: str) -> str:
+            w_lower = w.lower()
+            for end in ("ый", "ой", "ий", "ая", "яя", "ое", "ее", "ые", "ие", "ых", "их", "ым", "им", "ом", "ем", "ам", "ям", "ами", "ями", "ах", "ях", "ов", "ев", "ей", "а", "я", "у", "ю", "е", "о"):
+                if w_lower.endswith(end) and len(w_lower) - len(end) >= 4:
+                    return w_lower[:-len(end)]
+            return w_lower
+
+        words = [w.strip(".,?!:;\"'()[]{}«»").lower() for w in cleaned.split()]
+        filtered_words = [w for w in words if len(w) > 2 and w not in STOPWORDS]
+        active_words = filtered_words if filtered_words else [w for w in words if len(w) > 2]
+        if not active_words:
+            active_words = [cleaned.lower()]
+
+        tokens = [stem_token(w) for w in active_words]
+
+        where_clauses = []
+        score_exprs = []
+        params_where: list[Any] = []
+        params_score: list[Any] = []
+
+        for t in tokens[:6]:
+            p = f"%{t}%"
+            where_clauses.append("(LOWER(fact_text) LIKE ? OR LOWER(category) LIKE ?)")
+            params_where.extend([p, p])
+            score_exprs.append("(CASE WHEN LOWER(fact_text) LIKE ? THEN 3 ELSE 0 END + CASE WHEN LOWER(category) LIKE ? THEN 2 ELSE 0 END)")
+            params_score.extend([p, p])
+
+        where_sql = " OR ".join(where_clauses)
+        score_sql = " + ".join(score_exprs) if score_exprs else "1"
+        all_params = params_score + params_where + [limit]
+
+        now = datetime.now(timezone.utc)
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT id, fact_text, category, created_at, last_accessed_at,
+                       access_count, deadline, retention_policy, protect_until, is_active,
+                       ({score_sql}) AS relevance_score
+                FROM memory_facts
+                WHERE is_active = TRUE AND ({where_sql})
+                ORDER BY relevance_score DESC, 
+                         CASE WHEN retention_policy = 'forever' THEN 1 ELSE 2 END,
+                         access_count DESC
+                LIMIT ?;
+                """,
+                tuple(all_params),
+            )
+            rows = await cursor.fetchall()
+            matched = [dict(r) for r in rows]
+
+            # Increment access_count and update last_accessed_at (Touch)
+            if matched:
+                matched_ids = [m["id"] for m in matched]
+                placeholders = ",".join("?" for _ in matched_ids)
+                await conn.execute(
+                    f"""
+                    UPDATE memory_facts
+                    SET access_count = access_count + 1,
+                        last_accessed_at = ?
+                    WHERE id IN ({placeholders});
+                    """,
+                    (now, *matched_ids),
+                )
+                await conn.commit()
+
+            return matched
+
+    async def get_memory_facts_for_review(
+        self,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find facts eligible for weekly cleanup review.
+        Eligible if:
+        - is_active is TRUE
+        - retention_policy != 'forever'
+        - protect_until IS NULL OR protect_until < now
+        - and (deadline < now - 7 days OR (access_count <= 1 AND created_at < now - 14 days))
+        """
+        now = now or datetime.now(timezone.utc)
+        deadline_cutoff = now - timedelta(days=7)
+        inactivity_cutoff = now - timedelta(days=14)
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, fact_text, category, created_at, last_accessed_at,
+                       access_count, deadline, retention_policy, protect_until, is_active
+                FROM memory_facts
+                WHERE is_active = TRUE
+                  AND retention_policy != 'forever'
+                  AND (protect_until IS NULL OR protect_until < ?)
+                  AND (
+                      (deadline IS NOT NULL AND deadline < ?)
+                      OR (access_count <= 1 AND created_at < ?)
+                  )
+                ORDER BY deadline ASC, access_count ASC, id ASC;
+                """,
+                (now, deadline_cutoff, inactivity_cutoff),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def update_memory_fact_retention(
+        self,
+        fact_id: int,
+        action: str,
+        protect_until: datetime | None = None,
+    ) -> bool:
+        """Update retention status for a memory fact (delete, forever, protect)."""
+        async with self.connection() as conn:
+            if action == "delete":
+                cursor = await conn.execute(
+                    "UPDATE memory_facts SET is_active = FALSE WHERE id = ?;",
+                    (fact_id,),
+                )
+            elif action == "forever":
+                cursor = await conn.execute(
+                    "UPDATE memory_facts SET retention_policy = 'forever', protect_until = NULL WHERE id = ?;",
+                    (fact_id,),
+                )
+            elif action == "protect":
+                cursor = await conn.execute(
+                    "UPDATE memory_facts SET retention_policy = 'temporary', protect_until = ? WHERE id = ?;",
+                    (protect_until, fact_id),
+                )
+            else:
+                return False
+
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def save_pending_memory_review(
+        self,
+        review_date: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """Store pending memory review candidate facts mapping."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO pending_memory_reviews (review_date, items_json, status, created_at)
+                VALUES (?, ?, 'pending', CURRENT_TIMESTAMP);
+                """,
+                (review_date, json.dumps(items, ensure_ascii=False)),
+            )
+            await conn.commit()
+
+    async def get_pending_memory_review(
+        self,
+        review_date: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Retrieve active pending memory review."""
+        async with self.connection() as conn:
+            if review_date:
+                cursor = await conn.execute(
+                    "SELECT review_date, items_json, status, created_at FROM pending_memory_reviews WHERE review_date = ? AND status = 'pending';",
+                    (review_date,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT review_date, items_json, status, created_at FROM pending_memory_reviews WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1;",
+                )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            res = dict(row)
+            try:
+                res["items"] = json.loads(res["items_json"])
+            except Exception:
+                res["items"] = []
+            return res
+
+    async def resolve_pending_memory_review(self, review_date: str) -> None:
+        """Mark memory review as resolved."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "UPDATE pending_memory_reviews SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE review_date = ?;",
+                (review_date,),
+            )
+            await conn.commit()
+
+    async def save_primed_context(
+        self,
+        date_key: str,
+        summary_text: str,
+        payload_json: str = "{}",
+    ) -> None:
+        """Cache pre-computed morning context frame for a date."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO daily_primed_context (date_key, summary_text, payload_json, created_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP);
+                """,
+                (date_key, summary_text, payload_json),
+            )
+            await conn.commit()
+
+    async def get_primed_context(self, date_key: str) -> dict[str, Any] | None:
+        """Retrieve pre-computed morning context frame for a date."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT date_key, summary_text, payload_json, created_at FROM daily_primed_context WHERE date_key = ?;",
+                (date_key,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def seed_initial_memory_facts(self) -> int:
+        """Populate initial fundamental facts for Dmitry Aleksandrovich Popov."""
+        async with self.connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM memory_facts;")
+            count = (await cursor.fetchone())[0]
+            if count > 0:
+                return 0
+
+        initial_facts = [
+            (
+                "Режим работы в ООО «Тидекс» — свободное посещение. Норма: 8.5 часов в сутки в течение 5 рабочих дней в неделю (базовая неделя 42.5 ч). Главная цель учета в AADHk — сведение баланса нормы к концу каждого календарного месяца без недоработок (ΔH >= 0).",
+                "tydex",
+                "forever",
+            ),
+            (
+                "25 сентября 2026 г. взят один день в счет очередного отпуска в ООО «Тидекс». Учитывается в табеле как полноценный рабочий день (8.5 часов выработки), несмотря на физическое отсутствие записи смены.",
+                "tydex",
+                "forever",
+            ),
+            (
+                "Попов Дмитрий Александрович — доцент кафедры физики (Кафедра №1) ГУАП на 0.75 ставки, кандидат физико-математических наук. Ведущий преподаватель дисциплин: «Физика», «Физические основы нанотехнологий» (ФОНТ), «Основы проектной деятельности» (ОПД), «Основы проектной деятельности в профессии» (ОПДвП). Личный кабинет: pro.guap.ru.",
+                "academic",
+                "forever",
+            ),
+            (
+                "Требования доцента Д.А. Попова к приему отчетов по лабораторным работам: отчет принимается ТОЛЬКО при наличии двух обязательных страниц: 1-я — титульный лист установленного образца с подписями; 2-я — оригинальный протокол измерений с личной визой/подписью преподавателя из лаборатории. Без подписи на протоколе работа категорически не принимается.",
+                "academic",
+                "forever",
+            ),
+            (
+                "Оформление отчетов студентов кафедры физики строго по ГОСТ 7.32-2017: поля 30 мм слева (для подшивки), 10 мм справа, по 20 мм сверху и снизу; шрифт 14 pt; межстрочный интервал 1.5; нумерация страниц со 2-й (титульный лист не нумеруется).",
+                "academic",
+                "forever",
+            ),
+            (
+                "Регламент отчетов по эффективному контракту кафедры физики (зам. зав. каф. Новикова Ю.А., Приказ № 05-259/26 от 17.04.2026): полное удаление строк с нулевыми показателями, округление итоговой суммы баллов строго до десятых долей (например, 10.8), запрет указания стоимости балла и сумм в рублях. Выплаты производятся только штатным сотрудникам.",
+                "admin",
+                "forever",
+            ),
+            (
+                "Балльно-рейтинговая система (БРС) ГУАП: 100-балльная шкала. Текущий контроль — до 60 баллов, промежуточная аттестация (зачет/экзамен) — до 40 баллов. Порог допуска к промежуточной аттестации — минимум 35 баллов. Оценки: 85–100 — отлично, 70–84 — хорошо, 55–69 — удовлетворительно, менее 55 — неудовлетворительно.",
+                "academic",
+                "forever",
+            ),
+            (
+                "Отслеживаемые студенческие группы Telegram: м531, м631к, М631К (ОПД и физика). Служебные распоряжения деканата и кафедры ведутся исключительно через корпоративную электронную почту (зам. зав. каф. Новикова Ю.А. Nov-Jliana@yandex.ru, scipopov@mail.ru, scipopov@guap.ru).",
+                "general",
+                "forever",
+            ),
+        ]
+
+        inserted = 0
+        for text, cat, ret in initial_facts:
+            await self.add_memory_fact(fact_text=text, category=cat, retention_policy=ret)
+            inserted += 1
+        return inserted
 
