@@ -160,8 +160,14 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("lms:del_confirm:"))(self.cb_lms_del_confirm)
         self.router.callback_query(F.data == "lms:create_menu")(self.cb_lms_create_menu)
 
+        # Callbacks for conversational memory HITL safety
+        self.router.callback_query(F.data == "dlg:confirm_clear")(self.cb_dlg_confirm_clear)
+        self.router.callback_query(F.data == "dlg:cancel_clear")(self.cb_dlg_cancel_clear)
+        self.router.callback_query(F.data == "dlg:undo_clear")(self.cb_dlg_undo_clear)
+
         # Interactive text messages (for edit, commands, or conversational secretary)
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
+        self.router.message(Command("undo_clear"))(self.handle_cmd_undo_clear)
         self.router.message(Command("audit", "router"))(self.handle_cmd_router_audit)
         self.router.message(F.text)(self.handle_user_text)
 
@@ -1042,11 +1048,97 @@ class EmailBotHandler:
         await message.answer(f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}")
 
     async def handle_cmd_clear_dialog(self, message: Message) -> None:
-        """Handle /clear or /reset to wipe conversational memory."""
+        """Handle /clear or /reset with Human-in-the-Loop confirmation guardrail."""
         if not self._is_authorized(message.from_user.id):
             return
-        await self.db.clear_dialog_history(message.from_user.id)
-        text = "🧹 **Память диалога успешно очищена.** Я готов к новым вопросам!"
+
+        active_count = await self.db.get_active_dialog_count(message.from_user.id)
+        if active_count == 0:
+            text = "ℹ️ **Контекст диалога уже пуст.**\nАктивных реплик в оперативной памяти нет, секретарь готов к новым вопросам!"
+            if self.notifier:
+                await self.notifier.send_message(text, chat_id=message.chat.id)
+            else:
+                await message.answer(text)
+            return
+
+        text = (
+            "⚠️ **Подтверждение деструктивного действия (HITL Guardrail)**\n\n"
+            "Вы запросили сброс оперативной памяти диалога с секретарем.\n"
+            f"• Будет заархивировано реплик: **{active_count}**\n"
+            "• Ваши задачи в Notion, почта, табели и расписание **не будут затронуты**.\n"
+            "• Сообщения в интерфейсе Telegram **не удалятся** (очищается только память ассистента).\n\n"
+            "Подтверждаете очистку памяти диалога?"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🧹 Да, очистить память", callback_data="dlg:confirm_clear"),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="dlg:cancel_clear"),
+                ]
+            ]
+        )
+        if self.notifier:
+            await self.notifier.send_message(text, chat_id=message.chat.id, reply_markup=kb)
+        else:
+            await message.answer(text, reply_markup=kb)
+
+    async def cb_dlg_confirm_clear(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        archived = await self.db.clear_dialog_history(callback.from_user.id)
+        text = (
+            f"🧹 **Память диалога успешно очищена.**\n"
+            f"Заархивировано реплик: **{archived}**.\n\n"
+            "Секретарь начинает беседу с чистого листа.\n"
+            "*(Если это сделано ошибочно, нажмите кнопку ниже для восстановления)*"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="↩️ Восстановить контекст", callback_data="dlg:undo_clear")
+                ]
+            ]
+        )
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer("Память очищена")
+
+    async def cb_dlg_cancel_clear(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        await callback.message.edit_text("❌ **Очистка памяти отменена.** Контекст текущего диалога сохранен в полном объеме.")
+        await callback.answer("Отменено")
+
+    async def cb_dlg_undo_clear(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        restored = await self.db.restore_dialog_history(callback.from_user.id)
+        await callback.message.edit_text(
+            f"↩️ **Контекст диалога успешно восстановлен!**\n"
+            f"Возвращено реплик в активную память: **{restored}**.\n\n"
+            "Секретарь снова помнит контекст всей предыдущей беседы."
+        )
+        await callback.answer("Контекст восстановлен")
+
+    async def handle_cmd_undo_clear(self, message: Message) -> None:
+        """Handle /undo_clear to restore recently archived dialog context."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        restored = await self.db.restore_dialog_history(message.from_user.id)
+        if restored == 0:
+            text = "ℹ️ **Нет заархивированных реплик для восстановления.**"
+        else:
+            text = (
+                f"↩️ **Контекст диалога успешно восстановлен!**\n"
+                f"Возвращено реплик в активную память: **{restored}**.\n\n"
+                "Секретарь снова помнит контекст всей предыдущей беседы."
+            )
         if self.notifier:
             await self.notifier.send_message(text, chat_id=message.chat.id)
         else:

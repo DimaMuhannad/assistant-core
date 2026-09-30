@@ -2408,6 +2408,34 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def get_active_dialog_count(self, user_id: int) -> int:
+        """Get count of active (non-archived) dialog turns for a user."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM bot_dialog_history WHERE user_id = ? AND (is_archived IS NULL OR is_archived = FALSE);",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def restore_dialog_history(self, user_id: int, limit: int = 50) -> int:
+        """Restore recently archived conversation history for a user (Undo clear)."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE bot_dialog_history
+                SET is_archived = FALSE
+                WHERE id IN (
+                    SELECT id FROM bot_dialog_history
+                    WHERE user_id = ? AND is_archived = TRUE
+                    ORDER BY id DESC LIMIT ?
+                );
+                """,
+                (user_id, limit),
+            )
+            await conn.commit()
+            return cursor.rowcount
+
     async def clear_dialog_history(self, user_id: int) -> int:
         """Archive conversation history for a user to start a fresh daily context."""
         async with self.connection() as conn:
