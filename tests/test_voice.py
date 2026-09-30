@@ -96,6 +96,64 @@ async def test_voice_processor_local_whisper_direct():
 
 
 @pytest.mark.asyncio
+async def test_voice_processor_gemini_success():
+    """Verify Gemini Multimodal Audio STT when Groq is unavailable."""
+    vp = VoiceProcessor(groq_api_key="", gemini_api_key="valid_gemini_key_123")
+    assert vp.has_groq is False
+    assert vp.has_gemini is True
+
+    with patch.object(
+        vp,
+        "_transcribe_gemini",
+        new_callable=AsyncMock,
+        return_value=VoiceAnalysisResult(
+            success=True,
+            transcription="Расшифровка длинного аудио через Gemini Multimodal STT",
+            engine="gemini-gemini-3.5-flash-lite",
+            duration_seconds=873,
+        ),
+    ) as mock_gemini:
+        res = await vp.process_voice(
+            voice_bytes=b"LONG_AUDIO_PAYLOAD",
+            mime_type="audio/mp3",
+            duration_seconds=873,
+        )
+
+        assert res.success is True
+        assert res.transcription == "Расшифровка длинного аудио через Gemini Multimodal STT"
+        assert res.engine == "gemini-gemini-3.5-flash-lite"
+        mock_gemini.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_processor_groq_failover_to_gemini():
+    """Verify failover to Gemini when Groq fails."""
+    vp = VoiceProcessor(groq_api_key="gsk_key", gemini_api_key="gemini_key")
+    assert vp.has_groq is True
+    assert vp.has_gemini is True
+
+    with patch.object(vp, "_transcribe_groq", side_effect=RuntimeError("Groq 503 Overloaded")):
+        with patch.object(
+            vp,
+            "_transcribe_gemini",
+            new_callable=AsyncMock,
+            return_value=VoiceAnalysisResult(
+                success=True,
+                transcription="Успешный фоллбек на Gemini",
+                engine="gemini-gemini-3.5-flash-lite",
+                duration_seconds=15,
+            ),
+        ) as mock_gemini:
+            res = await vp.process_voice(
+                voice_bytes=b"VOICE_DATA",
+                duration_seconds=15,
+            )
+            assert res.success is True
+            assert res.transcription == "Успешный фоллбек на Gemini"
+            mock_gemini.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_telegram_notifier_voice_card():
     """Verify formatting of voice transcription card."""
     notifier = TelegramNotifier(bot_token=None, user_id=None)
