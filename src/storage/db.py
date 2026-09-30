@@ -350,7 +350,21 @@ class Database:
                     status TEXT DEFAULT 'pending'
                 );
 
+                CREATE TABLE IF NOT EXISTS router_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    incoming_text TEXT NOT NULL,
+                    action_chosen TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    latency_ms REAL DEFAULT 0.0,
+                    confidence REAL DEFAULT 1.0,
+                    reasoning_brief TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_dialog_user_date ON bot_dialog_history(user_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_router_audit_created ON router_audit_log(created_at);
+                CREATE INDEX IF NOT EXISTS idx_router_audit_user ON router_audit_log(user_id);
                 CREATE INDEX IF NOT EXISTS idx_memory_facts_active ON memory_facts(is_active, protect_until);
                 CREATE INDEX IF NOT EXISTS idx_memory_facts_category ON memory_facts(category);
                 CREATE INDEX IF NOT EXISTS idx_memory_facts_deadline ON memory_facts(deadline);
@@ -2736,4 +2750,47 @@ class Database:
             await self.add_memory_fact(fact_text=text, category=cat, retention_policy=ret)
             inserted += 1
         return inserted
+
+    # --- 16. Fast Intent Router Audit Logging ---
+
+    async def log_router_audit(
+        self,
+        user_id: int,
+        incoming_text: str,
+        action_chosen: str,
+        model: str,
+        latency_ms: float,
+        confidence: float = 1.0,
+        reasoning_brief: str | None = None,
+    ) -> int:
+        """Log a routing decision by the Fast Intent Router for auditing."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO router_audit_log (user_id, incoming_text, action_chosen, model, latency_ms, confidence, reasoning_brief)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (user_id, incoming_text, action_chosen, model, latency_ms, confidence, reasoning_brief),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_recent_router_audit(
+        self,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Retrieve recent routing decisions for auditing/diagnostics."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT id, user_id, incoming_text, action_chosen, model, latency_ms, confidence, reasoning_brief, created_at
+                FROM router_audit_log
+                ORDER BY created_at DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
 

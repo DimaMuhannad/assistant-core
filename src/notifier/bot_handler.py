@@ -18,6 +18,7 @@ from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
 from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.brain.voice import VoiceProcessor
+from src.brain.intent_router import FastIntentRouter
 from src.sender.email_sender import EmailSender
 from src.connectors.guap_lms.client import GuapLmsClient
 from src.notifier.telegram import (
@@ -64,6 +65,7 @@ class EmailBotHandler:
         self.summarizer = summarizer or GeminiSummarizer()
         self.dialog_engine = SecretaryDialogEngine(db=self.db)
         self.voice_processor = VoiceProcessor()
+        self.intent_router = FastIntentRouter(db=self.db)
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
@@ -152,6 +154,7 @@ class EmailBotHandler:
 
         # Interactive text messages (for edit, commands, or conversational secretary)
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
+        self.router.message(Command("audit", "router"))(self.handle_cmd_router_audit)
         self.router.message(F.text)(self.handle_user_text)
 
         # Voice messages (audio transcription and conversational secretary)
@@ -169,10 +172,11 @@ class EmailBotHandler:
         text = (
             "🤖 **Персональный секретарь и ассистент ГУАП (Кафедра физики)**\n\n"
             "Сервис 24/7 ведет мониторинг расписания, почты, задач и личного кабинета pro.guap.ru.\n\n"
-            "💬 **Диалог в свободной форме:**\n"
+            "💬 **Диалог в свободной форме (Fast Intent Routing):**\n"
             "Вы можете писать или отправлять **голосовые сообщения** с любыми вопросами (расписание, аудитории, баланс часов в «Тидекс», письма, отчеты в LMS, ГОСТы, учебники, эффективный контракт).\n\n"
             "Доступные команды:\n"
             "• `/clear` — сбросить контекст диалога с секретарем\n"
+            "• `/audit` — журнал решений Fast Intent Router (маршрутизация и задержки)\n"
             "• `/tasks` — управление заданиями pro.guap.ru (публикация, скрытие, создание, удаление)\n"
             "• `/reports` — сданные студенческие отчеты, ожидающие проверки\n"
             "• `/lms_publish <№|id>` — опубликовать лабораторную работу для всех групп (или по ID)\n"
@@ -559,37 +563,58 @@ class EmailBotHandler:
 
         state = self.waiting_input.pop(user_id, None)
         if not state:
-            user_msg = message.text.strip().lower()
-            if user_msg in ("задания", "список заданий", "покажи задания", "пары", "лабы", "лабораторные"):
-                await self.handle_cmd_lms_tasks(message)
-                return
-            if user_msg in ("отчеты", "проверь отчеты", "сданные отчеты", "работы", "сданные работы"):
-                await self.handle_cmd_lms_reports(message)
-                return
-            m_pub = re.match(r"^опубликуй\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg)
+            user_msg = message.text.strip()
+            # 1. Direct administrative visibility commands
+            m_pub = re.match(r"^опубликуй\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg, re.IGNORECASE)
             if m_pub:
                 target = m_pub.group(1)
                 target_code = "all" if target == "все" else target
                 await self._execute_visibility_change(message, target_code, is_public=True)
                 return
-            m_hide = re.match(r"^скрой\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg)
+            m_hide = re.match(r"^скрой\s*(?:лаб(?:ораторн(?:ую|ые))?)?\s*(?:№\s*)?(\d+|все)", user_msg, re.IGNORECASE)
             if m_hide:
                 target = m_hide.group(1)
                 target_code = "all" if target == "все" else target
                 await self._execute_visibility_change(message, target_code, is_public=False)
                 return
-            if any(k in user_msg for k in ("смен", "табел", "тидекс", "часы", "часов", "выработк", "обнови данные")):
+
+            # 2. Fast LLM Intent Routing (Gemini 3.8 Flash low effort, stateless)
+            route_res = await self.intent_router.route(user_id=user_id, message_text=user_msg)
+            logger.info(
+                "FastIntentRouter routed message to action '%s' (conf=%.2f, model=%s, latency=%.1fms)",
+                route_res.action,
+                route_res.confidence,
+                route_res.model,
+                route_res.latency_ms,
+            )
+
+            # 3. Dispatch to standard action presets or full secretary dialog
+            if route_res.action == "timesheet":
                 await self.handle_cmd_timesheet(message)
                 return
-            if user_msg.startswith(("@методист", "методист,", "методист ")) or any(k in user_msg for k in ("по госту", "титульн", "погрешност", "по брс", "правило оформления отчета")):
-                clean_q = re.sub(r"^@?методист[:,]?\s*", "", message.text.strip(), flags=re.IGNORECASE)
-                if clean_q:
-                    await self._handle_methodist_query(message, clean_q)
-                    return
-
-            # Conversational dialogue with Secretary Assistant
-            await self._handle_secretary_dialog(message, message.text.strip())
-            return
+            elif route_res.action in ("evening", "digest"):
+                await self.handle_cmd_evening(message)
+                return
+            elif route_res.action == "emails":
+                await self.handle_cmd_emails(message)
+                return
+            elif route_res.action == "lms_tasks":
+                await self.handle_cmd_lms_tasks(message)
+                return
+            elif route_res.action == "lms_reports":
+                await self.handle_cmd_lms_reports(message)
+                return
+            elif route_res.action == "clear_dialog":
+                await self.handle_cmd_clear_dialog(message)
+                return
+            elif route_res.action == "methodist":
+                clean_q = re.sub(r"^@?методист[:,]?\s*", "", user_msg, flags=re.IGNORECASE).strip()
+                await self._handle_methodist_query(message, clean_q or user_msg)
+                return
+            else:
+                # Conversational dialogue with Secretary Assistant
+                await self._handle_secretary_dialog(message, user_msg)
+                return
 
         # 1. Clean up user's own typed message to keep chat spotless
         try:
@@ -1039,11 +1064,54 @@ class EmailBotHandler:
             # Send preview of transcription
             await message.answer(f"🎙️ *«{recognized_text}»*")
 
-            # Route to conversational secretary
-            await self._handle_secretary_dialog(message, recognized_text)
+            # Route through FastIntentRouter
+            route_res = await self.intent_router.route(user_id=message.from_user.id, message_text=recognized_text)
+            logger.info(
+                "Voice routed to action '%s' (conf=%.2f, model=%s, latency=%.1fms)",
+                route_res.action,
+                route_res.confidence,
+                route_res.model,
+                route_res.latency_ms,
+            )
+
+            if route_res.action == "timesheet":
+                await self.handle_cmd_timesheet(message)
+            elif route_res.action in ("evening", "digest"):
+                await self.handle_cmd_evening(message)
+            elif route_res.action == "emails":
+                await self.handle_cmd_emails(message)
+            elif route_res.action == "lms_tasks":
+                await self.handle_cmd_lms_tasks(message)
+            elif route_res.action == "lms_reports":
+                await self.handle_cmd_lms_reports(message)
+            elif route_res.action == "clear_dialog":
+                await self.handle_cmd_clear_dialog(message)
+            elif route_res.action == "methodist":
+                clean_q = re.sub(r"^@?методист[:,]?\s*", "", recognized_text, flags=re.IGNORECASE).strip()
+                await self._handle_methodist_query(message, clean_q or recognized_text)
+            else:
+                await self._handle_secretary_dialog(message, recognized_text)
         except Exception as e:
             logger.exception("Error processing voice message: %s", e)
             await message.answer(f"⚠️ Ошибка обработки голосового сообщения ({e}).")
+
+    async def handle_cmd_router_audit(self, message: Message) -> None:
+        """Handle /audit or /router to display recent intent routing logs."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        logs = await self.db.get_recent_router_audit(limit=8)
+        if not logs:
+            await message.answer("📊 Журнал маршрутизации намерений пуст.")
+            return
+        lines = ["📊 **Журнал решений Fast Intent Router:**\n"]
+        for log in logs:
+            action = log["action_chosen"]
+            model = log["model"]
+            lat = f"{log.get('latency_ms', 0):.0f}мс"
+            conf = f"{log.get('confidence', 1.0)*100:.0f}%"
+            q = log["incoming_text"][:35] + ("..." if len(log["incoming_text"]) > 35 else "")
+            lines.append(f"• `[{action}]` ({model}, {lat}, {conf})\n  «{q}»")
+        await message.answer("\n".join(lines))
 
     async def handle_cmd_methodist_books(self, message: Message) -> None:
         """Display list of indexed textbooks and lab manuals with TOC stats."""
