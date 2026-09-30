@@ -756,6 +756,7 @@ async def main() -> None:
 
     # Start Telegram Bot polling in background task for interactive callbacks
     logger.info("Starting Telegram Bot dispatcher polling for interactive email callbacks...")
+    await bot_handler.setup_bot_commands()
     polling_task = asyncio.create_task(
         dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     )

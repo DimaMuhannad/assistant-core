@@ -115,6 +115,7 @@ class EmailBotHandler:
         self.router.message(Command("emails", "inbox"))(self.handle_cmd_emails)
         self.router.message(Command("evening", "digest"))(self.handle_cmd_evening)
         self.router.message(Command("timesheet", "tydex", "hours"))(self.handle_cmd_timesheet)
+        self.router.message(Command("today", "schedule"))(self.handle_cmd_today)
         self.router.message(Command("cancel", "cansel"))(self.handle_cmd_cancel)
 
         # LMS Commands
@@ -273,6 +274,72 @@ class EmailBotHandler:
         except Exception as e:
             logger.exception("Error generating evening digest: %s", e)
             await status_msg.edit_text(f"❌ Ошибка генерации дайджеста: {e}")
+
+    async def handle_cmd_today(self, message: Message) -> None:
+        """Show today's schedule and classes on demand."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        status_msg = await message.answer("📅 Загружаю расписание на сегодня...")
+        try:
+            from src import config
+            from src.models.schedule import SchedulePayload, format_academic_lesson_line
+
+            today = date.today()
+            snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+            today_lessons = []
+            if snap and snap.get("raw_payload"):
+                try:
+                    payload = SchedulePayload.model_validate_json(snap["raw_payload"])
+                    for day in payload.days:
+                        if day.date == today:
+                            today_lessons = day.lessons
+                except Exception as pe:
+                    logger.warning("Failed to parse schedule payload: %s", pe)
+
+            weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+            day_title = f"{weekday_names[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
+
+            if not today_lessons:
+                text = (
+                    f"📅 **Расписание ГУАП на сегодня** ({day_title}):\n\n"
+                    "🎉 **Пар в расписании нет!** Учебных занятий в ГУАП на сегодня не запланировано."
+                )
+            else:
+                lines = [f"📅 **Расписание ГУАП на сегодня** ({day_title}):\n"]
+                for l in today_lessons:
+                    lines.append(f"• {format_academic_lesson_line(l)}")
+                text = "\n".join(lines)
+
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await self.notifier.send_message(text, chat_id=message.chat.id)
+        except Exception as e:
+            logger.exception("Error showing today schedule: %s", e)
+            await status_msg.edit_text(f"❌ Ошибка загрузки расписания: {e}")
+
+    async def setup_bot_commands(self) -> None:
+        """Register Telegram Bot commands menu."""
+        if not self.bot:
+            logger.warning("Cannot setup bot commands: bot instance is None")
+            return
+        from aiogram.types import BotCommand, BotCommandScopeDefault
+        commands = [
+            BotCommand(command="timesheet", description="⏱️ Часы и норма Тидекс"),
+            BotCommand(command="today", description="📅 Расписание пар ГУАП"),
+            BotCommand(command="lms", description="🎓 Отчеты и задания pro.guap.ru"),
+            BotCommand(command="emails", description="📬 Входящая почта и черновики"),
+            BotCommand(command="methodist", description="📚 Вопрос методисту кафедры"),
+            BotCommand(command="evening", description="🌙 Вечерний дайджест"),
+            BotCommand(command="undo_clear", description="↩️ Восстановить память диалога"),
+            BotCommand(command="help", description="❓ Справка по всем возможностям"),
+        ]
+        try:
+            await self.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            logger.info("Successfully registered %d Telegram bot menu commands", len(commands))
+        except Exception as e:
+            logger.error("Failed to register bot commands: %s", e)
 
     async def handle_cmd_cancel(self, message: Message) -> None:
         """Cancel active draft edit/write prompt or ongoing interaction."""
