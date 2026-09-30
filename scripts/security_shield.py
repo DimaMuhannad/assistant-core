@@ -26,7 +26,7 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 FORBIDDEN_FILES: list[re.Pattern] = [
-    re.compile(r"(^|/)\.env(\..+)?$"),
+    re.compile(r"(^|/)\.env(\.(local|dev|development|prod|production|staging|secrets))?$"),
     re.compile(r"(^|/)credentials\.json$"),
     re.compile(r"(^|/)token\.json$"),
     re.compile(r".+\.session$"),
