@@ -216,3 +216,93 @@ async def test_reply_reconciliation_and_actionable_queue():
         assert t_row["status"] == "answered"
 
     await db.close()
+
+
+def test_determine_message_classification_self_forwards_and_notes():
+    collector = EmailCollector()
+    now = datetime(2026, 9, 30, 10, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Genuine outgoing in 'Отправленные' -> outgoing
+    c1 = collector.determine_message_classification(
+        sender_email="scipopov@mail.ru",
+        subject="Ответ студенту",
+        snippet="Занятие перенесено",
+        folder_or_labels="Отправленные",
+        date_sent=now,
+    )
+    assert c1["category"] == "outgoing"
+    assert c1["requires_action"] is False
+
+    # 2. Forwarded student email in INBOX/ToMyself from user's email -> guap_student
+    c2 = collector.determine_message_classification(
+        sender_email="scipopov@mail.ru",
+        subject="Fwd: Вопрос от старосты гр. 2815 по лабораторным работам",
+        snippet="Студенты просят продлить дедлайн до 05.10",
+        folder_or_labels="INBOX/ToMyself",
+        date_sent=now,
+    )
+    assert c2["category"] == "guap_student"
+    assert c2["is_noise"] is False
+    assert c2["requires_action"] is True
+
+    # 3. Personal note in INBOX from user's email -> personal, not noise
+    c3 = collector.determine_message_classification(
+        sender_email="scipopov@mail.ru",
+        subject="Заметка по прибору",
+        snippet="Проверить юстировку лазера",
+        folder_or_labels="INBOX",
+        date_sent=now,
+    )
+    assert c3["category"] == "personal"
+    assert c3["is_noise"] is False
+    assert c3["requires_action"] is False
+
+
+@pytest.mark.asyncio
+async def test_mark_email_delivery_failed_and_actionable_suppression():
+    db = Database(":memory:")
+    await db.init_db()
+
+    now = datetime(2026, 9, 30, 10, 0, 0, tzinfo=timezone.utc)
+    await db.upsert_email_message(
+        message_id="msg-failed-recipient",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Неизвестный Студент",
+        sender_email="nonexistent@stud.guap.ru",
+        recipients_json='["scipopov@mail.ru"]',
+        subject="Вопрос по допуску",
+        date_sent=now,
+        body_plain="Прошу допуск",
+        body_html=None,
+        snippet="Прошу допуск",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-failed-recip",
+        category="guap_student",
+        is_noise=False,
+        requires_action=True,
+        is_answered=False,
+        relevance_score=1.0,
+    )
+
+    actionable_before = await db.list_actionable_emails()
+    assert len(actionable_before) == 1
+    email_id = actionable_before[0]["id"]
+
+    # Mark delivery failed (e.g. SMTP 550)
+    await db.mark_email_delivery_failed(email_id, reason="550 Recipient Refused")
+
+    actionable_after = await db.list_actionable_emails()
+    assert len(actionable_after) == 0
+
+    async with db.connection() as conn:
+        cursor = await conn.execute("SELECT delivery_failed, delivery_error, requires_action FROM email_messages WHERE id = ?", (email_id,))
+        row = await cursor.fetchone()
+        assert row["delivery_failed"] == 1
+        assert "550 Recipient Refused" in row["delivery_error"]
+        assert row["requires_action"] == 0
+
+    await db.close()

@@ -137,6 +137,7 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("em:sug:"))(self.cb_suggest_reply)
         self.router.callback_query(F.data.startswith("em:wr:"))(self.cb_write_reply)
         self.router.callback_query(F.data.startswith("em:th:"))(self.cb_view_thread)
+        self.router.callback_query(F.data.startswith("em:close:"))(self.cb_close_email)
 
         # Callbacks under timesheet
         self.router.callback_query(F.data == "ts:sync_gdrive")(self.cb_timesheet_sync)
@@ -412,7 +413,36 @@ class EmailBotHandler:
             await self.cleanup_email_session(callback.message.chat.id, email_id)
         else:
             err = res.get("error", "Неизвестная ошибка")
-            await callback.message.answer(f"❌ **Ошибка при отправке письма:**\n`{err}`")
+            is_perm = any(code in err for code in ("550", "551", "553", "554", "Recipient address rejected", "User not found", "invalid mailbox", "refused"))
+            if is_perm:
+                logger.warning("Permanent SMTP delivery error for email_id=%s: %s", email_id, err)
+                await self.db.mark_email_delivery_failed(email_id, reason=err)
+
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="🚫 Закрыть без отправки", callback_data=f"em:close:{email_id}")
+                ]]
+            )
+            await callback.message.answer(
+                f"❌ **Ошибка при отправке письма ({recipient}):**\n`{err}`\n\n"
+                f"💡 Адресат отклонил доставку или почтовый ящик недоступен. Вы можете закрыть задачу без отправки.",
+                reply_markup=kb,
+            )
+
+    async def cb_close_email(self, callback: CallbackQuery) -> None:
+        if not self._is_authorized(callback.from_user.id):
+            return
+
+        try:
+            email_id = int(callback.data.split(":")[-1])
+        except (ValueError, IndexError):
+            await callback.answer("Неверный ID.")
+            return
+
+        await self.db.mark_email_delivery_failed(email_id, reason="Closed by user after delivery failure")
+        await callback.answer("Письмо закрыто (уведомления подавлены)", show_alert=True)
+        self.register_message(email_id, callback.message.message_id)
+        await self.cleanup_email_session(callback.message.chat.id, email_id)
 
     async def cb_cancel_draft(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):

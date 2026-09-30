@@ -115,6 +115,8 @@ class Database:
                     is_expired BOOLEAN DEFAULT FALSE,
                     deadline_at TIMESTAMP,
                     relevance_score REAL DEFAULT 1.0,
+                    delivery_failed BOOLEAN DEFAULT FALSE,
+                    delivery_error TEXT,
                     ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -413,6 +415,8 @@ class Database:
                 ("deadline_at", "TIMESTAMP"),
                 ("relevance_score", "REAL DEFAULT 1.0"),
                 ("card_message_id", "INTEGER"),
+                ("delivery_failed", "BOOLEAN DEFAULT FALSE"),
+                ("delivery_error", "TEXT"),
             ]
             for col_name, col_type in new_cols_messages:
                 if col_name not in existing_cols:
@@ -1012,7 +1016,7 @@ class Database:
             return stats
 
     async def list_actionable_emails(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List emails that require action: not noise, not answered, not expired."""
+        """List emails that require action: not noise, not answered, not expired, and delivery not permanently failed."""
         async with self.connection() as conn:
             cursor = await conn.execute(
                 """
@@ -1020,7 +1024,11 @@ class Database:
                        subject, date_sent, snippet, has_attachments, category,
                        relevance_score, deadline_at, is_answered, is_expired
                 FROM email_messages
-                WHERE requires_action = 1 AND is_answered = 0 AND is_noise = 0 AND is_expired = 0
+                WHERE requires_action = 1
+                  AND is_answered = 0
+                  AND is_noise = 0
+                  AND is_expired = 0
+                  AND (delivery_failed IS NULL OR delivery_failed = 0)
                 ORDER BY relevance_score DESC, date_sent DESC
                 LIMIT ?;
                 """,
@@ -1028,6 +1036,29 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def mark_email_delivery_failed(self, email_id: int, reason: str = "") -> None:
+        """Mark email as permanently undeliverable (e.g. SMTP 550 Recipient Refused).
+        Suppresses further actionable notifications and closes pending drafts.
+        """
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE email_messages
+                SET requires_action = 0, is_answered = 1, delivery_failed = 1, delivery_error = ?
+                WHERE id = ?;
+                """,
+                (reason, email_id),
+            )
+            await conn.execute(
+                """
+                UPDATE email_drafts
+                SET status = 'delivery_failed'
+                WHERE email_id = ? AND status IN ('pending', 'approved');
+                """,
+                (email_id,),
+            )
+            await conn.commit()
 
     async def get_email_stats(self) -> dict[str, Any]:
         """Get summary statistics about ingested emails."""

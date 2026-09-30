@@ -148,3 +148,38 @@ async def test_evening_digest_fallback_academic_and_opd() -> None:
     assert "1) 09:30 • [Пр] ОПД (гр. м631к, ауд. 13-05)" in digest
     assert "💬 **Мессенджеры (ОПД ГУАП):**" in digest
     assert "[м531] Студенты прикрепили отчет к этапу 1" in digest
+
+
+@pytest.mark.asyncio
+async def test_morning_brief_compact_email_summary() -> None:
+    summarizer = GeminiSummarizer(api_key="")
+    today = date(2026, 9, 30)
+    actionable_emails = [
+        {
+            "id": 1,
+            "sender_name": "Иванов И.И.",
+            "sender_email": "ivanov@stud.guap.ru",
+            "subject": "Вопрос по лабораторной",
+            "category": "guap_student",
+            "snippet": "Не получается рассчитать погрешность",
+        },
+        {
+            "id": 2,
+            "sender_name": "Кафедра физики",
+            "sender_email": "dept1@guap.ru",
+            "subject": "Расписание консультаций",
+            "category": "guap_dept",
+            "snippet": "Просьба подать график",
+        },
+    ]
+    brief = await summarizer.generate_morning_brief(
+        target_date=today,
+        lessons=[],
+        action_items=[],
+        actionable_emails=actionable_emails,
+    )
+    assert "📬 **Почтовый щит:**" in brief
+    assert "Неотвеченных важных писем: **2**" in brief
+    assert "студенты: 1" in brief
+    assert "кафедра: 1" in brief
+    assert "/emails" in brief

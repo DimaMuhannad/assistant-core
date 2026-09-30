@@ -258,6 +258,69 @@ class EmailCollector:
 
         return body_plain[:50000], body_html[:50000], snippet
 
+    def determine_message_classification(
+        self,
+        sender_email: str,
+        subject: str,
+        snippet: str,
+        folder_or_labels: str | list[str],
+        date_sent: datetime,
+        has_answered_flag: bool = False,
+        raw_msg: Any | None = None,
+    ) -> dict[str, Any]:
+        """Classify message taking into account folder/labels and whether sender is user.
+        Prevents self-forwards and notes in INBOX from being falsely marked as 'outgoing'.
+        """
+        user_emails = get_user_emails()
+        sender_is_user = sender_email.lower().strip() in user_emails
+
+        # Determine if genuinely an outgoing sent message
+        if isinstance(folder_or_labels, list):
+            is_sent_folder = ("SENT" in folder_or_labels) and ("INBOX" not in folder_or_labels)
+        else:
+            folder_lower = str(folder_or_labels).lower()
+            is_sent_folder = folder_lower in ("отправленные", "sent", "sent messages", "sent items")
+
+        if is_sent_folder:
+            return {
+                "category": "outgoing",
+                "is_noise": False,
+                "requires_action": False,
+                "is_answered": True,
+                "is_expired": False,
+                "deadline": None,
+                "relevance_score": 1.0,
+            }
+
+        # Incoming folder: evaluate category
+        category, is_noise = self.classify_email(sender_email, subject, raw_msg)
+
+        if sender_is_user:
+            # Self-forward or note sent to own account: never noise
+            is_noise = False
+            comb = f"{(subject or '').lower()} {(snippet or '').lower()}"
+            if any(re.search(p, comb, re.IGNORECASE) for p in STUDENT_GROUP_PATTERNS):
+                category = "guap_student"
+            elif any(re.search(p, comb, re.IGNORECASE) for p in DEPT_PATTERNS):
+                category = "guap_dept"
+            elif category == "noise":
+                category = "personal"
+
+        deadline = extract_deadline(f"{subject} {snippet}")
+        relevance_score, is_expired = calculate_relevance(date_sent, deadline)
+        is_answered = has_answered_flag
+        requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
+
+        return {
+            "category": category,
+            "is_noise": is_noise,
+            "requires_action": requires_action,
+            "is_answered": is_answered,
+            "is_expired": is_expired,
+            "deadline": deadline,
+            "relevance_score": relevance_score,
+        }
+
     async def ingest_imap_account(
         self,
         account_id: str,
@@ -363,24 +426,23 @@ class EmailCollector:
                                     attachments.append(fname)
                                 has_attachments = len(attachments) > 0
 
-                                # Check if outgoing from user
-                                user_emails = get_user_emails()
-                                is_from_me = (sender_email.lower().strip() in user_emails) or (folder in ("Отправленные", "Sent"))
-
-                                if is_from_me:
-                                    category = "outgoing"
-                                    is_noise = False
-                                    requires_action = False
-                                    is_answered = True
-                                    is_expired = False
-                                    deadline = None
-                                    relevance_score = 1.0
-                                else:
-                                    category, is_noise = self.classify_email(sender_email, subject, msg)
-                                    deadline = extract_deadline(f"{subject} {snippet}")
-                                    relevance_score, is_expired = calculate_relevance(date_sent, deadline)
-                                    is_answered = has_answered_flag
-                                    requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
+                                # Message classification & relevance
+                                meta = self.determine_message_classification(
+                                    sender_email=sender_email,
+                                    subject=subject,
+                                    snippet=snippet,
+                                    folder_or_labels=folder,
+                                    date_sent=date_sent,
+                                    has_answered_flag=has_answered_flag,
+                                    raw_msg=msg,
+                                )
+                                category = meta["category"]
+                                is_noise = meta["is_noise"]
+                                requires_action = meta["requires_action"]
+                                is_answered = meta["is_answered"]
+                                is_expired = meta["is_expired"]
+                                deadline = meta["deadline"]
+                                relevance_score = meta["relevance_score"]
 
                                 # Persist
                                 inserted = await self.db.upsert_email_message(
@@ -509,30 +571,31 @@ class EmailCollector:
                 has_attachments = False
 
                 user_emails = get_user_emails()
-                is_from_me = ("SENT" in label_ids) or (sender_email.lower().strip() in user_emails)
+                meta = self.determine_message_classification(
+                    sender_email=sender_email,
+                    subject=subject,
+                    snippet=snippet,
+                    folder_or_labels=list(label_ids),
+                    date_sent=date_sent,
+                    has_answered_flag=False,
+                    raw_msg=headers_map,
+                )
+                category = meta["category"]
+                is_noise = meta["is_noise"]
+                requires_action = meta["requires_action"]
+                is_answered = meta["is_answered"]
+                is_expired = meta["is_expired"]
+                deadline = meta["deadline"]
+                relevance_score = meta["relevance_score"]
 
-                if is_from_me:
-                    category = "outgoing"
-                    is_noise = False
-                    requires_action = False
-                    is_answered = True
-                    is_expired = False
-                    deadline = None
-                    relevance_score = 1.0
-                else:
-                    category, is_noise = self.classify_email(sender_email, subject, headers_map)
-                    deadline = extract_deadline(f"{subject} {snippet}")
-                    relevance_score, is_expired = calculate_relevance(date_sent, deadline)
-                    is_answered = False
-                    requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
-
+                is_outgoing_msg = category == "outgoing"
                 flags_list = list(label_ids)
                 has_seen = "UNREAD" not in label_ids
 
                 inserted = await self.db.upsert_email_message(
                     message_id=message_id,
                     account_id=account_id,
-                    folder="INBOX" if not is_from_me else "SENT",
+                    folder="INBOX" if not is_outgoing_msg else "SENT",
                     sender_name=sender_name,
                     sender_email=sender_email,
                     recipients_json=json.dumps(recipients, ensure_ascii=False),
@@ -574,8 +637,22 @@ class EmailCollector:
         await self.db.init_db()
         results = {}
 
-        # 1. Sync Mail.ru (INBOX, ГУАП, and Отправленные)
-        mailru_folders = ["INBOX", "ГУАП", "Отправленные"]
+        # 1. Sync Mail.ru (INBOX, nested subfolders, ГУАП, and Отправленные)
+        mailru_folders = [
+            "INBOX",
+            "INBOX/ToMyself",
+            "INBOX/Social",
+            "ГУАП",
+            "ГУАП/Преподавательская",
+            "ГУАП/Георгий Викторович Терещенко",
+            "ГУАП/Юлиана Александровна Новикова",
+            "ГУАП/Копыльцов",
+            "Группы ГУАП",
+            "Группы ГУАП/2815 ПО",
+            "Группы ГУАП/4118_Практика физика",
+            "Группы ГУАП/Студенты со статьей",
+            "Отправленные",
+        ]
         logger.info("Starting Mail.ru ingestion for last %d days...", days)
         results["mailru"] = await self.ingest_imap_account(
             account_id="mailru",

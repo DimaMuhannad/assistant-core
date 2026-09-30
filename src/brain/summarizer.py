@@ -67,15 +67,16 @@ class GeminiSummarizer:
                         if d == next_date:
                             schedule_context.append(format_academic_lesson_line(l))
 
-            # 2. Actionable emails context
-            emails_context = []
+            # 2. Actionable emails summary context
+            emails_section = ""
             if actionable_emails:
-                for em in actionable_emails:
-                    sender = em.get("sender_name") or em.get("sender_email")
-                    cat = "Студент" if em.get("category") == "guap_student" else "Кафедра/ГУАП"
-                    subj = em.get("subject", "Без темы")
-                    snip = em.get("snippet", "")[:150]
-                    emails_context.append(f"• [{cat}] От: {sender} ({em.get('sender_email')})\n  Тема: {subj}\n  Суть: {snip}")
+                stud_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_student")
+                dept_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_dept")
+                emails_section = (
+                    f"=== СВОДКА ПО ВХОДЯЩЕЙ ПОЧТЕ ===\n"
+                    f"Всего неотвеченных писем, требующих действия: {len(actionable_emails)} (студенты: {stud_cnt}, кафедра: {dept_cnt}).\n"
+                    f"Команда детального разбора для Telegram: /emails\n\n"
+                )
 
             # 3. Categorize action items: Dedicated OPD Messengers vs Deadlines vs Notes
             opd_messenger_items = []
@@ -140,10 +141,6 @@ class GeminiSummarizer:
             weekday_names = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
             weekday_ru = weekday_names[target_date.weekday()]
 
-            emails_section = ""
-            if emails_context:
-                emails_section = "=== НЕОТВЕЧЕННЫЕ ВАЖНЫЕ ПИСЬМА (СТУДЕНТЫ И КАФЕДРА) ===\n" + "\n".join(emails_context) + "\n\n"
-
             prompt = (
                 f"Сегодня: {target_date.strftime('%d.%m.%Y')} ({weekday_ru})\n\n"
                 f"=== ОФИЦИАЛЬНОЕ РАСПИСАНИЕ ===\n" + "\n".join(schedule_context) + "\n\n"
@@ -163,7 +160,7 @@ class GeminiSummarizer:
                 f"  ☀️ **Утренний дайджест на {target_date.strftime('%d.%m.%Y')} ({weekday_ru})**\n"
                 "  📅 **Расписание на сегодня**\n"
                 "  ⏱️ **Табель «Тидекс»**\n"
-                "  📬 **Почтовый щит / Требуют ответа**\n"
+                "  📬 **Почтовый щит**\n"
                 "  💬 **Мессенджеры (ОПД ГУАП)**\n"
                 "  🚨 **Срочное / Дедлайны**\n"
                 "  💡 **Фокус дня**\n"
@@ -178,6 +175,11 @@ class GeminiSummarizer:
                 "КРИТИЧЕСКИЕ ПРАВИЛА ТАБЕЛЯ:\n"
                 "Если передан блок табеля «Тидекс», выведи его строго одной емкой строкой в блоке '⏱️ **Табель «Тидекс»**':\n"
                 "• Дельта нормы на утро: `<знак><часы>` ч (актуально на <дата>)\n\n"
+                "КРИТИЧЕСКИЕ ПРАВИЛА ПОЧТОВОГО ЩИТА:\n"
+                "Раздел '📬 **Почтовый щит**' оформляй предельно кратко и сводно (без длинных простыней с цитатами писем!):\n"
+                "• Количество неотвеченных важных писем с разбивкой (студенты / кафедра).\n"
+                "• Призыв/команда к действию: 'Для подробного анализа и подготовки ответов используйте команду `/emails`'.\n"
+                "• Если важных писем нет: '• Все важные письма обработаны, входящих вопросов нет.'\n\n"
                 "КРИТИЧЕСКИЕ ПРАВИЛА МЕССЕНДЖЕРОВ:\n"
                 "Студенческие чаты Telegram ОПД (м531, м631к, М631К) выводи СТРОГО в отдельном блоке '💬 **Мессенджеры (ОПД ГУАП)**', отдельно от почты!\n\n"
                 "Пиши емко, структурированно, уважительным и деловым языком."
@@ -246,15 +248,20 @@ class GeminiSummarizer:
             lines.append(f"• Дельта нормы на утро: `{m_sign}{m_delta:.1f}` ч (актуально на {rel_d})\n")
 
         if actionable_emails:
-            lines.append("📬 **Почтовый щит / Требуют ответа:**")
-            for em in actionable_emails:
-                sender = em.get("sender_name") or em.get("sender_email")
-                lines.append(f"• 👤 **{sender}** (`{em.get('sender_email')}`)")
-                lines.append(f"  📌 {em.get('subject', 'Без темы')}")
-                snip = (em.get("snippet") or "")[:120]
-                if snip:
-                    lines.append(f"  💬 _{snip}..._")
-            lines.append("")
+            stud_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_student")
+            dept_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_dept")
+            other_cnt = len(actionable_emails) - stud_cnt - dept_cnt
+            breakdown = []
+            if stud_cnt:
+                breakdown.append(f"студенты: {stud_cnt}")
+            if dept_cnt:
+                breakdown.append(f"кафедра: {dept_cnt}")
+            if other_cnt:
+                breakdown.append(f"прочие: {other_cnt}")
+            b_str = f" ({', '.join(breakdown)})" if breakdown else ""
+            lines.append("📬 **Почтовый щит:**")
+            lines.append(f"• Неотвеченных важных писем: **{len(actionable_emails)}**{b_str}.")
+            lines.append("• Для подробного анализа и ответов: `/emails`\n")
 
         opd_items = []
         general_urgent = []
