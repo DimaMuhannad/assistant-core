@@ -155,12 +155,22 @@ class TelegramNotifier:
         text_markdown: str,
         reply_markup: Any | None = None,
         chat_id: str | int | None = None,
+        allow_group: bool = False,
     ) -> list[int]:
         """Sends markdown formatted message using native Telegram entities with clean text fallback. Returns list of sent message IDs."""
         if not self.is_configured:
             return []
 
         target_chat = chat_id or self.user_id
+
+        # Strict safety guardrail: prevent accidental broadcast to group/channel without explicit sanction
+        if target_chat and str(target_chat).startswith("-") and not allow_group:
+            logger.error(
+                "SAFETY BLOCK: Prevented unauthorized message transmission to group/channel %s without explicit allow_group sanction!",
+                target_chat,
+            )
+            return []
+
         should_close_bot = False
         if self._shared_bot:
             bot = self._shared_bot
@@ -205,9 +215,15 @@ class TelegramNotifier:
         text_markdown: str,
         reply_markup: Any | None = None,
         chat_id: str | int | None = None,
+        allow_group: bool = False,
     ) -> list[int]:
         """Send formatted markdown message to user. Returns list of message IDs."""
-        return await self._send_rich_message(text_markdown, reply_markup=reply_markup, chat_id=chat_id)
+        return await self._send_rich_message(
+            text_markdown,
+            reply_markup=reply_markup,
+            chat_id=chat_id,
+            allow_group=allow_group,
+        )
 
     async def send_actionable_email_card(
         self,

@@ -105,6 +105,11 @@ class EmailBotHandler:
                 logger.debug("Could not delete message %d: %s", mid, e)
 
     def _register_handlers(self) -> None:
+        # Strict isolation: Only process messages and callbacks from private user chats.
+        # Ignores all public/student groups (м631к, м531, etc.) to prevent unwanted bot responses in groups.
+        self.router.message.filter(F.chat.type == "private")
+        self.router.callback_query.filter(F.message.chat.type == "private")
+
         # Commands
         self.router.message(Command("start", "help"))(self.handle_cmd_help)
         self.router.message(Command("emails", "inbox"))(self.handle_cmd_emails)
@@ -558,6 +563,10 @@ class EmailBotHandler:
         self.register_message(email_id, thread_msg.message_id)
 
     async def handle_user_text(self, message: Message) -> None:
+        chat_type = getattr(message.chat, "type", None)
+        chat_id = getattr(message.chat, "id", None)
+        if chat_type in ("group", "supergroup", "channel") or (isinstance(chat_id, int) and chat_id < 0):
+            return
         user_id = message.from_user.id
         if not self._is_authorized(user_id):
             return
@@ -730,6 +739,10 @@ class EmailBotHandler:
                     self.register_message(email_id, sid)
 
     async def handle_user_photo(self, message: Message) -> None:
+        chat_type = getattr(message.chat, "type", None)
+        chat_id = getattr(message.chat, "id", None)
+        if chat_type in ("group", "supergroup", "channel") or (isinstance(chat_id, int) and chat_id < 0):
+            return
         user_id = message.from_user.id
         if not self._is_authorized(user_id):
             return
@@ -781,6 +794,10 @@ class EmailBotHandler:
             await message.answer(f"⚠️ Не удалось сохранить скриншот: {e}")
 
     async def handle_user_document(self, message: Message) -> None:
+        chat_type = getattr(message.chat, "type", None)
+        chat_id = getattr(message.chat, "id", None)
+        if chat_type in ("group", "supergroup", "channel") or (isinstance(chat_id, int) and chat_id < 0):
+            return
         user_id = message.from_user.id
         if not self._is_authorized(user_id):
             return
@@ -1013,8 +1030,10 @@ class EmailBotHandler:
             return_files=True,
         )
 
+        # Double safety: Always send response back to user's private chat
+        target_chat = self.allowed_user_id or message.chat.id
         if self.notifier:
-            await self.notifier.send_message(answer, chat_id=message.chat.id)
+            await self.notifier.send_message(answer, chat_id=target_chat)
         else:
             await message.answer(answer)
 
@@ -1028,7 +1047,7 @@ class EmailBotHandler:
                 if f_path.exists():
                     try:
                         await self.bot.send_document(
-                            chat_id=message.chat.id,
+                            chat_id=target_chat,
                             document=FSInputFile(str(f_path)),
                             caption=f"📄 {f.get('desc', f['name'])}",
                         )
@@ -1037,6 +1056,10 @@ class EmailBotHandler:
 
     async def handle_user_voice(self, message: Message) -> None:
         """Handle voice messages: transcribe audio and process via conversational secretary."""
+        chat_type = getattr(message.chat, "type", None)
+        chat_id = getattr(message.chat, "id", None)
+        if chat_type in ("group", "supergroup", "channel") or (isinstance(chat_id, int) and chat_id < 0):
+            return
         if not self._is_authorized(message.from_user.id):
             return
 
