@@ -25,8 +25,9 @@ async def test_setup_bot_commands(tmp_path):
     await handler.setup_bot_commands()
     assert mock_bot.set_my_commands.called
     called_commands = mock_bot.set_my_commands.call_args[0][0]
-    assert len(called_commands) == 8
+    assert len(called_commands) == 9
     cmd_names = [c.command for c in called_commands]
+    assert "ticker" in cmd_names
     assert "timesheet" in cmd_names
     assert "today" in cmd_names
     assert "lms" in cmd_names

@@ -512,6 +512,33 @@ async def run_weekly_memory_review_cycle(
         logger.exception("Error in run_weekly_memory_review_cycle: %s", e)
 
 
+async def run_live_ticker_refresh_cycle(
+    db: Database,
+    notifier: TelegramNotifier,
+) -> None:
+    """Refreshes all active live tickers pinned in user chats."""
+    try:
+        from src.notifier.live_ticker import LiveTickerService
+        tickers = await db.list_all_live_tickers()
+        if not tickers:
+            return
+
+        service = LiveTickerService(db)
+        for t in tickers:
+            chat_id = t["chat_id"]
+            msg_id = t["message_id"]
+            screen = t.get("current_screen") or "schedule"
+            full_text, markup = await service.build_ticker_message(current_screen=screen)
+            await notifier.edit_rich_message(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text_markdown=full_text,
+                reply_markup=markup,
+            )
+    except Exception as e:
+        logger.warning("Error in run_live_ticker_refresh_cycle: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
@@ -748,6 +775,18 @@ async def main() -> None:
         id="weekly_memory_review_job",
         replace_existing=True,
     )
+    # Live HUD Ticker refresh runs every 5 minutes
+    scheduler.add_job(
+        run_live_ticker_refresh_cycle,
+        "interval",
+        minutes=5,
+        args=[db, notifier],
+        id="live_ticker_refresh_job",
+        replace_existing=True,
+    )
+
+    # Initial refresh of active live tickers on daemon start
+    await run_live_ticker_refresh_cycle(db, notifier)
 
     scheduler.start()
     logger.info(

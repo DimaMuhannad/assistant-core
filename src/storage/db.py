@@ -364,6 +364,13 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS bot_live_ticker (
+                    chat_id INTEGER PRIMARY KEY,
+                    message_id INTEGER NOT NULL,
+                    current_screen TEXT DEFAULT 'schedule',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_dialog_user_date ON bot_dialog_history(user_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_router_audit_created ON router_audit_log(created_at);
                 CREATE INDEX IF NOT EXISTS idx_router_audit_user ON router_audit_log(user_id);
@@ -2882,6 +2889,69 @@ class Database:
                 LIMIT ?;
                 """,
                 (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    # --- 17. Live HUD Ticker Persistence ---
+
+    async def get_live_ticker(self, chat_id: int) -> dict[str, Any] | None:
+        """Get the stored live ticker record for a chat."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT chat_id, message_id, current_screen, updated_at
+                FROM bot_live_ticker
+                WHERE chat_id = ?;
+                """,
+                (chat_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def set_live_ticker(self, chat_id: int, message_id: int, current_screen: str = "schedule") -> None:
+        """Upsert the live ticker message ID and active screen."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_live_ticker (chat_id, message_id, current_screen, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    message_id = excluded.message_id,
+                    current_screen = excluded.current_screen,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (chat_id, message_id, current_screen),
+            )
+            await conn.commit()
+
+    async def update_live_ticker_screen(self, chat_id: int, current_screen: str) -> None:
+        """Update active screen of the live ticker."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE bot_live_ticker
+                SET current_screen = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE chat_id = ?;
+                """,
+                (current_screen, chat_id),
+            )
+            await conn.commit()
+
+    async def delete_live_ticker(self, chat_id: int) -> None:
+        """Remove live ticker tracking for a chat."""
+        async with self.connection() as conn:
+            await conn.execute(
+                "DELETE FROM bot_live_ticker WHERE chat_id = ?;",
+                (chat_id,),
+            )
+            await conn.commit()
+
+    async def list_all_live_tickers(self) -> list[dict[str, Any]]:
+        """List all active live tickers for background refresh."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT chat_id, message_id, current_screen, updated_at FROM bot_live_ticker;"
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]

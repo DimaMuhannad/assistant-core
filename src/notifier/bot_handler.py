@@ -21,6 +21,7 @@ from src.brain.voice import VoiceProcessor
 from src.brain.intent_router import FastIntentRouter
 from src.sender.email_sender import EmailSender
 from src.connectors.guap_lms.client import GuapLmsClient
+from src.notifier.live_ticker import LiveTickerService
 from src.notifier.telegram import (
     TelegramNotifier,
     build_email_action_keyboard,
@@ -67,6 +68,7 @@ class EmailBotHandler:
         self.secretary_dialog = self.dialog_engine
         self.voice_processor = VoiceProcessor()
         self.intent_router = FastIntentRouter(db=self.db)
+        self.ticker_service = LiveTickerService(db=self.db)
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
@@ -166,7 +168,12 @@ class EmailBotHandler:
         self.router.callback_query(F.data == "dlg:cancel_clear")(self.cb_dlg_cancel_clear)
         self.router.callback_query(F.data == "dlg:undo_clear")(self.cb_dlg_undo_clear)
 
+        # Callbacks for Live HUD Ticker
+        self.router.callback_query(F.data.startswith("tk:sc:"))(self.cb_ticker_switch_screen)
+        self.router.callback_query(F.data == "tk:refresh")(self.cb_ticker_refresh)
+
         # Interactive text messages (for edit, commands, or conversational secretary)
+        self.router.message(Command("ticker", "hud", "tablo", "status"))(self.handle_cmd_ticker)
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
         self.router.message(Command("undo_clear"))(self.handle_cmd_undo_clear)
         self.router.message(Command("audit", "router"))(self.handle_cmd_router_audit)
@@ -319,6 +326,102 @@ class EmailBotHandler:
             logger.exception("Error showing today schedule: %s", e)
             await status_msg.edit_text(f"❌ Ошибка загрузки расписания: {e}")
 
+    async def handle_cmd_ticker(self, message: Message) -> None:
+        """Handle /ticker, /hud, /tablo, /status to display and pin the Live HUD Ticker."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        chat_id = message.chat.id
+        stored = await self.db.get_live_ticker(chat_id)
+        current_screen = stored["current_screen"] if stored else "schedule"
+
+        full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
+
+        edited = False
+        if stored and stored.get("message_id"):
+            msg_id = stored["message_id"]
+            edited = await self.notifier.edit_rich_message(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text_markdown=full_text,
+                reply_markup=markup,
+            )
+
+        if edited and stored:
+            await message.answer("📌 **Живое табло обновлено в закрепе вверху экрана!**")
+            return
+
+        # If edit failed or ticker not yet stored, send a new one
+        sent_ids = await self.notifier.send_message(
+            full_text,
+            chat_id=chat_id,
+            reply_markup=markup,
+        )
+        if sent_ids:
+            new_msg_id = sent_ids[-1]
+            try:
+                if self.bot:
+                    await self.bot.pin_chat_message(
+                        chat_id=chat_id,
+                        message_id=new_msg_id,
+                        disable_notification=True,
+                    )
+            except Exception as pe:
+                logger.warning("Could not pin live ticker message %s: %s", new_msg_id, pe)
+
+            await self.db.set_live_ticker(chat_id, new_msg_id, current_screen)
+            await message.answer("📌 **Живое табло создано и закреплено вверху экрана!**\nОно обновляется автоматически каждые 5 минут и при смене событий.")
+
+    async def cb_ticker_switch_screen(self, callback: CallbackQuery) -> None:
+        """Handle inline callback to switch active screen on the live ticker."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+
+        target_screen = callback.data.split(":")[-1]
+        chat_id = callback.message.chat.id
+        message_id = callback.message.message_id
+
+        await self.db.update_live_ticker_screen(chat_id, target_screen)
+        full_text, markup = await self.ticker_service.build_ticker_message(current_screen=target_screen)
+
+        await self.notifier.edit_rich_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            text_markdown=full_text,
+            reply_markup=markup,
+        )
+
+        screen_names = {
+            "schedule": "🎓 Расписание пар",
+            "emails": "📬 Входящая почта",
+            "timesheet": "⏱️ Табель Тидекс",
+            "system": "🛡️ Статус систем",
+        }
+        await callback.answer(f"Экран: {screen_names.get(target_screen, target_screen)}")
+
+    async def cb_ticker_refresh(self, callback: CallbackQuery) -> None:
+        """Handle inline callback to refresh telemetry on the live ticker."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+
+        chat_id = callback.message.chat.id
+        message_id = callback.message.message_id
+
+        stored = await self.db.get_live_ticker(chat_id)
+        current_screen = stored["current_screen"] if stored else "schedule"
+
+        full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
+
+        await self.notifier.edit_rich_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            text_markdown=full_text,
+            reply_markup=markup,
+        )
+        await callback.answer("⚡ Данные табло обновлены!")
+
     async def setup_bot_commands(self) -> None:
         """Register Telegram Bot commands menu."""
         if not self.bot:
@@ -326,6 +429,7 @@ class EmailBotHandler:
             return
         from aiogram.types import BotCommand, BotCommandScopeDefault
         commands = [
+            BotCommand(command="ticker", description="⚡ Живое табло в закрепе (HUD)"),
             BotCommand(command="timesheet", description="⏱️ Часы и норма Тидекс"),
             BotCommand(command="today", description="📅 Расписание пар ГУАП"),
             BotCommand(command="lms", description="🎓 Отчеты и задания pro.guap.ru"),
@@ -728,6 +832,9 @@ class EmailBotHandler:
                 return
             elif route_res.action == "clear_dialog":
                 await self.handle_cmd_clear_dialog(message)
+                return
+            elif route_res.action in ("ticker", "status", "hud", "tablo"):
+                await self.handle_cmd_ticker(message)
                 return
             elif route_res.action == "methodist":
                 clean_q = re.sub(r"^@?методист[:,]?\s*", "", user_msg, flags=re.IGNORECASE).strip()
@@ -1309,6 +1416,8 @@ class EmailBotHandler:
                 await self.handle_cmd_lms_reports(message)
             elif route_res.action == "clear_dialog":
                 await self.handle_cmd_clear_dialog(message)
+            elif route_res.action in ("ticker", "status", "hud", "tablo"):
+                await self.handle_cmd_ticker(message)
             elif route_res.action == "methodist":
                 clean_q = re.sub(r"^@?методист[:,]?\s*", "", recognized_text, flags=re.IGNORECASE).strip()
                 await self._handle_methodist_query(message, clean_q or recognized_text)

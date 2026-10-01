@@ -231,6 +231,49 @@ class TelegramNotifier:
             allow_group=allow_group,
         )
 
+    async def edit_rich_message(
+        self,
+        chat_id: str | int,
+        message_id: int,
+        text_markdown: str,
+        reply_markup: Any | None = None,
+    ) -> bool:
+        """Edits an existing telegram message in-place using rich markdown entities.
+        Silently ignores 'message is not modified' and logs errors gracefully."""
+        if not self.is_configured:
+            return False
+
+        should_close_bot = False
+        if self._shared_bot:
+            bot = self._shared_bot
+        else:
+            bot = Bot(token=self.bot_token)
+            should_close_bot = True
+
+        try:
+            chunks = render_telegram_markdown(text_markdown)
+            if not chunks:
+                return False
+            chunk_text, chunk_entities = chunks[0]
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=chunk_text,
+                entities=chunk_entities,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True,
+            )
+            return True
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "message is not modified" in err_msg:
+                return True
+            logger.warning("edit_rich_message failed for chat %s, msg %s: %s", chat_id, message_id, e)
+            return False
+        finally:
+            if should_close_bot:
+                await bot.session.close()
+
     async def send_actionable_email_card(
         self,
         email_data: dict[str, Any],
