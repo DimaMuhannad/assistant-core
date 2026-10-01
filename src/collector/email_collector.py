@@ -371,24 +371,105 @@ class EmailCollector:
 
                         # Fetch in chunks
                         chunk_size = 25
+                        hdr_field_key = b"BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM TO CC DATE IN-REPLY-TO REFERENCES)]"
                         for i in range(0, len(msg_uids), chunk_size):
                             chunk = msg_uids[i : i + chunk_size]
-                            fetch_data = client.fetch(chunk, ["RFC822", "FLAGS"])
 
-                            for uid, data in fetch_data.items():
-                                stats["checked"] += 1
-                                raw_bytes = data.get(b"RFC822")
-                                if not raw_bytes:
-                                    continue
+                            # 1. Fetch lightweight headers, flags, and size (~100-200 bytes per message)
+                            try:
+                                header_data = client.fetch(chunk, [hdr_field_key, "FLAGS", "RFC822.SIZE"])
+                            except Exception as he:
+                                logger.warning("[%s] Failed to fetch headers for chunk, falling back: %s", account_id, he)
+                                header_data = {}
 
-                                raw_flags = data.get(b"FLAGS", ())
+                            uid_to_meta = {}
+                            mids_to_check = []
+                            for uid, d in header_data.items():
+                                raw_hdr = (
+                                    d.get(hdr_field_key)
+                                    or d.get(b"BODY[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM TO CC DATE IN-REPLY-TO REFERENCES)]")
+                                    or d.get(b"BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]")
+                                    or d.get(b"BODY[HEADER.FIELDS (MESSAGE-ID)]")
+                                    or b""
+                                )
+                                parsed_hdr = email.message_from_bytes(raw_hdr) if raw_hdr else None
+                                mid = str(parsed_hdr.get("Message-ID", "")).strip() if parsed_hdr else ""
+                                if not mid:
+                                    mid = f"gen-{account_id}-{folder}-{uid}"
+
+                                raw_flags = d.get(b"FLAGS", ())
                                 flags_list = [f.decode("utf-8", errors="ignore") if isinstance(f, bytes) else str(f) for f in raw_flags]
                                 flags_json = json.dumps(flags_list, ensure_ascii=False)
                                 has_answered_flag = any("answered" in f.lower() for f in flags_list)
                                 has_seen_flag = any("seen" in f.lower() for f in flags_list)
+                                size_bytes = d.get(b"RFC822.SIZE", 0)
 
-                                msg = email.message_from_bytes(raw_bytes, policy=policy.default)
-                                message_id = str(msg.get("Message-ID", "")).strip() or f"gen-{account_id}-{folder}-{uid}"
+                                uid_to_meta[uid] = {
+                                    "mid": mid,
+                                    "hdr": parsed_hdr,
+                                    "flags_json": flags_json,
+                                    "has_answered": has_answered_flag,
+                                    "has_seen": has_seen_flag,
+                                    "size_bytes": size_bytes,
+                                }
+                                mids_to_check.append(mid)
+
+                            # Check which messages already exist in database
+                            existing_mids = await self.db.get_existing_message_ids(mids_to_check)
+
+                            uids_to_download = []
+                            for uid, meta in uid_to_meta.items():
+                                stats["checked"] += 1
+                                mid = meta["mid"]
+                                if mid in existing_mids:
+                                    # Message already ingested previously! Update flags only (0 bytes body traffic)
+                                    await self.db.update_email_flags(
+                                        message_id=mid,
+                                        flags_json=meta["flags_json"],
+                                        is_read=meta["has_seen"],
+                                        is_answered=meta["has_answered"],
+                                    )
+                                    stats["duplicates"] += 1
+                                else:
+                                    uids_to_download.append(uid)
+
+                            if not uids_to_download:
+                                # All messages in this chunk are already saved! No body downloads needed.
+                                continue
+
+                            # 2. For genuine NEW messages only, download body with size guardrail
+                            for uid in uids_to_download:
+                                meta = uid_to_meta[uid]
+                                size_bytes = meta["size_bytes"]
+
+                                # Safety limit: If email is huge (>10 MB), don't download multi-megabyte attachments
+                                if size_bytes > 10 * 1024 * 1024:
+                                    logger.warning(
+                                        "[%s] Message %s is large (%d bytes, %.2f MB). Fetching header only to conserve bandwidth.",
+                                        account_id, meta["mid"], size_bytes, size_bytes / (1024 * 1024)
+                                    )
+                                    body_data = client.fetch([uid], [b"BODY.PEEK[HEADER]", "FLAGS"])
+                                    raw_bytes = body_data.get(uid, {}).get(b"BODY[HEADER]") or b""
+                                    msg = email.message_from_bytes(raw_bytes, policy=policy.default)
+                                    body_plain = f"[Письмо содержит тяжелое вложение размером {size_bytes / (1024 * 1024):.1f} Мб. Вложение не скачивалось для экономии трафика.]"
+                                    body_html = None
+                                    snippet = body_plain
+                                    attachments = ["large_attachment_skipped"]
+                                    has_attachments = True
+                                else:
+                                    body_data = client.fetch([uid], [b"BODY.PEEK[]", "FLAGS"])
+                                    raw_bytes = body_data.get(uid, {}).get(b"BODY[]") or body_data.get(uid, {}).get(b"RFC822") or b""
+                                    if not raw_bytes:
+                                        continue
+                                    msg = email.message_from_bytes(raw_bytes, policy=policy.default)
+                                    body_plain, body_html, snippet = self.extract_body_and_snippet(msg)
+                                    attachments = []
+                                    for part in msg.iter_attachments():
+                                        fname = part.get_filename() or "attachment"
+                                        attachments.append(fname)
+                                    has_attachments = len(attachments) > 0
+
+                                message_id = meta["mid"]
                                 subject = str(msg.get("Subject", "")).strip()
                                 sender_raw = str(msg.get("From", ""))
                                 sender_name, sender_email = parseaddr(sender_raw)
@@ -416,33 +497,23 @@ class EmailCollector:
                                 thread_root = (in_reply_to or references_text or "").split()[0] if (in_reply_to or references_text) else None
                                 thread_id = thread_root or f"th-{clean_subj[:32]}"
 
-                                # Body extraction
-                                body_plain, body_html, snippet = self.extract_body_and_snippet(msg)
-
-                                # Check attachments
-                                attachments = []
-                                for part in msg.iter_attachments():
-                                    fname = part.get_filename() or "attachment"
-                                    attachments.append(fname)
-                                has_attachments = len(attachments) > 0
-
                                 # Message classification & relevance
-                                meta = self.determine_message_classification(
+                                meta_cls = self.determine_message_classification(
                                     sender_email=sender_email,
                                     subject=subject,
                                     snippet=snippet,
                                     folder_or_labels=folder,
                                     date_sent=date_sent,
-                                    has_answered_flag=has_answered_flag,
+                                    has_answered_flag=meta["has_answered"],
                                     raw_msg=msg,
                                 )
-                                category = meta["category"]
-                                is_noise = meta["is_noise"]
-                                requires_action = meta["requires_action"]
-                                is_answered = meta["is_answered"]
-                                is_expired = meta["is_expired"]
-                                deadline = meta["deadline"]
-                                relevance_score = meta["relevance_score"]
+                                category = meta_cls["category"]
+                                is_noise = meta_cls["is_noise"]
+                                requires_action = meta_cls["requires_action"]
+                                is_answered = meta_cls["is_answered"]
+                                is_expired = meta_cls["is_expired"]
+                                deadline = meta_cls["deadline"]
+                                relevance_score = meta_cls["relevance_score"]
 
                                 # Persist
                                 inserted = await self.db.upsert_email_message(
@@ -465,9 +536,9 @@ class EmailCollector:
                                     category=category,
                                     is_noise=is_noise,
                                     requires_action=requires_action,
-                                    is_read=has_seen_flag,
+                                    is_read=meta["has_seen"],
                                     is_answered=is_answered,
-                                    flags_json=flags_json,
+                                    flags_json=meta["flags_json"],
                                     is_expired=is_expired,
                                     deadline_at=deadline,
                                     relevance_score=relevance_score,
@@ -665,16 +736,19 @@ class EmailCollector:
         )
 
         # 2. Sync GUAP Corporate direct IMAP (INBOX and Sent)
-        logger.info("Starting GUAP direct IMAP ingestion for last %d days...", days)
-        results["guap"] = await self.ingest_imap_account(
-            account_id="guap",
-            host=config.GUAP_IMAP_SERVER,
-            port=config.GUAP_IMAP_PORT,
-            username=config.GUAP_EMAIL,
-            password=config.GUAP_PASSWORD,
-            folders=["INBOX", "Sent"],
-            days=days,
-        )
+        if config.GUAP_IMAP_ENABLED and config.GUAP_EMAIL and config.GUAP_PASSWORD:
+            logger.info("Starting GUAP direct IMAP ingestion for last %d days...", days)
+            results["guap"] = await self.ingest_imap_account(
+                account_id="guap",
+                host=config.GUAP_IMAP_SERVER,
+                port=config.GUAP_IMAP_PORT,
+                username=config.GUAP_EMAIL,
+                password=config.GUAP_PASSWORD,
+                folders=["INBOX", "Sent"],
+                days=days,
+            )
+        else:
+            logger.info("GUAP direct IMAP ingestion is disabled or credentials not configured.")
 
         # 3. Sync Gmail API
         logger.info("Starting Gmail API ingestion for last %d days...", days)

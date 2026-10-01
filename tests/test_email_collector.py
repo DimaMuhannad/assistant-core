@@ -306,3 +306,49 @@ async def test_mark_email_delivery_failed_and_actionable_suppression():
         assert row["requires_action"] == 0
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_db_existing_message_ids_and_flags():
+    db = Database(":memory:")
+    await db.init_db()
+
+    now = datetime(2026, 9, 29, 12, 0, 0, tzinfo=timezone.utc)
+    await db.upsert_email_message(
+        message_id="mid-cached-1",
+        account_id="guap",
+        folder="INBOX",
+        sender_name="Преподаватель",
+        sender_email="teacher@guap.ru",
+        recipients_json='["scipopov@guap.ru"]',
+        subject="Расписание пересдач",
+        date_sent=now,
+        body_plain="Расписание во вложении",
+        body_html=None,
+        snippet="Расписание во вложении",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-resched",
+        category="guap_dept",
+        is_read=False,
+        is_answered=False,
+    )
+
+    # Check get_existing_message_ids
+    existing = await db.get_existing_message_ids(["mid-cached-1", "mid-nonexistent-2"])
+    assert "mid-cached-1" in existing
+    assert "mid-nonexistent-2" not in existing
+
+    # Check update_email_flags
+    await db.update_email_flags("mid-cached-1", '["\\\\Seen", "\\\\Answered"]', is_read=True, is_answered=True)
+
+    async with db.connection() as conn:
+        cursor = await conn.execute("SELECT is_read, is_answered, flags_json FROM email_messages WHERE message_id = 'mid-cached-1'")
+        row = await cursor.fetchone()
+        assert row["is_read"] == 1
+        assert row["is_answered"] == 1
+        assert "\\\\Answered" in row["flags_json"]
+
+    await db.close()

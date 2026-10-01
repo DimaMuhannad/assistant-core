@@ -787,6 +787,40 @@ class Database:
             await conn.commit()
             return inserted
 
+    async def get_existing_message_ids(self, message_ids: list[str]) -> set[str]:
+        """Returns set of message_ids that already exist in the database."""
+        if not message_ids:
+            return set()
+        placeholders = ",".join("?" for _ in message_ids)
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                f"SELECT message_id FROM email_messages WHERE message_id IN ({placeholders})",
+                message_ids,
+            )
+            rows = await cursor.fetchall()
+            return {r[0] for r in rows}
+
+    async def update_email_flags(
+        self,
+        message_id: str,
+        flags_json: str | None,
+        is_read: bool,
+        is_answered: bool,
+    ) -> None:
+        """Lightweight update of email flags without re-fetching or re-inserting message body."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE email_messages
+                SET flags_json = COALESCE(?, flags_json),
+                    is_read = MAX(is_read, ?),
+                    is_answered = MAX(is_answered, ?)
+                WHERE message_id = ?
+                """,
+                (flags_json, int(is_read), int(is_answered), message_id),
+            )
+            await conn.commit()
+
     async def reconcile_replies_and_threads(self, user_emails: list[str]) -> dict[str, int]:
         """Reconcile replied status across email messages and threads.
         

@@ -78,5 +78,6 @@ GUAP_IMAP_SERVER = os.getenv("GUAP_IMAP_SERVER", "mail.guap.ru")
 GUAP_IMAP_PORT = int(os.getenv("GUAP_IMAP_PORT", "993"))
 GUAP_SMTP_SERVER = os.getenv("GUAP_SMTP_SERVER", "mail.guap.ru")
 GUAP_SMTP_PORT = int(os.getenv("GUAP_SMTP_PORT", "587"))
+GUAP_IMAP_ENABLED = os.getenv("GUAP_IMAP_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
