@@ -71,6 +71,41 @@ DEPT_PATTERNS = [
     r"эффективн.*контракт",
 ]
 
+ACKNOWLEDGMENT_PATTERNS = [
+    r"спасибо\b",
+    r"благодар[юя]",
+    r"принято\b",
+    r"нет проблем",
+    r"вопрос (?:закрыт|решен)",
+    r"все в порядке",
+    r"понял[аи]?",
+    r"хорошо,?\s+спасибо",
+    r"договорились",
+]
+
+ACTION_REQUEST_PATTERNS = [
+    r"\?",
+    r"\bпрошу\b",
+    r"\bнаправьте\b",
+    r"\bпришлите\b",
+    r"\bвышлите\b",
+    r"\bзаполните\b",
+    r"\bсрочно\b",
+    r"\bдедлайн\b",
+    r"\bнеобходимо\b",
+    r"\bнужно\b",
+]
+
+
+def is_acknowledgment_or_closure(subject: str, text: str) -> bool:
+    """Check if incoming message is an acknowledgment or closure without open questions or requests."""
+    comb = f"{subject or ''} {text or ''}".lower()
+    is_reply = bool(re.search(r"^\s*re\s*:", subject or "", re.IGNORECASE))
+    has_ack = any(re.search(p, comb, re.IGNORECASE) for p in ACKNOWLEDGMENT_PATTERNS)
+    has_action = any(re.search(p, comb, re.IGNORECASE) for p in ACTION_REQUEST_PATTERNS)
+    return is_reply and has_ack and not has_action
+
+
 MONTHS_RU = {
     "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5,
     "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
@@ -308,7 +343,8 @@ class EmailCollector:
 
         deadline = extract_deadline(f"{subject} {snippet}")
         relevance_score, is_expired = calculate_relevance(date_sent, deadline)
-        is_answered = has_answered_flag
+        is_ack = is_acknowledgment_or_closure(subject, snippet)
+        is_answered = has_answered_flag or is_ack
         requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
 
         return {

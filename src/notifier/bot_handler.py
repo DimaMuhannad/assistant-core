@@ -513,8 +513,13 @@ class EmailBotHandler:
             await callback.answer("Неверный ID.")
             return
 
-        await self.db.mark_email_delivery_failed(email_id, reason="Closed by user after delivery failure")
-        await callback.answer("Письмо закрыто (уведомления подавлены)", show_alert=True)
+        await self.db.mark_email_replied(email_id)
+        await callback.answer("✅ Письмо закрыто (ответ не требуется)", show_alert=True)
+        try:
+            if callback.message:
+                await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         self.register_message(email_id, callback.message.message_id)
         await self.cleanup_email_session(callback.message.chat.id, email_id)
 

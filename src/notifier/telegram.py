@@ -32,6 +32,12 @@ def build_email_action_keyboard(email_id: int) -> InlineKeyboardMarkup:
                     callback_data=f"em:th:{email_id}",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text="✅ Ответ не требуется",
+                    callback_data=f"em:close:{email_id}",
+                )
+            ],
         ]
     )
 

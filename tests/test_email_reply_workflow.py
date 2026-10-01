@@ -89,13 +89,15 @@ async def test_email_drafts_db_crud(in_memory_db: Database):
 def test_keyboards_structure():
     email_kb = build_email_action_keyboard(97)
     buttons = email_kb.inline_keyboard
-    assert len(buttons) == 3
+    assert len(buttons) == 4
     assert buttons[0][0].text == "💡 Предложить ответ"
     assert buttons[0][0].callback_data == "em:sug:97"
     assert buttons[1][0].text == "✏️ Написать ответ"
     assert buttons[1][0].callback_data == "em:wr:97"
     assert buttons[2][0].text == "📜 Посмотреть всю переписку"
     assert buttons[2][0].callback_data == "em:th:97"
+    assert buttons[3][0].text == "✅ Ответ не требуется"
+    assert buttons[3][0].callback_data == "em:close:97"
 
     draft_kb = build_draft_action_keyboard(42)
     draft_buttons = draft_kb.inline_keyboard

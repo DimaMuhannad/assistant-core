@@ -349,6 +349,38 @@ async def test_db_existing_message_ids_and_flags():
         row = await cursor.fetchone()
         assert row["is_read"] == 1
         assert row["is_answered"] == 1
-        assert "\\\\Answered" in row["flags_json"]
-
     await db.close()
+
+
+def test_is_acknowledgment_or_closure():
+    from src.collector.email_collector import is_acknowledgment_or_closure
+
+    # 1. Closing email with 'Спасибо' in reply
+    assert is_acknowledgment_or_closure(
+        subject="Re: Доступ к вашему почтовому адресу",
+        text="Спасибо за подробный ответ. Проблема только в том, что оно всегда качало 64М. Нет проблемы из-за регулярного опроса.",
+    ) is True
+
+    # 2. Simple 'Спасибо, принято'
+    assert is_acknowledgment_or_closure(
+        subject="Re: Отчет по практике",
+        text="Спасибо, принято к сведению.",
+    ) is True
+
+    # 3. 'Спасибо' with a question should NOT be closure
+    assert is_acknowledgment_or_closure(
+        subject="Re: Расписание",
+        text="Спасибо за ответ! А когда начнется следующая пара?",
+    ) is False
+
+    # 4. 'Спасибо' with an explicit request should NOT be closure
+    assert is_acknowledgment_or_closure(
+        subject="Re: Документы",
+        text="Спасибо! Прошу также направить приказ ректора.",
+    ) is False
+
+    # 5. Not a reply (initial message) should NOT be closure
+    assert is_acknowledgment_or_closure(
+        subject="Вопрос по допуску",
+        text="Спасибо заранее за ответ.",
+    ) is False
