@@ -251,7 +251,7 @@ class TelegramNotifier:
             should_close_bot = True
 
         try:
-            chunks = render_telegram_markdown(text_markdown)
+            chunks = format_and_split_for_telegram(text_markdown)
             if not chunks:
                 return False
             chunk_text, chunk_entities = chunks[0]

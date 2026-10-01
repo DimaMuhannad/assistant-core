@@ -348,7 +348,10 @@ class EmailBotHandler:
             )
 
         if edited and stored:
-            await message.answer("📌 **Живое табло обновлено в закрепе вверху экрана!**")
+            try:
+                await message.delete()
+            except Exception:
+                pass
             return
 
         # If edit failed or ticker not yet stored, send a new one
@@ -370,7 +373,11 @@ class EmailBotHandler:
                 logger.warning("Could not pin live ticker message %s: %s", new_msg_id, pe)
 
             await self.db.set_live_ticker(chat_id, new_msg_id, current_screen)
-            await message.answer("📌 **Живое табло создано и закреплено вверху экрана!**\nОно обновляется автоматически каждые 5 минут и при смене событий.")
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
     async def cb_ticker_switch_screen(self, callback: CallbackQuery) -> None:
         """Handle inline callback to switch active screen on the live ticker."""

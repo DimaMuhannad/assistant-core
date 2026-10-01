@@ -466,6 +466,8 @@ class AadhkIngestionService:
         today_date = now.date()
         elapsed_workdays = [d for d in all_workdays if d <= today_date]
         elapsed_workdays_count = len(elapsed_workdays)
+        expected_hours_to_date = round(elapsed_workdays_count * daily_norm, 2)
+        delta_pacing = round(worked_hours - expected_hours_to_date, 2)
         # Morning delta formula (Dmitry's standard: elapsed_workdays * 8.5 - worked_hours)
         morning_delta = round(expected_hours_to_date - worked_hours, 2)
 
