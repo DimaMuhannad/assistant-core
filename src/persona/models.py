@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
+if TYPE_CHECKING:
+    from src.core.domain.entities import Persona
+
 _ID_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
+# Единственная допустимая форма идентификатора Telegram в файле персоны (D-05): ${ИМЯ_ПЕРЕМЕННОЙ}.
+_ENV_PLACEHOLDER = re.compile(r"^\$\{([A-Z][A-Z0-9_]*)\}$")
+_DIGITS = re.compile(r"^[0-9]+$")
 
 
 class PersonaConfigError(ValueError):
@@ -48,6 +57,96 @@ class WorkspaceConfig(BaseModel):
         return self
 
 
+class TelegramConfig(BaseModel):
+    """Telegram персоны: идентификаторы только плейсхолдерами ${VAR} (PER-01, D-05)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authorized_user_ids: list[str] = Field(default_factory=list)
+    bot_username: str | None = None
+
+    @field_validator("authorized_user_ids")
+    @classmethod
+    def _only_env_placeholders(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not _ENV_PLACEHOLDER.match(item):
+                # значение не печатается: литерал мог быть настоящим идентификатором
+                raise ValueError("идентификатор Telegram задаётся только плейсхолдером ${ИМЯ}")
+        return value
+
+
+class TaskAreaConfig(BaseModel):
+    """Область задач: подпись формы и (отдельно) подпись кнопки фильтра (OQ3)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    filter_label: str | None = None
+    show_in_filter: bool = True
+
+
+class UiConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    texts: dict[str, str] = Field(default_factory=dict)
+
+
+class ConnectorBindingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(default="main", min_length=1)
+    provider: str = Field(min_length=1)
+    scopes: list[str] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectorsConfig(BaseModel):
+    """Привязки по ролям; ключи совпадают с ConnectorRole, на роль допускается несколько (PER-02)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schedule_source: list[ConnectorBindingConfig] = Field(default_factory=list)
+    calendar_sync: list[ConnectorBindingConfig] = Field(default_factory=list)
+    timesheet: list[ConnectorBindingConfig] = Field(default_factory=list)
+    lms: list[ConnectorBindingConfig] = Field(default_factory=list)
+    git_source: list[ConnectorBindingConfig] = Field(default_factory=list)
+    notion: list[ConnectorBindingConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _binding_ids_unique_within_role(self) -> "ConnectorsConfig":
+        for role in type(self).model_fields:
+            ids = [binding.id for binding in getattr(self, role)]
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"идентификаторы привязок роли {role} повторяются")
+        return self
+
+
+class FileCatalogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    relpath: str = Field(min_length=1)
+    desc: str = Field(min_length=1)
+    keywords: list[str] = Field(default_factory=list)
+
+
+class ScopeRulesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    out_of_scope_keywords: list[str] = Field(default_factory=list)
+    academic_keywords: list[str] = Field(default_factory=list)
+    out_of_scope_reason: str = Field(min_length=1)
+
+
+class MethodistConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    raw_dir: str = Field(min_length=1)
+    kb_dir: str = Field(min_length=1)
+    file_catalog: list[FileCatalogEntry] = Field(default_factory=list)
+    scope_rules: ScopeRulesConfig
+
+
 class PersonaConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -57,7 +156,14 @@ class PersonaConfig(BaseModel):
     title: str = Field(min_length=1)
     organizations: dict[str, OrganizationConfig]
     default_area: str = Field(min_length=1)
+    name_forms: dict[str, str] = Field(default_factory=dict)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    task_areas: list[TaskAreaConfig]
+    ui: UiConfig = Field(default_factory=UiConfig)
     workspaces: list[WorkspaceConfig] = Field(default_factory=list)
+    connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
+    methodist: MethodistConfig
+    prompts: dict[str, str] = Field(default_factory=dict)  # проверка путей - план 03-07
 
     _source_path: Path | None = PrivateAttr(default=None)
 
@@ -68,6 +174,62 @@ class PersonaConfig(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("идентификаторы рабочих пространств повторяются")
         return value
+
+    @model_validator(mode="after")
+    def _areas_consistent(self) -> "PersonaConfig":
+        values = [area.value for area in self.task_areas]
+        if len(values) != len(set(values)):
+            raise ValueError("значения task_areas повторяются")
+        if self.default_area not in values:
+            raise ValueError("default_area не входит в task_areas")
+        return self
+
+    def _env_names(self) -> tuple[str, ...]:
+        return tuple(
+            match.group(1)
+            for item in self.telegram.authorized_user_ids
+            if (match := _ENV_PLACEHOLDER.match(item))
+        )
+
+    def unresolved_env_vars(self, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+        """Имена переменных, не заданных (или пустых) в окружении; значения не возвращаются."""
+        environ = os.environ if env is None else env
+        return tuple(name for name in self._env_names() if not environ.get(name, "").strip())
+
+    def resolve_authorized_user_ids(
+        self, env: Mapping[str, str] | None = None, *, strict: bool = False
+    ) -> tuple[int, ...]:
+        """Развернуть плейсхолдеры в момент вызова; пустое значение в результат не попадает."""
+        environ = os.environ if env is None else env
+        resolved: list[int] = []
+        for name in self._env_names():
+            raw = environ.get(name, "").strip()
+            if not raw:
+                if strict:
+                    raise PersonaConfigError(f"переменная окружения {name} не задана")
+                continue
+            if not _DIGITS.match(raw):
+                raise PersonaConfigError(f"переменная окружения {name} не число")
+            resolved.append(int(raw))
+        return tuple(resolved)
+
+    def to_domain(self) -> "Persona":
+        from src.core.domain.entities import Persona, Workspace, WorkspaceClearance
+
+        return Persona(
+            id=self.id,
+            name=self.display_name,
+            workspaces=tuple(
+                Workspace(
+                    id=ws.id,
+                    name=ws.label,
+                    clearance=WorkspaceClearance(ws.clearance),
+                    path=ws.path,
+                    remote=ws.remote,
+                )
+                for ws in self.workspaces
+            ),
+        )
 
     @property
     def source_path(self) -> Path | None:

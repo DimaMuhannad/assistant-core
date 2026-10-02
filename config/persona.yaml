@@ -43,3 +43,246 @@ persona:
       clearance: internal
       clearance_label: "🟡 Internal Academic"
       color: yellow
+  name_forms:
+    nominative: Попов Дмитрий Александрович
+    genitive: Попова Дмитрия Александровича
+    dative_first_patronymic: Дмитрию Александровичу
+    genitive_first_patronymic: Дмитрия Александровича
+    instrumental_first_patronymic: Дмитрием Александровичем
+    short: Попов Д.А.
+    short_genitive: Попова Д.А.
+    initials_genitive: Д.А. Попова
+    signature: Дмитрий Александрович Попов
+  telegram:
+    authorized_user_ids:
+    - "${TELEGRAM_USER_ID}"
+    bot_username: opd_guap_popov_bot
+  task_areas:
+  - value: ГУАП
+    label: 🏛️ ГУАП
+    filter_label: 🏛️ ГУАП
+  - value: Тидекс
+    label: 🔬 Тидекс
+    filter_label: 🔬 Тидекс
+  - value: AI & Dev Projects
+    label: 🤖 AI & Dev Projects
+    filter_label: 🤖 AI & Dev
+  - value: Наука и статьи
+    label: 📚 Наука и статьи
+    filter_label: 📚 Наука
+  - value: Личное и семья
+    label: 🏠 Личное и семья
+    filter_label: 🏠 Личное
+  - value: Финансы
+    label: 💰 Финансы
+    show_in_filter: false
+  ui:
+    texts:
+      header_subtitle: Попов Д.А. • ГУАП / Тидекс
+      schedule_title: Расписание ГУАП (Ближайшие пары)
+      security_intro: Оркестрация политик безопасности между публичными репозиториями ГУАП / AI Studio и закрытым NDA-контуром ООО «Тидекс».
+      clearance_tile_caption: ООО «Тидекс» (Строгая изоляция ноу-хау и ТГц фотоники)
+      remote_tile_caption: github-personal vs github-tydex (includeIf gitdir)
+      airgap_tile_caption: Запрет агентам читать артефакты Тидекс в открытых сессиях
+      reminder_context_placeholder: 'Например: ГУАП: Осенний семестр 2026 / Почта'
+  connectors:
+    schedule_source:
+    - id: main
+      provider: schedule_site
+      scopes:
+      - schedule.read
+      config:
+        base_url: https://guap.ru/rasp
+        lesson_slots:
+        - number: 1
+          start: 09:30
+        - number: 2
+          start: '11:10'
+        - number: 3
+          start: '13:00'
+        - number: 4
+          start: '15:10'
+        - number: 5
+          start: '17:00'
+        - number: 6
+          start: '18:40'
+        - number: 7
+          start: '20:20'
+        subjects:
+          физические основы нанотехнологий: ФОНТ
+          основы проектной деятельности в профессии: ОПДвП
+          основы проектной деятельности: ОПД
+          физика: Физика
+    calendar_sync:
+    - id: main
+      provider: google_calendar
+      scopes:
+      - calendar.read
+      - calendar.write
+    timesheet:
+    - id: main
+      provider: aadhk_timesheet
+      scopes:
+      - timesheet.read
+      - timesheet.write
+      config:
+        default_project: Тидекс
+        daily_norm_hours: 8.5
+    lms:
+    - id: main
+      provider: lms_portal
+      scopes:
+      - lms.read
+      - lms.write
+      config:
+        base_url: https://pro.guap.ru
+    git_source: []
+    notion: []
+  methodist:
+    raw_dir: /opt/assistant-core/data/methodist/raw
+    kb_dir: /opt/assistant-core/data/methodist/knowledge_base
+    file_catalog:
+    - relpath: templates/Форма_отчета_эффективный_контракт_ППС_2026.docx
+      desc: Официальный действующий бланк отчета кафедры физики от Новиковой Ю.А. (август 2026)
+      keywords:
+      - контракт
+      - эффективн
+      - шаблон
+      - бланк
+      - форма
+      - ппс
+      - новиков
+    - relpath: dept_physics/Попов_ДА_Образец_отчета_эффективный_контракт.docx
+      desc: Утвержденный заполненный образец отчета доцента Д.А. Попова (10.8 балла)
+      keywords:
+      - контракт
+      - эффективн
+      - попов
+      - образец
+      - пример
+      - отчет
+    - relpath: admin_lna/Приказ_ГУАП_05-259-26_Эффективный_контракт_2026.pdf
+      desc: Приказ ректора ГУАП № 05-259/26 от 17.04.2026 об утверждении изменений в критериях
+      keywords:
+      - приказ
+      - контракт
+      - эффективн
+      - 05-259
+      - регламент
+      - лна
+    - relpath: admin_lna/Критерии_эффективного_контракта_ГУАП_2026.pdf
+      desc: Официальная шкала баллов и критериев стимулирующих выплат (Таблица 3 Положения)
+      keywords:
+      - критери
+      - балл
+      - таблиц
+      - шкал
+      - контракт
+      - эффективн
+      - стимулир
+    - relpath: admin_lna/polozhenie_ob_effektivnom_kontrakte_guap_2026.md
+      desc: Сводный аналитический регламент эффективного контракта кафедры физики ГУАП 2026
+      keywords:
+      - положен
+      - регламент
+      - контракт
+      - эффективн
+    - relpath: templates/Титульный_лист_и_протокол_ЛР2_Оптика.docx
+      desc: Официальный шаблон титульного листа и протокола измерений ЛР по оптике
+      keywords:
+      - титульн
+      - оптик
+      - протокол
+      - лаб
+    - relpath: templates/Титульный_лист_отчета_о_практической_работе_2025.docx
+      desc: Официальный шаблон титульного листа практической работы ГУАП
+      keywords:
+      - титульн
+      - практик
+      - отчет
+    scope_rules:
+      out_of_scope_keywords:
+      - тидекс
+      - табель
+      - смен
+      - часы работы
+      - выработка
+      - погод
+      - анекдот
+      - фильм
+      - игра
+      - криптовалют
+      - биткоин
+      - ресторан
+      - билет
+      - поезд
+      - рейс
+      - курс валют
+      - новости
+      - политик
+      academic_keywords:
+      - гост
+      - титульн
+      - отчет
+      - лабораторн
+      - физик
+      - фонт
+      - опд
+      - брс
+      - баллы
+      - погрешност
+      - протокол
+      - допуск
+      - защита
+      - практикум
+      - зачет
+      - экзамен
+      - кафедр
+      - попов
+      - гастелло
+      - формул
+      - график
+      - мнк
+      - шрифт
+      - поля
+      - студент
+      - семестр
+      - дедлайн
+      - пересдач
+      - рпд
+      - проектн
+      - лаба
+      - лабы
+      - методичк
+      - оформлен
+      - подпис
+      - правил
+      - коваленко
+      - задачник
+      - задач
+      - учебник
+      - комптон
+      - фотоэффект
+      - спектрометр
+      - ньютон
+      - интерференц
+      - дифракц
+      - маятник
+      - гистерезис
+      - холл
+      - эффективн
+      - контракт
+      - стимулирующ
+      - надбавк
+      - критери
+      - базов уровень
+      - повышенн уровень
+      - ппс
+      - новиков
+      - приказ 05-259
+      - печ.л
+      - п.л
+      - печатн лист
+      - соавтор
+      - варост
+      out_of_scope_reason: Вопрос относится к сторонней теме вне методической работы кафедры физики ГУАП

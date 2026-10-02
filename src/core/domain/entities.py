@@ -10,12 +10,18 @@ from enum import StrEnum
 
 
 class ConnectorRole(StrEnum):
-    """Роль коннектора в платформе (для портов, существующих в этой фазе)."""
+    """Роль коннектора в платформе.
+
+    GIT_SOURCE и NOTION только объявлены (привязки в персоне допустимы, пустые); портов и
+    реализаций у них нет до Фазы 7.
+    """
 
     SCHEDULE_SOURCE = "schedule_source"
     CALENDAR_SYNC = "calendar_sync"
     TIMESHEET = "timesheet"
     LMS = "lms"
+    GIT_SOURCE = "git_source"
+    NOTION = "notion"
 
 
 class WorkspaceClearance(StrEnum):

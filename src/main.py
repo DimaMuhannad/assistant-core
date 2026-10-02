@@ -21,6 +21,8 @@ from aiogram import Bot, Dispatcher
 
 from src import config
 from src.storage.db import Database
+from src.persona.current import current_persona
+from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
 from src.detector.diff import ScheduleChangeDetector
 from src.calendar.client import GoogleCalendarClient
@@ -554,6 +556,19 @@ async def main() -> None:
     db = Database(config.SQLITE_DB_PATH)
     await db.init_db()
     logger.info("Database initialized at %s", config.SQLITE_DB_PATH)
+
+    # Персона из config/persona.yaml в БД: по таблицам её читает chat-app (D-02).
+    persona = current_persona()
+    counts = await seed_persona(db, persona)
+    logger.info(
+        "Персона %s записана в БД: пространств %d, привязок %d",
+        persona.id,
+        counts["workspaces"],
+        counts["bindings"],
+    )
+    missing = persona.unresolved_env_vars()
+    if missing:
+        logger.warning("Не заданы переменные окружения персоны: %s", ", ".join(missing))
 
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     dp = Dispatcher()

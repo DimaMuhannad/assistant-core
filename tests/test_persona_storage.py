@@ -133,7 +133,13 @@ def test_seed_cli_uses_persona_config_argument(tmp_path):
         "  organizations:\n"
         "    university:\n"
         "      name: Университет-А\n"
-        "  default_area: Область-А\n",
+        "  default_area: Область-А\n"
+        "  task_areas:\n"
+        "    - {value: Область-А, label: Область А}\n"
+        "  methodist:\n"
+        "    raw_dir: /tmp/raw\n"
+        "    kb_dir: /tmp/kb\n"
+        "    scope_rules: {out_of_scope_reason: вне темы}\n",
         encoding="utf-8",
     )
     path = tmp_path / "t.db"
@@ -152,7 +158,7 @@ async def test_seed_writes_workspaces_in_order(db):
     expected_nda = next(ws for ws in persona.workspaces if ws.clearance == "restricted_nda")
     workspace_rows, binding_rows = persona_rows(persona)
     assert [row["position"] for row in workspace_rows] == [0, 1, 2, 3]
-    assert binding_rows == []
+    assert [row["role"] for row in binding_rows] == ["schedule_source", "calendar_sync", "timesheet", "lms"]
 
     await seed_persona(db, persona)
     rows = await db.list_persona_workspaces(persona.id)
@@ -165,3 +171,42 @@ async def test_seed_writes_workspaces_in_order(db):
     assert same, "слова NDA в БД и в данных расходятся"
     assert nda_row["forbidden_remote_substrings"] == expected_nda.forbidden_remote_substrings
     assert all(rows[i]["forbidden_keywords"] == [] for i in (0, 1, 3))
+
+
+async def test_multiple_bindings_per_role_are_stored(db):
+    from src.persona.loader import load_persona
+    from src.persona.seed import persona_rows, seed_persona
+
+    persona = load_persona()
+    lms = persona.connectors.lms[0]
+    extra = persona.model_copy(
+        update={
+            "connectors": persona.connectors.model_copy(
+                update={"lms": [lms, lms.model_copy(update={"id": "second"})]}
+            )
+        }
+    )
+    _, bindings = persona_rows(extra)
+    assert [(b["role"], b["position"]) for b in bindings if b["role"] == "lms"] == [
+        ("lms", 0),
+        ("lms", 1),
+    ]
+
+    await seed_persona(db, extra)
+    rows = await db.list_connector_bindings(extra.id, "lms")
+    assert [r["position"] for r in rows] == [0, 1]
+    assert {r["id"] for r in rows} == {f"{extra.id}/lms/main", f"{extra.id}/lms/second"}
+    all_rows = await db.list_connector_bindings(extra.id)
+    assert {r["role"] for r in all_rows} == {"schedule_source", "calendar_sync", "timesheet", "lms"}
+
+
+async def test_config_json_keeps_env_placeholders(db, monkeypatch):
+    from src.persona.loader import load_persona
+    from src.persona.seed import seed_persona
+
+    monkeypatch.setenv("TELEGRAM_USER_ID", "100000777")
+    persona = load_persona()
+    await seed_persona(db, persona)
+    record = await db.get_persona_record(persona.id)
+    assert "${TELEGRAM_USER_ID}" in record["config_json"]
+    assert "100000777" not in record["config_json"]

@@ -12,18 +12,30 @@ from pathlib import Path
 from typing import Any
 
 from src.persona.loader import load_persona
-from src.persona.models import PersonaConfig, PersonaConfigError
+from src.persona.models import ConnectorsConfig, PersonaConfig, PersonaConfigError
 from src.storage.db import Database
 
 LIVE_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "assistant.db"
 
 
 def persona_rows(persona: PersonaConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Строки workspaces (position = индекс) и connector_bindings; привязки - в задаче 2."""
+    """Строки workspaces (position = индекс) и connector_bindings (position внутри роли)."""
     workspaces = [
         {**ws.model_dump(), "position": index} for index, ws in enumerate(persona.workspaces)
     ]
-    return workspaces, []
+    bindings = [
+        {
+            "binding_id": binding.id,
+            "role": role,
+            "provider": binding.provider,
+            "scopes": list(binding.scopes),
+            "config": dict(binding.config),
+            "position": index,
+        }
+        for role in ConnectorsConfig.model_fields
+        for index, binding in enumerate(getattr(persona.connectors, role))
+    ]
+    return workspaces, bindings
 
 
 async def seed_persona(db: Database, persona: PersonaConfig) -> dict[str, int]:
