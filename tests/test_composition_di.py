@@ -6,9 +6,13 @@
 `db=MagicMock()`, `api_key=""`.
 """
 
+import inspect
 from unittest.mock import MagicMock, patch
 
 from src.brain.secretary_dialog import SecretaryDialogEngine
+from src.composition import default_timesheet_service
+from src.core.domain.entities import ConnectorRole
+from src.core.ports.connectors import BaseTimesheetProvider
 
 PACING = {
     "month": 3,
@@ -69,3 +73,41 @@ async def test_tydex_context_fallback_on_error():
         text = await engine._get_tydex_context()
 
     assert text == FALLBACK_TEXT
+
+
+async def test_secretary_uses_injected_timesheet_service():
+    calls: list[dict] = []
+
+    class ForbiddenDefault:
+        def __init__(self, db):
+            raise AssertionError("значение по умолчанию не должно создаваться")
+
+    class FakeProvider:
+        async def get_monthly_pacing(self, **kwargs):
+            calls.append(kwargs)
+            return dict(PACING)
+
+    engine = SecretaryDialogEngine(db=MagicMock(), api_key="", timesheet_service=FakeProvider())
+    with patch(TARGET, ForbiddenDefault):
+        text = await engine._get_tydex_context()
+
+    assert text == EXPECTED_TEXT
+    assert calls == [{"project_name": "Тидекс"}]
+
+
+async def test_default_timesheet_service_conforms_to_port():
+    p = default_timesheet_service(MagicMock())
+
+    assert isinstance(p, BaseTimesheetProvider)
+    for name in (
+        "health_check",
+        "ingest_backup_file",
+        "reconcile_all_conflicts",
+        "get_timesheet_report",
+        "get_monthly_pacing",
+    ):
+        assert inspect.iscoroutinefunction(getattr(p, name)), name
+    assert p.connector_id == "aadhk_timesheet"
+    assert p.role == ConnectorRole.TIMESHEET
+    assert p.required_scopes == ("timesheet.read", "timesheet.write")
+    assert await p.health_check() is True

@@ -23,8 +23,6 @@ forbidden_modules =
 # (bot_handler -> live_ticker -> connectors) тянут в Фазу 2 рефакторинг live_ticker.
 allow_indirect_imports = True
 ignore_imports =
-    # долг, только убывает: secretary_dialog.py:139, inline-импорт внутри функции, уберёт Фаза 2 (PRT-04)
-    src.brain.secretary_dialog -> src.connectors.aadhk.parser
 
 [importlinter:contract:bot-handler-no-adapters]
 name = bot_handler не импортирует адаптеры
@@ -47,3 +45,27 @@ ignore_imports =
     src.notifier.bot_handler -> src.connectors.guap_lms.client
     # долг, только убывает: bot_handler.py:22, top-level импорт, уберёт Фаза 2 (PRT-04)
     src.notifier.bot_handler -> src.sender.email_sender
+
+# Ядро импортирует только stdlib и src.core.* (D-01): список запретов = все прочие модули
+# верхнего уровня src; полноту списка проверяет tests/test_core_architecture.py.
+[importlinter:contract:core-is-pure]
+name = ядро (core) не зависит от адаптеров, use-cases и корня композиции
+type = forbidden
+source_modules =
+    src.core
+forbidden_modules =
+    src.connectors
+    src.calendar
+    src.parser
+    src.sender
+    src.collector
+    src.notifier
+    src.brain
+    src.storage
+    src.models
+    src.main
+    src.detector
+    src.config
+    src.composition
+allow_indirect_imports = True
+ignore_imports =

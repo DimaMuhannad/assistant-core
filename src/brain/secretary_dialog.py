@@ -28,6 +28,8 @@ from src import config
 from src.storage.db import Database
 from src.brain.methodist import MethodistService
 from src.brain.key_rotator import key_rotator
+from src.composition import default_timesheet_service
+from src.core.ports.connectors import BaseTimesheetProvider
 from src.models.schedule import SchedulePayload, Lesson
 
 logger = logging.getLogger(__name__)
@@ -69,11 +71,13 @@ class SecretaryDialogEngine:
         api_key: str | None = config.GEMINI_API_KEY,
         model: str = config.GEMINI_MODEL,
         methodist: MethodistService | None = None,
+        timesheet_service: BaseTimesheetProvider | None = None,
     ) -> None:
         self.db = db
         self.api_key = api_key or ""
         self.model = model
         self.methodist = methodist or MethodistService(db, api_key=api_key, model=model)
+        self.timesheet_service = timesheet_service
         self._client: genai.Client | None = None
 
     @property
@@ -136,8 +140,7 @@ class SecretaryDialogEngine:
     async def _get_tydex_context(self) -> str:
         """Fetch working hours pacing from AADHk parser."""
         try:
-            from src.connectors.aadhk.parser import AadhkIngestionService
-            service = AadhkIngestionService(self.db)
+            service = self.timesheet_service if self.timesheet_service is not None else default_timesheet_service(self.db)
             pacing = await service.get_monthly_pacing(project_name="Тидекс")
 
             month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
