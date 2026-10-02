@@ -13,6 +13,160 @@
         "user_id": 999,
         "message_text": "Какие у меня задачи на сегодня?"
       }
+    },
+    "intent_router": {
+      "file": "intent_router.txt",
+      "chars": 3269,
+      "bytes": 5440,
+      "sha256": "504db3e53efe8a2d6aab509c1339da04fe2eaf1724f4ac02661d15d2db0ac03d",
+      "ends_with_newline": true,
+      "source": "src/brain/intent_router.py:28",
+      "capture": "system_instruction",
+      "inputs": {
+        "user_id": 999,
+        "message_text": "напомни про отчет"
+      }
+    },
+    "methodist": {
+      "file": "methodist.txt",
+      "chars": 4434,
+      "bytes": 7826,
+      "sha256": "a12ef9a5498c982f935223659f460b5ed2a0fb14abb00429d390fed45162637e",
+      "ends_with_newline": true,
+      "source": "src/brain/methodist.py:23",
+      "capture": "system_instruction",
+      "inputs": {
+        "question": "Как оформить титульный лист лабораторной работы?"
+      }
+    },
+    "methodist_scope_check": {
+      "file": "methodist_scope_check.txt",
+      "chars": 680,
+      "bytes": 1072,
+      "sha256": "15240cec7e804a68b80acd30ec9c7d133fb2d2bbd2531a25d3c188300ced2015",
+      "ends_with_newline": true,
+      "source": "src/brain/methodist.py:50",
+      "capture": "contents",
+      "inputs": {
+        "question": "Что приготовить на ужин из картофеля и грибов?"
+      }
+    },
+    "reply_generator": {
+      "file": "reply_generator.txt",
+      "chars": 1346,
+      "bytes": 2430,
+      "sha256": "1fc212429cbb3293a4d8bcc7421c3f95093cf2faf67e20955118140c3b3d6aed",
+      "ends_with_newline": true,
+      "source": "src/brain/reply_generator.py:12",
+      "capture": "system_instruction",
+      "inputs": {
+        "email_data": {
+          "sender_name": "Иванов И.И.",
+          "sender_email": "student@example.org",
+          "subject": "Вопрос",
+          "body_plain": "Здравствуйте",
+          "category": "guap_student"
+        }
+      }
+    },
+    "debrief": {
+      "file": "debrief.txt",
+      "chars": 1861,
+      "bytes": 3079,
+      "sha256": "d01328a178c3a45962acefa08f0d1ce14d0b74cf154e94b6e160379cf757ae58",
+      "ends_with_newline": false,
+      "source": "src/brain/debrief_parser.py:26",
+      "capture": "contents (префикс до двух переводов строки)",
+      "inputs": {
+        "transcript": "Сегодня провёл две пары и проверил отчёты.",
+        "target_date": "2026-09-30"
+      }
+    },
+    "debrief_call": {
+      "file": "debrief_call.txt",
+      "chars": 1985,
+      "bytes": 3281,
+      "sha256": "6a9dfa8f5e18cdfbfbc9b85089c5012cf082dff6ba3ca9e482359bab4956dd9c",
+      "ends_with_newline": false,
+      "source": "src/brain/debrief_parser.py:118",
+      "capture": "contents",
+      "inputs": {
+        "transcript": "Сегодня провёл две пары и проверил отчёты.",
+        "target_date": "2026-09-30"
+      }
+    },
+    "morning_brief": {
+      "file": "morning_brief.txt",
+      "chars": 2039,
+      "bytes": 3529,
+      "sha256": "2d095437b4bfdf2d041720af9343ec9de94f7fe88d79e437796511d9b1a192a9",
+      "ends_with_newline": false,
+      "source": "src/brain/summarizer.py:154",
+      "capture": "system_instruction",
+      "inputs": {
+        "target_date": "2026-09-30",
+        "lessons": [
+          {
+            "subject": "Физика",
+            "lesson_type": "LAB",
+            "date": "2026-09-30",
+            "start_time": "11:10",
+            "end_time": "12:40",
+            "room": "31-04б",
+            "group": "1632"
+          }
+        ],
+        "action_items": [
+          {
+            "priority_score": 1,
+            "source_type": "telegram_group",
+            "summary_text": "[м631к Основы проектной деятельности] Вопрос по паспорту проекта"
+          },
+          {
+            "priority_score": 3,
+            "source_type": "guap_dept",
+            "summary_text": "Сдать отчет по НИР до пятницы"
+          }
+        ],
+        "timesheet_pacing": {
+          "morning_delta": 6.5,
+          "latest_date_formatted": "29.09"
+        }
+      }
+    },
+    "evening_digest": {
+      "file": "evening_digest.txt",
+      "chars": 908,
+      "bytes": 1556,
+      "sha256": "ddf307b320ec4dff78f94bf5aa9722d95a646334711cc7bcb872325511f779ff",
+      "ends_with_newline": false,
+      "source": "src/brain/summarizer.py:383",
+      "capture": "system_instruction",
+      "inputs": {
+        "target_date": "2026-09-30",
+        "tomorrow_date": "2026-10-01",
+        "email_stats": {
+          "bot_answered": [],
+          "pending_actionable": []
+        },
+        "tomorrow_lessons": [
+          {
+            "subject": "Основы проектной деятельности",
+            "lesson_type": "PRACTICE",
+            "date": "2026-10-01",
+            "start_time": "09:30",
+            "end_time": "11:00",
+            "room": "13-05",
+            "group": "м631к"
+          }
+        ],
+        "action_items": [
+          {
+            "source_type": "telegram_group",
+            "summary_text": "[м531 Основы проектной деятельности] Студенты прикрепили отчет к этапу 1"
+          }
+        ]
+      }
     }
   }
 }

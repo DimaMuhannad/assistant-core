@@ -11,12 +11,14 @@
 import hashlib
 import json
 import subprocess
+from datetime import date, time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from google import genai
 
+from src.models.schedule import Lesson, LessonType
 from src.storage.db import Database
 
 REPO = Path(__file__).resolve().parents[1]
@@ -59,9 +61,29 @@ def captured_system_instruction(fake: FakeGeminiClient) -> str:
 
 
 def captured_contents(fake: FakeGeminiClient) -> str:
-    """contents ПЕРВОГО вызова LLM."""
+    """Текст contents ПЕРВОГО вызова LLM (строка или types.Content с одной частью-текстом)."""
     assert fake.calls, "LLM не был вызван"
-    return fake.calls[0]["contents"]
+    contents = fake.calls[0]["contents"]
+    if isinstance(contents, str):
+        return contents
+    assert len(contents) == 1 and len(contents[0].parts) == 1
+    return contents[0].parts[0].text
+
+
+def make_lessons(items: list[dict[str, Any]]) -> list[Lesson]:
+    """Занятия из JSON-описания во входных данных манифеста."""
+    return [
+        Lesson(
+            subject=i["subject"],
+            lesson_type=LessonType[i["lesson_type"]],
+            date=date.fromisoformat(i["date"]),
+            start_time=time.fromisoformat(i["start_time"]),
+            end_time=time.fromisoformat(i["end_time"]),
+            room=i["room"],
+            group=i["group"],
+        )
+        for i in items
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -122,3 +144,114 @@ async def test_secretary_prompt_matches_snapshot(memory_db: Database) -> None:
     await engine.answer_user_message(user_id=inputs["user_id"], message_text=inputs["message_text"])
 
     assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("secretary")
+
+
+async def test_intent_router_prompt_matches_snapshot(memory_db: Database) -> None:
+    from src.brain.intent_router import FastIntentRouter
+
+    inputs = prompt_inputs("intent_router")
+    router = FastIntentRouter(db=memory_db, api_key="x")
+    fake = FakeGeminiClient('{"action": "secretary"}')
+    router._client = fake
+
+    await router.route(user_id=inputs["user_id"], message_text=inputs["message_text"])
+
+    assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("intent_router")
+
+
+async def test_methodist_prompt_matches_snapshot(memory_db: Database) -> None:
+    from src.brain.methodist import MethodistService
+
+    inputs = prompt_inputs("methodist")
+    service = MethodistService(memory_db, api_key="x")
+    fake = FakeGeminiClient()
+    service._client = fake
+
+    await service.ask(inputs["question"])
+
+    assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("methodist")
+
+
+async def test_methodist_scope_check_prompt_matches_snapshot(memory_db: Database) -> None:
+    from src.brain.methodist import MethodistService
+
+    inputs = prompt_inputs("methodist_scope_check")
+    service = MethodistService(memory_db, api_key="x")
+    fake = FakeGeminiClient('{"is_in_scope": false, "category": "out_of_scope", "reason": "x"}')
+    service._client = fake
+
+    await service.check_scope(inputs["question"])
+
+    # вопрос без ключевых слов: проверка области обязана дойти до LLM
+    assert len(fake.calls) == 1
+    assert captured_contents(fake).encode("utf-8") == snapshot_bytes("methodist_scope_check")
+
+
+async def test_reply_generator_prompt_matches_snapshot() -> None:
+    from src.brain.reply_generator import ReplyGenerator
+
+    inputs = prompt_inputs("reply_generator")
+    generator = ReplyGenerator(api_key="x")
+    fake = FakeGeminiClient()
+    generator._client = fake
+
+    await generator.generate_reply(inputs["email_data"])
+
+    assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("reply_generator")
+
+
+async def test_debrief_call_matches_snapshot() -> None:
+    from src.brain.debrief_parser import DebriefParser
+
+    inputs = prompt_inputs("debrief_call")
+    parser = DebriefParser(api_key="x")
+    fake = FakeGeminiClient("{}")  # невалидный для схемы ответ: разбор уйдёт в детерминированный запасной путь
+    parser._client = fake
+
+    await parser.parse_debrief(inputs["transcript"], target_date=date.fromisoformat(inputs["target_date"]))
+
+    assert captured_contents(fake).encode("utf-8") == snapshot_bytes("debrief_call")
+
+
+def test_debrief_snapshot_has_no_trailing_newline_and_prefixes_call() -> None:
+    debrief = snapshot_bytes("debrief")
+    call = snapshot_bytes("debrief_call")
+    assert not debrief.endswith(b"\n")
+    assert call.startswith(debrief + b"\n\n")
+
+
+async def test_morning_brief_prompt_matches_snapshot() -> None:
+    from src.brain.summarizer import GeminiSummarizer
+
+    inputs = prompt_inputs("morning_brief")
+    summarizer = GeminiSummarizer(api_key="x")
+    fake = FakeGeminiClient()
+    summarizer._client = fake
+
+    await summarizer.generate_morning_brief(
+        target_date=date.fromisoformat(inputs["target_date"]),
+        lessons=make_lessons(inputs["lessons"]),
+        action_items=inputs["action_items"],
+        timesheet_pacing=inputs["timesheet_pacing"],
+    )
+
+    assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("morning_brief")
+
+
+async def test_evening_digest_prompt_matches_snapshot() -> None:
+    from src.brain.summarizer import GeminiSummarizer
+
+    inputs = prompt_inputs("evening_digest")
+    summarizer = GeminiSummarizer(api_key="x")
+    fake = FakeGeminiClient()
+    summarizer._client = fake
+
+    await summarizer.generate_evening_digest(
+        target_date=date.fromisoformat(inputs["target_date"]),
+        email_stats=inputs["email_stats"],
+        tomorrow_date=date.fromisoformat(inputs["tomorrow_date"]),
+        tomorrow_lessons=make_lessons(inputs["tomorrow_lessons"]),
+        action_items=inputs["action_items"],
+    )
+
+    assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("evening_digest")
