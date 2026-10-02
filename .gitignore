@@ -35,3 +35,7 @@ token.json
 *.swp
 *.swo
 .DS_Store
+
+# import-linter / grimp caches
+.import_linter_cache/
+.grimp_cache/

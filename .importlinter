@@ -1,0 +1,49 @@
+[importlinter]
+# src.connectors и src.sender - namespace-каталоги без __init__.py: без перечисления
+# их "порций" grimp не видит эти модули, и контракт молча проходит при реальных нарушениях.
+root_packages =
+    src
+    src.connectors
+    src.sender
+include_external_packages = False
+
+[importlinter:contract:brain-no-adapters]
+name = use-cases (brain) не импортируют адаптеры
+type = forbidden
+source_modules =
+    src.brain
+forbidden_modules =
+    src.connectors
+    src.calendar
+    src.parser
+    src.sender
+    src.collector
+    src.notifier
+# Считаются только прямые импорты: иначе цепочки через чужие модули
+# (bot_handler -> live_ticker -> connectors) тянут в Фазу 2 рефакторинг live_ticker.
+allow_indirect_imports = True
+ignore_imports =
+    # долг, только убывает: secretary_dialog.py:139, inline-импорт внутри функции, уберёт Фаза 2 (PRT-04)
+    src.brain.secretary_dialog -> src.connectors.aadhk.parser
+
+[importlinter:contract:bot-handler-no-adapters]
+name = bot_handler не импортирует адаптеры
+type = forbidden
+source_modules =
+    src.notifier.bot_handler
+forbidden_modules =
+    src.connectors
+    src.calendar
+    src.parser
+    src.sender
+    src.collector
+allow_indirect_imports = True
+ignore_imports =
+    # долг, только убывает: bot_handler.py:1052,1095,1144, inline-импорты внутри функций, уберёт Фаза 2 (PRT-04)
+    src.notifier.bot_handler -> src.connectors.aadhk.parser
+    # долг, только убывает: bot_handler.py:1143, inline-импорт внутри функции, уберёт Фаза 2 (PRT-04)
+    src.notifier.bot_handler -> src.connectors.gdrive.client
+    # долг, только убывает: bot_handler.py:23, top-level импорт, уберёт Фаза 2 (PRT-04)
+    src.notifier.bot_handler -> src.connectors.guap_lms.client
+    # долг, только убывает: bot_handler.py:22, top-level импорт, уберёт Фаза 2 (PRT-04)
+    src.notifier.bot_handler -> src.sender.email_sender
