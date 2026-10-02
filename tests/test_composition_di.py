@@ -7,6 +7,7 @@
 """
 
 import inspect
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,7 @@ import src.notifier.bot_handler as bot_module
 from src.core.domain.entities import ConnectorRole
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.notifier.bot_handler import EmailBotHandler
+from src.notifier.live_ticker import LiveTickerService
 from src.storage.db import Database
 
 PACING = {
@@ -554,3 +556,53 @@ async def test_bot_passes_timesheet_service_to_secretary(in_memory_db):
 def test_bot_handler_has_no_concrete_connector_names():
     for name in ("GuapLmsClient", "EmailSender", "AadhkIngestionService", "GoogleDriveClient"):
         assert not hasattr(bot_module, name), name
+
+
+# ---------------------------------------------------------------------------
+# Характеризация живой сводки (D-18): get_timesheet_metrics. Закоммичено ДО
+# правки live_ticker.py; патчится модуль-источник, поэтому тесты одинаково
+# работают с инлайн-импортом и с внедрением через composition.
+# ---------------------------------------------------------------------------
+
+LIVE_PACING = {
+    "worked_hours": 42.5,
+    "monthly_norm_hours": 170.0,
+    "morning_delta": 1.25,
+    "remaining_hours_to_norm": 127.5,
+    "latest_date_formatted": "02.03",
+}
+
+LIVE_FALLBACK = {
+    "worked_hours": 0.0,
+    "monthly_norm_hours": 0.0,
+    "morning_delta": 0.0,
+    "remaining_hours_to_norm": 0.0,
+    "latest_date_formatted": "н/д",
+}
+
+
+async def test_live_ticker_timesheet_characterization():
+    calls: list = []
+    fake = make_fake_aadhk(calls, pacing=LIVE_PACING)
+
+    with patch(TARGET, fake):
+        result = await LiveTickerService(db=MagicMock()).get_timesheet_metrics()
+
+    assert result == LIVE_PACING
+    assert method_calls(calls) == [("get_monthly_pacing", (), {"project_name": "Тидекс"})]
+
+
+async def test_live_ticker_timesheet_fallback_on_error(caplog):
+    class BrokenAadhk:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_monthly_pacing(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    with caplog.at_level(logging.WARNING):
+        with patch(TARGET, BrokenAadhk):
+            result = await LiveTickerService(db=MagicMock()).get_timesheet_metrics()
+
+    assert result == LIVE_FALLBACK
+    assert "LiveTicker: error fetching timesheet pacing" in caplog.text
