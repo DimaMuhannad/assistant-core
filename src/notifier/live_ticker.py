@@ -19,6 +19,8 @@ from typing import Any
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from src import config
+from src.composition import default_timesheet_service
+from src.core.ports.connectors import BaseTimesheetProvider
 from src.storage.db import Database
 from src.models.schedule import (
     SchedulePayload,
@@ -67,8 +69,9 @@ def build_ticker_keyboard(current_screen: str) -> InlineKeyboardMarkup:
 class LiveTickerService:
     """Orchestrates live telemetry gathering and Telegram ticker rendering."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, timesheet_service: BaseTimesheetProvider | None = None):
         self.db = db
+        self.timesheet_service = timesheet_service
 
     async def get_today_schedule(self, target_date: date) -> list[Lesson]:
         """Fetch parsed lessons for target_date from the latest GUAP schedule snapshot."""
@@ -112,8 +115,11 @@ class LiveTickerService:
     async def get_timesheet_metrics(self) -> dict[str, Any]:
         """Fetch AADHk Tydex work hour metrics."""
         try:
-            from src.connectors.aadhk.parser import AadhkIngestionService
-            service = AadhkIngestionService(self.db)
+            service = (
+                self.timesheet_service
+                if self.timesheet_service is not None
+                else default_timesheet_service(self.db)
+            )
             pacing = await service.get_monthly_pacing(project_name="Тидекс")
             return pacing
         except Exception as e:

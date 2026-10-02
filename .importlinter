@@ -19,8 +19,7 @@ forbidden_modules =
     src.sender
     src.collector
     src.notifier
-# Считаются только прямые импорты: иначе цепочки через чужие модули
-# (bot_handler -> live_ticker -> connectors) тянут в Фазу 2 рефакторинг live_ticker.
+# Считаются только прямые импорты: непрямые цепочки через src.composition осознанно разрешены (D-12).
 allow_indirect_imports = True
 ignore_imports =
 
@@ -37,6 +36,20 @@ forbidden_modules =
     src.collector
 # Непрямой импорт через src.composition осознанно разрешён (D-12): корень композиции
 # единственное место, знающее конкретные классы.
+allow_indirect_imports = True
+ignore_imports =
+
+[importlinter:contract:live-ticker-no-adapters]
+name = live_ticker не импортирует адаптеры
+type = forbidden
+source_modules =
+    src.notifier.live_ticker
+forbidden_modules =
+    src.connectors
+    src.calendar
+    src.parser
+    src.sender
+    src.collector
 allow_indirect_imports = True
 ignore_imports =
 

@@ -606,3 +606,41 @@ async def test_live_ticker_timesheet_fallback_on_error(caplog):
 
     assert result == LIVE_FALLBACK
     assert "LiveTicker: error fetching timesheet pacing" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# DI живой сводки (D-12, D-13).
+# ---------------------------------------------------------------------------
+
+
+class PacingProvider:
+    """Фейк-провайдер табеля: возвращает фиксированный словарь, пишет вызовы."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    async def get_monthly_pacing(self, *args, **kwargs):
+        self.calls.append(("get_monthly_pacing", args, kwargs))
+        return dict(LIVE_PACING)
+
+
+async def test_live_ticker_uses_injected_timesheet_service():
+    calls: list = []
+    provider = PacingProvider(calls)
+
+    with patch(TARGET, ForbiddenDefault):
+        result = await LiveTickerService(
+            db=MagicMock(), timesheet_service=provider
+        ).get_timesheet_metrics()
+
+    assert result == LIVE_PACING
+    assert calls == [("get_monthly_pacing", (), {"project_name": "Тидекс"})]
+
+
+async def test_bot_passes_timesheet_service_to_ticker(in_memory_db):
+    fake = RecordingTimesheetProvider([])
+    h = EmailBotHandler(
+        db=in_memory_db, allowed_user_id=123, timesheet_service=fake
+    )
+
+    assert h.ticker_service.timesheet_service is fake

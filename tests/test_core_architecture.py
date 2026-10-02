@@ -75,11 +75,16 @@ def test_use_case_contracts_not_weakened():
 
     brain = set(_lines(_contract("brain-no-adapters")["forbidden_modules"]))
     handler = set(_lines(_contract("bot-handler-no-adapters")["forbidden_modules"]))
+    ticker = set(_lines(_contract("live-ticker-no-adapters")["forbidden_modules"]))
     assert brain >= {
         "src.connectors", "src.calendar", "src.parser",
         "src.sender", "src.collector", "src.notifier",
     }
     assert handler >= {
+        "src.connectors", "src.calendar", "src.parser",
+        "src.sender", "src.collector",
+    }
+    assert ticker >= {
         "src.connectors", "src.calendar", "src.parser",
         "src.sender", "src.collector",
     }

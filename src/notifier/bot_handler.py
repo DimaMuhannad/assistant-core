@@ -81,7 +81,7 @@ class EmailBotHandler:
         self.secretary_dialog = self.dialog_engine
         self.voice_processor = VoiceProcessor()
         self.intent_router = FastIntentRouter(db=self.db)
-        self.ticker_service = LiveTickerService(db=self.db)
+        self.ticker_service = LiveTickerService(db=self.db, timesheet_service=self.timesheet_service)
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
