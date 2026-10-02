@@ -35,16 +35,10 @@ forbidden_modules =
     src.parser
     src.sender
     src.collector
+# Непрямой импорт через src.composition осознанно разрешён (D-12): корень композиции
+# единственное место, знающее конкретные классы.
 allow_indirect_imports = True
 ignore_imports =
-    # долг, только убывает: bot_handler.py:1052,1095,1144, inline-импорты внутри функций, уберёт Фаза 2 (PRT-04)
-    src.notifier.bot_handler -> src.connectors.aadhk.parser
-    # долг, только убывает: bot_handler.py:1143, inline-импорт внутри функции, уберёт Фаза 2 (PRT-04)
-    src.notifier.bot_handler -> src.connectors.gdrive.client
-    # долг, только убывает: bot_handler.py:23, top-level импорт, уберёт Фаза 2 (PRT-04)
-    src.notifier.bot_handler -> src.connectors.guap_lms.client
-    # долг, только убывает: bot_handler.py:22, top-level импорт, уберёт Фаза 2 (PRT-04)
-    src.notifier.bot_handler -> src.sender.email_sender
 
 # Ядро импортирует только stdlib и src.core.* (D-01): список запретов = все прочие модули
 # верхнего уровня src; полноту списка проверяет tests/test_core_architecture.py.

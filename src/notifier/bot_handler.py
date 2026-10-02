@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone, date
 from typing import Any
 
@@ -19,8 +20,14 @@ from src.brain.summarizer import GeminiSummarizer
 from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.brain.voice import VoiceProcessor
 from src.brain.intent_router import FastIntentRouter
-from src.sender.email_sender import EmailSender
-from src.connectors.guap_lms.client import GuapLmsClient
+from src.composition import (
+    default_drive_client,
+    default_email_sender,
+    default_lms_client,
+    default_timesheet_service,
+)
+from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
+from src.core.ports.connectors import BaseTimesheetProvider
 from src.notifier.live_ticker import LiveTickerService
 from src.notifier.telegram import (
     TelegramNotifier,
@@ -41,19 +48,25 @@ class EmailBotHandler:
         self,
         db: Database,
         reply_generator: ReplyGenerator | None = None,
-        email_sender: EmailSender | None = None,
+        email_sender: EmailSenderLike | None = None,
         notifier: TelegramNotifier | None = None,
         bot: Bot | None = None,
         allowed_user_id: int | str | None = None,
         summarizer: GeminiSummarizer | None = None,
-        lms_client: GuapLmsClient | None = None,
+        lms_client: LmsClientLike | None = None,
+        timesheet_service: BaseTimesheetProvider | None = None,
+        drive_client_factory: Callable[[], DriveClientLike] | None = None,
     ):
         self.db = db
         self.reply_generator = reply_generator or ReplyGenerator()
-        self.email_sender = email_sender or EmailSender()
+        self.email_sender = email_sender or default_email_sender()
         self.notifier = notifier
         self.allowed_user_id = int(allowed_user_id) if allowed_user_id else None
-        self.lms_client = lms_client or GuapLmsClient()
+        self.lms_client = lms_client or default_lms_client()
+        self.timesheet_service = timesheet_service
+        self.drive_client_factory = (
+            drive_client_factory if drive_client_factory is not None else default_drive_client
+        )
         self.bot = bot or getattr(notifier, "_shared_bot", None)
         if not self.bot:
             token = getattr(notifier, "bot_token", "")
@@ -64,7 +77,7 @@ class EmailBotHandler:
                     logger.warning("Could not initialize Bot with token: %s", e)
                     self.bot = None
         self.summarizer = summarizer or GeminiSummarizer()
-        self.dialog_engine = SecretaryDialogEngine(db=self.db)
+        self.dialog_engine = SecretaryDialogEngine(db=self.db, timesheet_service=self.timesheet_service)
         self.secretary_dialog = self.dialog_engine
         self.voice_processor = VoiceProcessor()
         self.intent_router = FastIntentRouter(db=self.db)
@@ -77,6 +90,12 @@ class EmailBotHandler:
         self.session_messages: dict[int, set[int]] = {}
 
         self._register_handlers()
+
+    def _timesheet(self) -> BaseTimesheetProvider:
+        """Сервис табеля: внедрённый или собранный по умолчанию на каждый вызов."""
+        if self.timesheet_service is not None:
+            return self.timesheet_service
+        return default_timesheet_service(self.db)
 
     def _is_authorized(self, user_id: int) -> bool:
         if self.allowed_user_id is None:
@@ -1049,9 +1068,7 @@ class EmailBotHandler:
             fname_lower = dest_filename.lower()
             if fname_lower.endswith(".db") or "aadhk" in fname_lower or "time" in fname_lower:
                 try:
-                    from src.connectors.aadhk.parser import AadhkIngestionService
-                    ingestion = AadhkIngestionService(self.db)
-                    res = await ingestion.ingest_backup_file(dest_path)
+                    res = await self._timesheet().ingest_backup_file(dest_path)
                     if res["parsed_count"] > 0:
                         msg_parts.append("\n⏱️ **Учет времени AADHk («Тидекс») успешно импортирован:**")
                         msg_parts.append(f"• Распознано смен: **{res['parsed_count']}** (новых: {res['new_inserted_count']})")
@@ -1092,9 +1109,7 @@ class EmailBotHandler:
         if not self._is_authorized(message.from_user.id):
             return
 
-        from src.connectors.aadhk.parser import AadhkIngestionService
-
-        service = AadhkIngestionService(self.db)
+        service = self._timesheet()
         await service.reconcile_all_conflicts()
         pacing = await service.get_monthly_pacing(project_name="Тидекс")
 
@@ -1140,10 +1155,7 @@ class EmailBotHandler:
             return
 
         await callback.answer("Синхронизация с Google Drive...")
-        from src.connectors.gdrive.client import GoogleDriveClient
-        from src.connectors.aadhk.parser import AadhkIngestionService
-
-        client = GoogleDriveClient()
+        client = self.drive_client_factory()
         if not client.is_configured:
             await callback.message.answer("❌ Google Drive не настроен или отсутствует токен.")
             return
@@ -1153,7 +1165,7 @@ class EmailBotHandler:
             await callback.message.answer(f"⚠️ Ошибка синхронизации: {sync_res.get('message', 'Файл не найден на Google Диске')}")
             return
 
-        service = AadhkIngestionService(self.db)
+        service = self._timesheet()
         await service.reconcile_all_conflicts()
         summary = await self.db.get_timesheet_summary(project_name="Тидекс")
         conflicts = await self.db.get_timesheet_conflicts(limit=5)

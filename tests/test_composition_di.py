@@ -14,6 +14,8 @@ import pytest
 
 from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.composition import default_timesheet_service
+import src.composition
+import src.notifier.bot_handler as bot_module
 from src.core.domain.entities import ConnectorRole
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.notifier.bot_handler import EmailBotHandler
@@ -407,3 +409,148 @@ async def test_document_aadhk_branch_swallows_errors(in_memory_db):
     msg.answer.assert_called_once_with("📄 **Файл сохранен:** `synthetic_backup.db` (2.0 KB)")
     assert method_calls(calls) == [("ingest_backup_file", (UPLOAD_PATH,), {})]
     assert not Path(UPLOAD_PATH).exists()
+
+
+# ---------------------------------------------------------------------------
+# DI бота: зависимости приходят через конструктор, значения по умолчанию
+# собирает src.composition (D-11, D-12, D-13).
+# ---------------------------------------------------------------------------
+
+
+class ForbiddenDefault:
+    """Подмена конкретного класса: любое создание значения по умолчанию - ошибка."""
+
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("значение по умолчанию не должно создаваться")
+
+
+class RecordingTimesheetProvider:
+    def __init__(self, calls, ingest_result=None):
+        self.calls = calls
+        self.ingest_result = ingest_result
+
+    async def ingest_backup_file(self, *args, **kwargs):
+        self.calls.append(("ingest_backup_file", args, kwargs))
+        return self.ingest_result
+
+    async def reconcile_all_conflicts(self, *args, **kwargs):
+        self.calls.append(("reconcile_all_conflicts", args, kwargs))
+
+
+async def test_bot_uses_injected_timesheet_service(in_memory_db):
+    calls: list = []
+    drives: list = []
+    ingest_result = {
+        "parsed_count": 3,
+        "new_inserted_count": 2,
+        "total_hours": 12.5,
+        "by_task": {"Синтетика": 12.5},
+        "conflicts_count": 1,
+    }
+    provider = RecordingTimesheetProvider(calls, ingest_result=ingest_result)
+    sync_result = {
+        "status": "success",
+        "file_name": "synthetic.db",
+        "ingestion_result": {"new_inserted_count": 2},
+    }
+    bot = make_document_bot()
+    handler = EmailBotHandler(
+        db=in_memory_db,
+        allowed_user_id=OWNER_ID,
+        bot=bot,
+        timesheet_service=provider,
+        drive_client_factory=make_fake_drive(drives, sync_result=sync_result),
+    )
+    msg = make_document_message()
+    cb = make_callback()
+    summary_mock = AsyncMock(
+        return_value={"total_hours": 10.0, "clean_hours": 9.5, "total_amount": 12345.0}
+    )
+    conflicts_mock = AsyncMock(
+        return_value=[{"start_time": "2026-03-02T10:00:00", "conflict_details": "пара 2"}]
+    )
+
+    with patch(TARGET, ForbiddenDefault), patch(DRIVE_TARGET, ForbiddenDefault), patch.object(
+        in_memory_db, "get_timesheet_summary", summary_mock
+    ), patch.object(in_memory_db, "get_timesheet_conflicts", conflicts_mock):
+        await handler.handle_user_document(msg)
+        await handler.cb_timesheet_sync(cb)
+
+    msg.answer.assert_called_once_with(
+        "📄 **Файл сохранен:** `synthetic_backup.db` (2.0 KB)\n"
+        "\n"
+        "⏱️ **Учет времени AADHk («Тидекс») успешно импортирован:**\n"
+        "• Распознано смен: **3** (новых: 2)\n"
+        "• Суммарное время: **12.5 ч.**\n"
+        "• **По задачам:**\n"
+        "  — Синтетика: 12.5 ч.\n"
+        "\n"
+        "⚠️ **Обнаружены коллизии с расписанием ГУАП:** 1 шт."
+    )
+    cb.message.answer.assert_called_once_with(
+        "🔄 **Синхронизация с Google Drive завершена!**\n"
+        "\n"
+        "• Файл: `synthetic.db`\n"
+        "• Новых смен добавлено: `2`\n"
+        "• Всего отработано: `10.00` ч\n"
+        "• Чистые часы: `9.50` ч\n"
+        "• Начислено: `12,345.00` ₽\n"
+        "\n"
+        "⚠️ **Наложения на пары ГУАП (1):**\n"
+        "• `2026-03-02 10:00`: пара 2"
+    )
+    assert calls == [
+        ("ingest_backup_file", (UPLOAD_PATH,), {}),
+        ("reconcile_all_conflicts", (), {}),
+    ]
+    assert drives[0].synced_db is in_memory_db
+
+
+async def test_bot_uses_injected_drive_client_factory(in_memory_db):
+    factory_calls: list = []
+    drives: list = []
+    fake_cls = make_fake_drive(drives, configured=False)
+
+    def factory():
+        factory_calls.append(1)
+        return fake_cls()
+
+    handler = EmailBotHandler(
+        db=in_memory_db,
+        allowed_user_id=OWNER_ID,
+        bot=MagicMock(),
+        drive_client_factory=factory,
+    )
+    cb1, cb2 = make_callback(), make_callback()
+
+    with patch(DRIVE_TARGET, ForbiddenDefault):
+        await handler.cb_timesheet_sync(cb1)
+        await handler.cb_timesheet_sync(cb2)
+
+    cb1.message.answer.assert_called_once_with("❌ Google Drive не настроен или отсутствует токен.")
+    cb2.message.answer.assert_called_once_with("❌ Google Drive не настроен или отсутствует токен.")
+    assert len(factory_calls) == 2
+    assert len(drives) == 2
+
+
+async def test_bot_defaults_come_from_composition(in_memory_db):
+    h = EmailBotHandler(db=in_memory_db, allowed_user_id=123)
+
+    assert type(h.lms_client).__name__ == "GuapLmsClient"
+    assert type(h.email_sender).__name__ == "EmailSender"
+    assert h.drive_client_factory is src.composition.default_drive_client
+    assert h.timesheet_service is None
+
+
+async def test_bot_passes_timesheet_service_to_secretary(in_memory_db):
+    fake = RecordingTimesheetProvider([])
+    h = EmailBotHandler(
+        db=in_memory_db, allowed_user_id=OWNER_ID, bot=MagicMock(), timesheet_service=fake
+    )
+
+    assert h.dialog_engine.timesheet_service is fake
+
+
+def test_bot_handler_has_no_concrete_connector_names():
+    for name in ("GuapLmsClient", "EmailSender", "AadhkIngestionService", "GoogleDriveClient"):
+        assert not hasattr(bot_module, name), name

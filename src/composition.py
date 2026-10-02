@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
 from src.core.ports.connectors import BaseTimesheetProvider
 
 
@@ -18,3 +19,24 @@ def default_timesheet_service(db: Any) -> BaseTimesheetProvider:
     from src.connectors.aadhk.provider import AadhkTimesheetProvider
 
     return AadhkTimesheetProvider(AadhkIngestionService(db))
+
+
+def default_lms_client() -> LmsClientLike:
+    """Собрать клиент личного кабинета по умолчанию."""
+    from src.connectors.guap_lms.client import GuapLmsClient
+
+    return GuapLmsClient()
+
+
+def default_email_sender() -> EmailSenderLike:
+    """Собрать отправщик почты по умолчанию."""
+    from src.sender.email_sender import EmailSender
+
+    return EmailSender()
+
+
+def default_drive_client() -> DriveClientLike:
+    """Собрать клиент Google Drive по умолчанию (новый экземпляр на каждый вызов)."""
+    from src.connectors.gdrive.client import GoogleDriveClient
+
+    return GoogleDriveClient()

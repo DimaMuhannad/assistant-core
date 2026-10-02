@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.test_architecture_contract import _contracts, _lines, _read_real_config
+from tests.test_architecture_contract import _contracts, _ignored_pairs, _lines, _read_real_config
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -83,3 +83,11 @@ def test_use_case_contracts_not_weakened():
         "src.connectors", "src.calendar", "src.parser",
         "src.sender", "src.collector",
     }
+
+
+def test_ignore_imports_debt_is_zero():
+    """D-15: ни один контракт реального конфига не прячет импорты в ignore_imports."""
+    contracts = _contracts(_read_real_config())
+    assert contracts, "в конфиге нет контрактов"
+    debt = {c.name: _ignored_pairs(c) for c in contracts if _ignored_pairs(c)}
+    assert not debt, f"осталась запись ignore_imports: {debt}"
