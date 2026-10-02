@@ -1,0 +1,13 @@
+persona:
+  id: popov-da-default
+  display_name: Попов Дмитрий Александрович
+  short_name: Попов Д.А.
+  title: доцент кафедры физики, к.ф.-м.н.
+  organizations:
+    university:
+      name: ГУАП
+      aliases: ["GUAP"]
+    company:
+      name: Тидекс
+      aliases: ["Tydex"]
+  default_area: ГУАП

@@ -405,6 +405,42 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_methodist_qa_caller ON methodist_qa_memory(caller_type);
                 CREATE INDEX IF NOT EXISTS idx_methodist_toc_doc ON methodist_toc_index(doc_id);
                 CREATE INDEX IF NOT EXISTS idx_methodist_toc_cat ON methodist_toc_index(category);
+
+                CREATE TABLE IF NOT EXISTS personas (
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    clearance TEXT NOT NULL CHECK (clearance IN ('public', 'internal', 'restricted_nda')),
+                    account TEXT NOT NULL DEFAULT '',
+                    clearance_label TEXT NOT NULL DEFAULT '',
+                    color TEXT,
+                    remote TEXT,
+                    forbidden_remote_substrings TEXT NOT NULL DEFAULT '[]',
+                    forbidden_keywords TEXT NOT NULL DEFAULT '[]',
+                    remote_violation_message TEXT,
+                    PRIMARY KEY (persona_id, id)
+                );
+
+                CREATE TABLE IF NOT EXISTS connector_bindings (
+                    id TEXT PRIMARY KEY,
+                    persona_id TEXT NOT NULL REFERENCES personas(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK (role IN ('schedule_source', 'calendar_sync', 'timesheet', 'lms', 'git_source', 'notion')),
+                    provider TEXT NOT NULL,
+                    scopes TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_connector_bindings_persona_role ON connector_bindings(persona_id, role, position);
                 """
             )
             await conn.commit()
@@ -483,6 +519,122 @@ class Database:
                     """
                 )
                 await conn.commit()
+
+    async def upsert_persona(
+        self,
+        persona_id: str,
+        display_name: str,
+        config_json: str,
+        workspaces: list[dict[str, Any]],
+        bindings: list[dict[str, Any]],
+    ) -> None:
+        """Идемпотентно заменить строки персоны одной транзакцией (откат при сбое)."""
+        now = datetime.now(timezone.utc).isoformat()
+        dumps = lambda value: json.dumps(value, ensure_ascii=False)  # noqa: E731
+        async with self.connection() as conn:
+            try:
+                await conn.execute("BEGIN")
+                await conn.execute(
+                    """
+                    INSERT INTO personas (id, display_name, config_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        config_json = excluded.config_json,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (persona_id, display_name, config_json, now, now),
+                )
+                await conn.execute("DELETE FROM workspaces WHERE persona_id = ?", (persona_id,))
+                await conn.execute("DELETE FROM connector_bindings WHERE persona_id = ?", (persona_id,))
+                for ws in workspaces:
+                    await conn.execute(
+                        """
+                        INSERT INTO workspaces (
+                            persona_id, id, position, label, path, clearance, account,
+                            clearance_label, color, remote, forbidden_remote_substrings,
+                            forbidden_keywords, remote_violation_message
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            persona_id,
+                            ws["id"],
+                            ws["position"],
+                            ws["label"],
+                            ws["path"],
+                            ws["clearance"],
+                            ws.get("account", ""),
+                            ws.get("clearance_label", ""),
+                            ws.get("color"),
+                            ws.get("remote"),
+                            dumps(ws.get("forbidden_remote_substrings", [])),
+                            dumps(ws.get("forbidden_keywords", [])),
+                            ws.get("remote_violation_message"),
+                        ),
+                    )
+                for binding in bindings:
+                    await conn.execute(
+                        """
+                        INSERT INTO connector_bindings (
+                            id, persona_id, role, provider, scopes, config_json, position
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"{persona_id}/{binding['role']}/{binding['binding_id']}",
+                            persona_id,
+                            binding["role"],
+                            binding["provider"],
+                            dumps(binding.get("scopes", [])),
+                            dumps(binding.get("config", {})),
+                            binding.get("position", 0),
+                        ),
+                    )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+
+    async def get_persona_record(self, persona_id: str) -> dict[str, Any] | None:
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT id, display_name, config_json, created_at, updated_at FROM personas WHERE id = ?",
+                (persona_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def list_persona_workspaces(self, persona_id: str) -> list[dict[str, Any]]:
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM workspaces WHERE persona_id = ? ORDER BY position",
+                (persona_id,),
+            )
+            result = []
+            for row in await cursor.fetchall():
+                item = dict(row)
+                for key in ("forbidden_remote_substrings", "forbidden_keywords"):
+                    item[key] = json.loads(item[key])
+                result.append(item)
+            return result
+
+    async def list_connector_bindings(
+        self, persona_id: str, role: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM connector_bindings WHERE persona_id = ?"
+        params: list[Any] = [persona_id]
+        if role is not None:
+            query += " AND role = ?"
+            params.append(role)
+        query += " ORDER BY role, position"
+        async with self.connection() as conn:
+            cursor = await conn.execute(query, params)
+            result = []
+            for row in await cursor.fetchall():
+                item = dict(row)
+                item["scopes"] = json.loads(item["scopes"])
+                item["config"] = json.loads(item.pop("config_json"))
+                result.append(item)
+            return result
 
     async def upsert_monitored_source(
         self,

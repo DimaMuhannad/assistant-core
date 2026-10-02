@@ -74,5 +74,29 @@ forbidden_modules =
     src.detector
     src.config
     src.composition
+    src.persona
+allow_indirect_imports = True
+ignore_imports =
+
+# Пакет персоны не импортирует src.config: тот делает load_dotenv с override и подмешивает
+# боевое окружение (Pitfall 12). Разрешены src.core и src.storage: seed пишет через Database.
+[importlinter:contract:persona-is-leaf]
+name = персона (src.persona) не зависит от config, адаптеров, use-cases и корня композиции
+type = forbidden
+source_modules =
+    src.persona
+forbidden_modules =
+    src.config
+    src.main
+    src.composition
+    src.brain
+    src.notifier
+    src.connectors
+    src.calendar
+    src.parser
+    src.sender
+    src.collector
+    src.detector
+    src.models
 allow_indirect_imports = True
 ignore_imports =
