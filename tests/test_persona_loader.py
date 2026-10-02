@@ -83,3 +83,65 @@ def test_missing_root_key_rejected(tmp_path):
     no_root.write_text("id: tmp-persona\ndisplay_name: X\n", encoding="utf-8")
     with pytest.raises(PersonaConfigError):
         load_persona(no_root)
+
+
+def _nda_workspace(extra: str = "") -> str:
+    return (
+        "  workspaces:\n"
+        "    - id: corp\n"
+        "      label: Корп\n"
+        "      path: /tmp/corp\n"
+        "      clearance: restricted_nda\n"
+        f"{extra}"
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",
+        '      forbidden_remote_substrings: ["example.invalid/x"]\n',
+        '      forbidden_keywords: ["marker-x"]\n',
+        '      forbidden_remote_substrings: []\n      forbidden_keywords: ["marker-x"]\n',
+    ],
+)
+def test_restricted_nda_requires_rules(tmp_path, extra):
+    bad = _write_persona(tmp_path / "bad.yaml", extra=_nda_workspace(extra))
+    with pytest.raises(PersonaConfigError) as excinfo:
+        load_persona(bad)
+    text = str(excinfo.value)
+    assert "без правил NDA" in text
+    assert "marker-x" not in text
+
+
+def test_restricted_nda_with_both_rule_lists_is_accepted_and_public_needs_none(tmp_path):
+    rules = (
+        '      forbidden_remote_substrings: ["example.invalid/x"]\n'
+        '      forbidden_keywords: ["marker-x"]\n'
+        "    - id: open\n"
+        "      label: Открытое\n"
+        "      path: /tmp/open\n"
+        "      clearance: public\n"
+    )
+    ok = _write_persona(tmp_path / "ok.yaml", extra=_nda_workspace(rules))
+    assert [w.clearance for w in load_persona(ok).workspaces] == ["restricted_nda", "public"]
+
+
+def test_workspace_ids_unique(tmp_path):
+    twice = (
+        "  workspaces:\n"
+        "    - {id: same, label: A, path: /tmp/a, clearance: public}\n"
+        "    - {id: same, label: B, path: /tmp/b, clearance: internal}\n"
+    )
+    with pytest.raises(PersonaConfigError):
+        load_persona(_write_persona(tmp_path / "dup.yaml", extra=twice))
+
+
+def test_clearance_values_match_domain_enum():
+    from typing import get_args
+
+    from src.core.domain.entities import WorkspaceClearance
+    from src.persona.models import WorkspaceConfig
+
+    literal = set(get_args(WorkspaceConfig.model_fields["clearance"].annotation))
+    assert literal == {c.value for c in WorkspaceClearance}

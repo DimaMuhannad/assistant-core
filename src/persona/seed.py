@@ -19,8 +19,11 @@ LIVE_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "assistant.db"
 
 
 def persona_rows(persona: PersonaConfig) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Строки workspaces и connector_bindings; наполнение приходит в плане 03-03."""
-    return [], []
+    """Строки workspaces (position = индекс) и connector_bindings; привязки - в задаче 2."""
+    workspaces = [
+        {**ws.model_dump(), "position": index} for index, ws in enumerate(persona.workspaces)
+    ]
+    return workspaces, []
 
 
 async def seed_persona(db: Database, persona: PersonaConfig) -> dict[str, int]:

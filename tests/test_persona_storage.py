@@ -142,3 +142,26 @@ def test_seed_cli_uses_persona_config_argument(tmp_path):
     check = Database(str(path))
     assert asyncio.run(check.get_persona_record("tmp-persona")) is not None
     assert asyncio.run(check.get_persona_record("popov-da-default")) is None
+
+
+async def test_seed_writes_workspaces_in_order(db):
+    from src.persona.loader import load_persona
+    from src.persona.seed import persona_rows, seed_persona
+
+    persona = load_persona()
+    expected_nda = next(ws for ws in persona.workspaces if ws.clearance == "restricted_nda")
+    workspace_rows, binding_rows = persona_rows(persona)
+    assert [row["position"] for row in workspace_rows] == [0, 1, 2, 3]
+    assert binding_rows == []
+
+    await seed_persona(db, persona)
+    rows = await db.list_persona_workspaces(persona.id)
+    assert [r["id"] for r in rows] == ["chat-app", "assistant-core", "tydex-optics", "guap-physics"]
+    assert [r["clearance"] for r in rows] == ["public", "public", "restricted_nda", "internal"]
+    nda_row = rows[2]
+    # слова в assert напрямую не сравниваются: pytest напечатал бы их при провале
+    assert len(nda_row["forbidden_keywords"]) == len(expected_nda.forbidden_keywords) > 0
+    same = nda_row["forbidden_keywords"] == expected_nda.forbidden_keywords
+    assert same, "слова NDA в БД и в данных расходятся"
+    assert nda_row["forbidden_remote_substrings"] == expected_nda.forbidden_remote_substrings
+    assert all(rows[i]["forbidden_keywords"] == [] for i in (0, 1, 3))

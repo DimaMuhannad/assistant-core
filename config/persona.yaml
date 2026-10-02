@@ -11,3 +11,35 @@ persona:
       name: Тидекс
       aliases: ["Tydex"]
   default_area: ГУАП
+  workspaces:
+    - id: chat-app
+      label: "🤖 Antigravity Web Studio (chat-app)"
+      path: /opt/chat-app
+      account: "DimaMuhannad (Personal / Academic)"
+      clearance: public
+      clearance_label: "🌐 Public / Open Source"
+      color: blue
+    - id: assistant-core
+      label: "⚙️ Assistant Core Daemon"
+      path: /opt/assistant-core
+      account: "DimaMuhannad (Personal / Academic)"
+      clearance: public
+      clearance_label: "🌐 Public / Academic"
+      color: green
+    - id: tydex-optics
+      label: "🔬 Оптические приборы и измерения (ООО «Тидекс»)"
+      path: /opt/work-tydex
+      account: "ООО «Тидекс» (Corporate Organization)"
+      clearance: restricted_nda
+      clearance_label: "🔴 Restricted NDA / Air-gap"
+      color: red
+      forbidden_remote_substrings: ["github.com/DimaMuhannad"]
+      forbidden_keywords: ["tydex_internal_secret", "golay_calibration_key", "thz_proprietary_firmware"]
+      remote_violation_message: "CRITICAL: Проект Тидекс скомпрометирован: remote указывает на личный публичный аккаунт!"
+    - id: guap-physics
+      label: "🏛️ Кафедра физики ГУАП (Лабораторные и LMS)"
+      path: /opt/personal/guap-physics
+      account: "DimaMuhannad (ГУАП)"
+      clearance: internal
+      clearance_label: "🟡 Internal Academic"
+      color: yellow
