@@ -9,6 +9,8 @@ inspect.iscoroutinefunction по каждому методу порта (isinsta
 
 import inspect
 import socket
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Generic, Protocol
 from unittest.mock import MagicMock
@@ -19,14 +21,20 @@ from src.calendar.client import GoogleCalendarClient
 from src.calendar.provider import GoogleCalendarSink
 from src.connectors.aadhk.parser import AadhkIngestionService
 from src.connectors.aadhk.provider import AadhkTimesheetProvider
-from src.core.domain.entities import ConnectorRole
+from src.connectors.gdrive.client import GoogleDriveClient
+from src.connectors.guap_lms.client import GuapLmsClient
+from src.connectors.guap_lms.provider import GuapLmsProvider, _parse_deadline
+from src.core.domain.entities import AcademicSubmission, ConnectorRole
+from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
 from src.core.ports.connectors import (
     BaseCalendarSink,
+    BaseLMSProvider,
     BaseScheduleProvider,
     BaseTimesheetProvider,
 )
 from src.parser.provider import ScheduleParserSource
 from src.parser.schedule_parser import ScheduleParser
+from src.sender.email_sender import EmailSender
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 
@@ -62,6 +70,11 @@ def _pairs() -> list:
             BaseTimesheetProvider,
             lambda: AadhkTimesheetProvider(AadhkIngestionService(MagicMock())),
             id="timesheet",
+        ),
+        pytest.param(
+            BaseLMSProvider,
+            lambda: GuapLmsProvider(GuapLmsClient(email="", password="")),
+            id="lms",
         ),
     ]
 
@@ -111,6 +124,7 @@ def test_adapter_roles_and_ids():
             ConnectorRole.TIMESHEET,
             ("timesheet.read", "timesheet.write"),
         ),
+        GuapLmsProvider: ("lms_portal", ConnectorRole.LMS, ("lms.read", "lms.write")),
     }
     for cls, (connector_id, role, scopes) in expected.items():
         assert cls.connector_id == connector_id
@@ -127,6 +141,9 @@ def test_adapter_roles_and_ids():
         pytest.param(lambda: GoogleCalendarSink(GoogleCalendarClient(dry_run=True)), False, id="calendar"),
         pytest.param(
             lambda: AadhkTimesheetProvider(AadhkIngestionService(MagicMock())), True, id="timesheet"
+        ),
+        pytest.param(
+            lambda: GuapLmsProvider(GuapLmsClient(email="", password="")), False, id="lms"
         ),
     ],
 )
@@ -146,6 +163,7 @@ async def test_health_check_is_offline(monkeypatch, make, expected):
         "parser/provider.py",
         "calendar/provider.py",
         "connectors/aadhk/provider.py",
+        "connectors/guap_lms/provider.py",
     ],
 )
 def test_adapters_do_not_duplicate_profile_defaults(relative):
@@ -153,3 +171,108 @@ def test_adapters_do_not_duplicate_profile_defaults(relative):
 
     for forbidden in ("Тидекс", "8.5", "= 28", "Отчет по лабораторной"):
         assert forbidden not in text, f"{relative}: дефолт профиля {forbidden!r}"
+
+
+LMS_CLIENT_METHODS = (
+    "list_tasks",
+    "get_task_details",
+    "create_task",
+    "delete_task",
+    "set_task_visibility",
+    "get_disciplines",
+)
+
+
+def test_lms_confirmation_markers():
+    expected = frozenset({"submit_grade", "delete_task"})
+    methods = _port_methods(BaseLMSProvider)
+
+    assert BaseLMSProvider.REQUIRES_CONFIRMATION == expected
+    assert GuapLmsProvider.REQUIRES_CONFIRMATION == expected
+    assert GuapLmsProvider(MagicMock()).REQUIRES_CONFIRMATION == expected
+    assert expected <= set(methods)
+
+
+async def test_lms_submit_grade_not_implemented():
+    client = MagicMock()
+    provider = GuapLmsProvider(client)
+
+    with pytest.raises(NotImplementedError):
+        await provider.submit_grade("1", 5)
+
+    assert client.mock_calls == []
+
+
+async def test_lms_list_tasks_maps_to_academic_submission():
+    client = MagicMock()
+    client.list_tasks.return_value = [
+        {"id": 101, "title": "Синтетика 1", "deadline": "15.10.2026", "is_public": True},
+        {"id": "102", "title": "Синтетика 2", "deadline": "", "is_public": False},
+    ]
+    provider = GuapLmsProvider(client)
+
+    result = await provider.list_tasks(28)
+
+    assert result == [
+        AcademicSubmission("101", "Синтетика 1", datetime(2026, 10, 15), True),
+        AcademicSubmission("102", "Синтетика 2", None, False),
+    ]
+    client.list_tasks.assert_called_once_with(28)
+
+
+def test_lms_deadline_parsing_tolerant():
+    assert _parse_deadline("15.10.2026") == datetime(2026, 10, 15)
+    for bad in ("2026-10-15", "", None, "31.02.2026"):
+        assert _parse_deadline(bad) is None
+
+
+async def test_lms_delete_task_runs_in_thread_and_forwards_args():
+    calls: list[tuple] = []
+    threads: list[int] = []
+
+    class FakeClient:
+        is_configured = True
+
+        def delete_task(self, *args):
+            threads.append(threading.get_ident())
+            calls.append(args)
+            return True
+
+    provider = GuapLmsProvider(FakeClient())
+
+    assert await provider.delete_task(7, 28) is True
+    assert await provider.delete_task(7) is True
+
+    assert calls == [(7, 28), (7,)]
+    assert all(t != threading.get_ident() for t in threads)
+
+
+async def test_existing_clients_match_di_protocols(tmp_path):
+    lms = GuapLmsClient(email="", password="")
+    assert isinstance(lms, LmsClientLike)
+    for name in LMS_CLIENT_METHODS:
+        assert not inspect.iscoroutinefunction(getattr(lms, name)), name
+
+    sender = EmailSender()
+    assert isinstance(sender, EmailSenderLike)
+    assert inspect.iscoroutinefunction(sender.send_reply)
+
+    drive = GoogleDriveClient(
+        token_path=tmp_path / "absent-token.json",
+        credentials_path=tmp_path / "absent-creds.json",
+    )
+    assert isinstance(drive, DriveClientLike)
+    assert inspect.iscoroutinefunction(drive.sync_aadhk_from_drive)
+
+
+def test_lms_provider_not_wired_into_production():
+    files = [
+        *sorted((SRC / "notifier").glob("*.py")),
+        *sorted((SRC / "brain").glob("*.py")),
+        SRC / "main.py",
+        SRC / "composition.py",
+    ]
+
+    assert files
+    for path in files:
+        assert "GuapLmsProvider" not in path.read_text(encoding="utf-8"), path.name

@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from src.core.domain.entities import ConnectorRole
+from src.core.domain.entities import AcademicSubmission, ConnectorRole
 
 
 @runtime_checkable
@@ -126,4 +126,57 @@ class BaseCalendarSink(BaseConnector, Protocol):
 
     async def sync_schedule(self, calendar_id: str, diff: Any, db: Any) -> dict[str, int]:
         """Применить разницу расписания к календарю и вернуть счётчики."""
+        ...
+
+
+@runtime_checkable
+class BaseLMSProvider(BaseConnector, Protocol):
+    """Порт личного кабинета: учебные задания и их публикация.
+
+    REQUIRES_CONFIRMATION перечисляет операции, которые нельзя выполнять без
+    подтверждения человека. Пометка пока только декларативна: механизм
+    подтверждения появится позже, а текущий HITL-диалог удаления в боте
+    остаётся единственным путём удаления задания.
+    """
+
+    role: ClassVar[ConnectorRole] = ConnectorRole.LMS
+    REQUIRES_CONFIRMATION: ClassVar[frozenset[str]] = frozenset({"submit_grade", "delete_task"})
+
+    async def list_tasks(self, semester: int | str = ...) -> list[AcademicSubmission]:
+        """Список заданий семестра в виде доменных сущностей."""
+        ...
+
+    async def get_task_details(self, task_id: int | str) -> dict[str, Any]:
+        """Подробности задания."""
+        ...
+
+    async def create_task(
+        self,
+        name: str,
+        subject_id: str | int,
+        group_ids: list[str | int],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Создать задание; значения по умолчанию задаёт реализация."""
+        ...
+
+    async def delete_task(self, task_id: int | str, semester_id: int | str = ...) -> bool:
+        """Удалить задание (требует подтверждения)."""
+        ...
+
+    async def set_task_visibility(
+        self,
+        task_id: int | str,
+        is_public: bool,
+        semester_id: int | str = ...,
+    ) -> bool:
+        """Опубликовать задание или скрыть его от студентов."""
+        ...
+
+    async def get_disciplines(self) -> list[dict[str, Any]]:
+        """Список дисциплин преподавателя."""
+        ...
+
+    async def submit_grade(self, submission_id: str, grade: Any) -> None:
+        """Выставить оценку (требует подтверждения)."""
         ...
