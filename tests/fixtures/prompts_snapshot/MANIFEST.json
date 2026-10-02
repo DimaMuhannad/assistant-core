@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "prompts": {
+    "secretary": {
+      "file": "secretary.txt",
+      "chars": 2718,
+      "bytes": 4715,
+      "sha256": "1d02fd49bdc291f18184e43c32a08dd34f57501ec06c40a6c50fc870bc8648dd",
+      "ends_with_newline": true,
+      "source": "src/brain/secretary_dialog.py:37",
+      "capture": "system_instruction",
+      "inputs": {
+        "user_id": 999,
+        "message_text": "Какие у меня задачи на сегодня?"
+      }
+    }
+  }
+}
