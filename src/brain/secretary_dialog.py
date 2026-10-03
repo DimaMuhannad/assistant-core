@@ -256,8 +256,14 @@ class SecretaryDialogEngine:
             for entry in settings.file_catalog
         ]
 
+        resolved_base = base_dir.resolve()
         for item in catalog:
-            if item["path"].exists() and any(k in msg_lower for k in item["keywords"]):
+            # файл обязан лежать внутри raw_dir (WR-06): защита от «..», абсолютных путей и symlink
+            if (
+                item["path"].exists()
+                and item["path"].resolve().is_relative_to(resolved_base)
+                and any(k in msg_lower for k in item["keywords"])
+            ):
                 found_files.append(item)
 
         if not found_files:

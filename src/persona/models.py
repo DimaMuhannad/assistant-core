@@ -23,6 +23,14 @@ class PersonaConfigError(ValueError):
     """Ошибка файла персоны; текст не содержит входных значений (в файле бывают NDA-слова)."""
 
 
+def _normalize_keywords(value: list[str]) -> list[str]:
+    """Ключевые слова сравниваются с `.lower()` запроса: приводим так же; пустые отвергаем (WR-06)."""
+    normalized = [item.strip().lower() for item in value]
+    if any(not item for item in normalized):
+        raise ValueError("ключевое слово не может быть пустым (совпало бы с любым запросом)")
+    return normalized
+
+
 class OrganizationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -129,6 +137,20 @@ class FileCatalogEntry(BaseModel):
     desc: str = Field(min_length=1)
     keywords: list[str] = Field(default_factory=list)
 
+    @field_validator("relpath")
+    @classmethod
+    def _relpath_inside_raw_dir(cls, value: str) -> str:
+        # форма пути: относительный, без «..» (иначе Path.__truediv__ выведет за raw_dir)
+        pure = PurePosixPath(value)
+        if not value.strip() or "\\" in value or pure.is_absolute() or ".." in pure.parts:
+            raise ValueError("relpath должен быть относительным путём внутри raw_dir")
+        return value
+
+    @field_validator("keywords")
+    @classmethod
+    def _keywords_normalized(cls, value: list[str]) -> list[str]:
+        return _normalize_keywords(value)
+
 
 class ScopeRulesConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -136,6 +158,11 @@ class ScopeRulesConfig(BaseModel):
     out_of_scope_keywords: list[str] = Field(default_factory=list)
     academic_keywords: list[str] = Field(default_factory=list)
     out_of_scope_reason: str = Field(min_length=1)
+
+    @field_validator("out_of_scope_keywords", "academic_keywords")
+    @classmethod
+    def _keywords_normalized(cls, value: list[str]) -> list[str]:
+        return _normalize_keywords(value)
 
 
 class MethodistConfig(BaseModel):

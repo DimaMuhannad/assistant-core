@@ -184,3 +184,19 @@ def test_no_persona_id_branching_in_src(
         if persona_id in path.read_text(encoding="utf-8", errors="ignore")
     ]
     assert not offenders, "в src найден литерал id персоны (ветвление по id запрещено):\n" + "\n".join(offenders)
+
+
+def test_file_catalog_relpath_and_keywords_validated() -> None:
+    """WR-06: relpath только внутри raw_dir, ключевые слова нормализуются, пустые отвергаются."""
+    import pytest
+    from pydantic import ValidationError
+
+    from src.persona.models import FileCatalogEntry
+
+    for bad in ("../x.docx", "/etc/passwd", "a/../../b", "a\\b"):
+        with pytest.raises(ValidationError):
+            FileCatalogEntry(relpath=bad, desc="d")
+    with pytest.raises(ValidationError):
+        FileCatalogEntry(relpath="a.docx", desc="d", keywords=[" "])
+    entry = FileCatalogEntry(relpath="a/b.docx", desc="d", keywords=["  АбВ "])
+    assert entry.keywords == ["абв"]
