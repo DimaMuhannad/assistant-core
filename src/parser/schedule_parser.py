@@ -7,6 +7,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from src.models.schedule import Lesson, LessonType, ScheduleDay, SchedulePayload
+from src.persona.bindings import schedule_source_settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,13 @@ class ScheduleParser:
 
     def __init__(
         self,
-        base_url: str = "https://rasp.guap.ru/",
+        base_url: str | None = None,
         timeout_seconds: float = 30.0,
         max_retries: int = 3,
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         proxy: str | None = None,
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = (base_url or schedule_source_settings().base_url).rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.user_agent = user_agent

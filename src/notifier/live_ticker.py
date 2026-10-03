@@ -28,7 +28,7 @@ from src.models.schedule import (
     Lesson,
     LessonType,
     LESSON_TYPE_SHORT,
-    SUBJECT_SHORT_NAMES,
+    subject_short_names,
     format_academic_lesson_line,
     get_guap_pair_number,
 )
@@ -162,12 +162,12 @@ class LiveTickerService:
 
             if current_lesson:
                 st = LESSON_TYPE_SHORT.get(current_lesson.lesson_type, "Пара")
-                subj = SUBJECT_SHORT_NAMES.get(current_lesson.subject.lower(), current_lesson.subject.strip())
+                subj = subject_short_names().get(current_lesson.subject.lower(), current_lesson.subject.strip())
                 room = current_lesson.room.replace(" (Гастелло 15)", "").strip()
                 sched_part = f"⚡ СЕЙЧАС: [{st}] {subj} ({room})"
             elif next_lesson:
                 st = LESSON_TYPE_SHORT.get(next_lesson.lesson_type, "Пара")
-                subj = SUBJECT_SHORT_NAMES.get(next_lesson.subject.lower(), next_lesson.subject.strip())
+                subj = subject_short_names().get(next_lesson.subject.lower(), next_lesson.subject.strip())
                 room = next_lesson.room.replace(" (Гастелло 15)", "").strip()
                 # Delta minutes
                 start_dt = datetime.combine(now_dt.date(), next_lesson.start_time, tzinfo=now_dt.tzinfo)

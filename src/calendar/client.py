@@ -5,17 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.models.schedule import Lesson, LessonType, ScheduleDiff
+from src.models.schedule import Lesson, LessonType, ScheduleDiff, lesson_slot_numbers, subject_short_names
 from src.storage.db import Database
 
 logger = logging.getLogger(__name__)
-
-SUBJECT_SHORT_NAMES: dict[str, str] = {
-    "физические основы нанотехнологий": "ФОНТ",
-    "основы проектной деятельности в профессии": "ОПДвП",
-    "основы проектной деятельности": "ОПД",
-    "физика": "Физика",
-}
 
 LESSON_TYPE_SHORT: dict[LessonType, str] = {
     LessonType.LECTURE: "Лек",
@@ -90,7 +83,7 @@ class GoogleCalendarClient:
     def format_summary(cls, lesson: Lesson) -> str:
         """Format event summary matching Dmitry's standard: [Group] Subject (Type)."""
         subj_clean = lesson.subject.strip()
-        short_subj = SUBJECT_SHORT_NAMES.get(subj_clean.lower(), subj_clean)
+        short_subj = subject_short_names().get(subj_clean.lower(), subj_clean)
         short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Занятие")
         if lesson.group:
             return f"[{lesson.group}] {short_subj} ({short_type})"
@@ -99,15 +92,7 @@ class GoogleCalendarClient:
     @classmethod
     def format_description(cls, lesson: Lesson) -> str:
         """Format event description matching Dmitry's structured calendar format."""
-        slot_map = {
-            (9, 30): 1,
-            (11, 10): 2,
-            (13, 0): 3,
-            (15, 10): 4,
-            (17, 0): 5,
-            (18, 40): 6,
-        }
-        slot_num = slot_map.get((lesson.start_time.hour, lesson.start_time.minute))
+        slot_num = lesson_slot_numbers().get(lesson.start_time.strftime("%H:%M"))
         time_str = f"{lesson.start_time.strftime('%H:%M')}—{lesson.end_time.strftime('%H:%M')}"
         lines = []
         if slot_num:
@@ -115,7 +100,7 @@ class GoogleCalendarClient:
         if lesson.group:
             lines.append(f"Группа: {lesson.group}")
         subj_clean = lesson.subject.strip()
-        short_subj = SUBJECT_SHORT_NAMES.get(subj_clean.lower(), subj_clean)
+        short_subj = subject_short_names().get(subj_clean.lower(), subj_clean)
         short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Занятие")
         long_type = LESSON_TYPE_LONG.get(lesson.lesson_type, "Занятие")
         lines.append(f"Предмет: {lesson.subject} ({short_subj})")
@@ -145,7 +130,7 @@ class GoogleCalendarClient:
 
             items = res.get("items", [])
             target_start_prefix = f"{lesson.date.isoformat()}T{lesson.start_time.strftime('%H:%M')}"
-            short_subj = SUBJECT_SHORT_NAMES.get(lesson.subject.strip().lower(), lesson.subject.strip()).lower()
+            short_subj = subject_short_names().get(lesson.subject.strip().lower(), lesson.subject.strip()).lower()
             for item in items:
                 start_dt = item.get("start", {}).get("dateTime", "")
                 if start_dt.startswith(target_start_prefix):

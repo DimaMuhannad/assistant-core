@@ -21,6 +21,7 @@ from aiogram import Bot, Dispatcher
 
 from src import config
 from src.storage.db import Database
+from src.composition import schedule_site_url
 from src.persona.bindings import timesheet_settings
 from src.persona.current import current_persona
 from src.persona.seed import seed_persona
@@ -62,7 +63,7 @@ async def run_sentinel_cycle(
         source_id=source_id,
         source_type="schedule_guap",
         display_name=f"GUAP Schedule ({config.SCHEDULE_TARGET_ID})",
-        config={"url": config.SCHEDULE_URL, "target_id": config.SCHEDULE_TARGET_ID},
+        config={"url": schedule_site_url(), "target_id": config.SCHEDULE_TARGET_ID},
     )
 
     # 2. Fetch raw schedule from web source
@@ -596,7 +597,7 @@ async def main() -> None:
     await bot_handler.setup_bot_commands()
 
     schedule_parser = ScheduleParser(
-        base_url=config.SCHEDULE_URL,
+        base_url=schedule_site_url(),
         timeout_seconds=30.0,
     )
     calendar_client = GoogleCalendarClient(

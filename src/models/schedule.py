@@ -3,6 +3,8 @@ from enum import Enum
 import hashlib
 from pydantic import BaseModel, Field
 
+from src.persona.bindings import schedule_source_settings
+
 
 class LessonType(str, Enum):
     LECTURE = "LECTURE"
@@ -73,16 +75,6 @@ class ScheduleDiff(BaseModel):
     unchanged_count: int = 0
 
 
-GUAP_BELL_SCHEDULE: dict[str, int] = {
-    "09:30": 1,
-    "11:10": 2,
-    "13:00": 3,
-    "15:10": 4,
-    "17:00": 5,
-    "18:40": 6,
-    "20:20": 7,
-}
-
 LESSON_TYPE_SHORT: dict[LessonType, str] = {
     LessonType.LECTURE: "Лек",
     LessonType.LAB: "Лаб",
@@ -91,23 +83,26 @@ LESSON_TYPE_SHORT: dict[LessonType, str] = {
     LessonType.UNKNOWN: "Пара",
 }
 
-SUBJECT_SHORT_NAMES: dict[str, str] = {
-    "физические основы нанотехнологий": "ФОНТ",
-    "основы проектной деятельности в профессии": "ОПДвП",
-    "основы проектной деятельности": "ОПД",
-    "физика": "Физика",
-}
+def lesson_slot_numbers() -> dict[str, int]:
+    """Слоты пар текущей персоны: время начала HH:MM -> номер (привязка schedule_source)."""
+    return {slot.start: slot.number for slot in schedule_source_settings().lesson_slots}
+
+
+def subject_short_names() -> dict[str, str]:
+    """Короткие названия предметов текущей персоны: полное в нижнем регистре -> короткое."""
+    return schedule_source_settings().subjects
 
 
 def get_guap_pair_number(start_time: time | str) -> int | None:
-    """Returns official SUAI/GUAP pair number (1..7) based on start bell time."""
+    """Returns the pair number of the active persona's bell schedule based on start bell time."""
     time_str = start_time.strftime("%H:%M") if isinstance(start_time, time) else str(start_time)[:5]
-    if time_str in GUAP_BELL_SCHEDULE:
-        return GUAP_BELL_SCHEDULE[time_str]
+    slots = lesson_slot_numbers()
+    if time_str in slots:
+        return slots[time_str]
     try:
         parts = [int(p) for p in time_str.split(":")]
         total_mins = parts[0] * 60 + parts[1]
-        for bell_str, pair_num in GUAP_BELL_SCHEDULE.items():
+        for bell_str, pair_num in slots.items():
             b_parts = [int(p) for p in bell_str.split(":")]
             b_mins = b_parts[0] * 60 + b_parts[1]
             if abs(total_mins - b_mins) <= 15:
@@ -125,7 +120,7 @@ def format_academic_lesson_line(lesson: Lesson) -> str:
     short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Пара")
 
     subj_clean = lesson.subject.strip()
-    short_subj = SUBJECT_SHORT_NAMES.get(subj_clean.lower(), subj_clean)
+    short_subj = subject_short_names().get(subj_clean.lower(), subj_clean)
 
     start_str = lesson.start_time.strftime("%H:%M")
 

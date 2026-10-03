@@ -13,6 +13,14 @@ from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLi
 from src.core.ports.connectors import BaseTimesheetProvider
 
 
+def schedule_site_url() -> str:
+    """Адрес сайта расписания: переменная окружения SCHEDULE_URL сильнее персоны (A1), иначе base_url привязки."""
+    from src import config
+    from src.persona.bindings import schedule_source_settings
+
+    return config.SCHEDULE_URL or schedule_source_settings().base_url
+
+
 def default_timesheet_service(db: Any) -> BaseTimesheetProvider:
     """Собрать провайдера табеля по умолчанию (AADHk поверх переданной БД)."""
     from src.connectors.aadhk.parser import AadhkIngestionService

@@ -15,7 +15,8 @@ SQLITE_DB_PATH = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlit
 if not os.path.isabs(SQLITE_DB_PATH):
     SQLITE_DB_PATH = str(BASE_DIR / SQLITE_DB_PATH)
 
-SCHEDULE_URL = os.getenv("SCHEDULE_URL", "https://guap.ru/rasp")
+# Пусто = адрес из привязки schedule_source персоны (src.composition.schedule_site_url); непустое окружение сильнее персоны.
+SCHEDULE_URL = os.getenv("SCHEDULE_URL", "")
 SCHEDULE_TARGET_ID = os.getenv("SCHEDULE_TARGET_ID", "2903")
 SCHEDULE_PARAM_NAME = os.getenv("SCHEDULE_PARAM_NAME", "pr")
 SCHEDULE_POLL_INTERVAL_HOURS = int(os.getenv("SCHEDULE_POLL_INTERVAL_HOURS", "2"))
