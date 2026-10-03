@@ -190,3 +190,131 @@ def test_bindings_match_adapter_ids_and_scopes() -> None:
         bound = binding(role)
         assert bound.provider == adapter.connector_id, role
         assert tuple(bound.scopes) == adapter.required_scopes, role
+
+
+# --- Задача 2: расписание ------------------------------------------------------------------
+
+
+def _lesson(subject: str, start: str, end: str, group: str | None = "1632"):
+    from datetime import date, time
+
+    from src.models.schedule import Lesson, LessonType
+
+    return Lesson(
+        subject=subject,
+        lesson_type=LessonType.LAB,
+        room="31-04б",
+        group=group,
+        date=date(2026, 10, 1),
+        start_time=time.fromisoformat(start),
+        end_time=time.fromisoformat(end),
+    )
+
+
+def test_lesson_slots_and_subjects_default_persona() -> None:
+    from src.models.schedule import (
+        format_academic_lesson_line,
+        get_guap_pair_number,
+        lesson_slot_numbers,
+        subject_short_names,
+    )
+
+    assert lesson_slot_numbers() == {
+        "09:30": 1, "11:10": 2, "13:00": 3, "15:10": 4, "17:00": 5, "18:40": 6, "20:20": 7,
+    }
+    assert get_guap_pair_number("11:10") == 2
+    assert get_guap_pair_number("11:25") == 2  # допуск ±15 минут сохранён
+    assert get_guap_pair_number("11:26") is None
+    assert subject_short_names()["физические основы нанотехнологий"] == "ФОНТ"
+    assert format_academic_lesson_line(_lesson("Физика", "11:10", "12:45")) == (
+        "2) 11:10 • [Лаб] Физика (гр. 1632, ауд. 31-04б)"
+    )
+
+
+def test_lesson_slots_and_subjects_from_persona(synthetic_loaded: PersonaConfig) -> None:
+    from src.models.schedule import (
+        format_academic_lesson_line,
+        get_guap_pair_number,
+        lesson_slot_numbers,
+        subject_short_names,
+    )
+
+    with use_persona(synthetic_loaded):
+        assert lesson_slot_numbers() == {"08:15": 1}
+        assert get_guap_pair_number("08:15") == 1
+        assert get_guap_pair_number("11:10") is None
+        assert subject_short_names() == {"синтетическая механика": "СинтМех"}
+        line = format_academic_lesson_line(_lesson("Синтетическая механика", "08:15", "09:45"))
+        assert line == "1) 08:15 • [Лаб] СинтМех (гр. 1632, ауд. 31-04б)"
+
+
+def test_calendar_formatting_follows_persona(synthetic_loaded: PersonaConfig) -> None:
+    from src.calendar.client import GoogleCalendarClient
+
+    lesson = _lesson("Синтетическая механика", "08:15", "09:45")
+    default_lesson = _lesson("Физика", "09:30", "11:00")
+
+    assert "Пара: 1 (09:30—11:00)" in GoogleCalendarClient.format_description(default_lesson)
+    with use_persona(synthetic_loaded):
+        assert GoogleCalendarClient.format_summary(lesson) == "[1632] СинтМех (Лаб)"
+        description = GoogleCalendarClient.format_description(lesson)
+
+    assert "Пара: 1 (08:15—09:45)" in description
+    assert "Предмет: Синтетическая механика (СинтМех)" in description
+
+
+def test_calendar_and_ticker_have_no_own_subject_dicts() -> None:
+    import src.calendar.client as calendar_client
+    import src.notifier.live_ticker as live_ticker
+
+    for module in (calendar_client, live_ticker):
+        assert not hasattr(module, "SUBJECT_SHORT_NAMES"), module.__name__
+        own = [
+            name
+            for name, value in vars(module).items()
+            if isinstance(value, dict) and "ФОНТ" in value.values()
+        ]
+        assert not own, f"{module.__name__}: собственный словарь коротких названий {own}"
+
+
+def test_ticker_uses_persona_subject_names(synthetic_loaded: PersonaConfig) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from src import config
+    from src.notifier.live_ticker import LiveTickerService
+
+    now = datetime(2026, 10, 1, 8, 30, tzinfo=ZoneInfo(config.TZ))
+    lesson = _lesson("Синтетическая механика", "08:15", "09:45")
+    service = LiveTickerService(db=MagicMock())
+
+    with use_persona(synthetic_loaded):
+        line = service.compute_ticker_line([lesson], {"pending_count": 0}, {"worked_hours": 1.0}, now)
+
+    assert "СинтМех" in line
+
+
+def test_schedule_site_url_env_wins_over_persona(
+    monkeypatch: pytest.MonkeyPatch, synthetic_loaded: PersonaConfig
+) -> None:
+    from src import config
+    from src.composition import schedule_site_url
+
+    monkeypatch.setattr(config, "SCHEDULE_URL", "")
+    assert schedule_site_url() == "https://guap.ru/rasp"
+    with use_persona(synthetic_loaded):
+        assert schedule_site_url() == "https://schedule.synthetic.example/"
+
+    monkeypatch.setattr(config, "SCHEDULE_URL", "https://env.example/schedule")
+    assert schedule_site_url() == "https://env.example/schedule"
+    with use_persona(synthetic_loaded):
+        assert schedule_site_url() == "https://env.example/schedule"  # окружение сильнее персоны
+
+
+def test_schedule_parser_default_base_url_from_persona(synthetic_loaded: PersonaConfig) -> None:
+    from src.parser.schedule_parser import ScheduleParser
+
+    assert ScheduleParser().base_url == "https://guap.ru/rasp"
+    with use_persona(synthetic_loaded):
+        assert ScheduleParser().base_url == "https://schedule.synthetic.example"
+    assert ScheduleParser(base_url="https://explicit.example/").base_url == "https://explicit.example"
