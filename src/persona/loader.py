@@ -43,8 +43,9 @@ def load_persona(
     resolved = resolve_persona_path(path, env)
     try:
         text = resolved.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise PersonaConfigError(f"файл персоны {resolved} не прочитан: {exc.strerror}") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        reason = getattr(exc, "strerror", None) or "содержимое не в кодировке UTF-8"
+        raise PersonaConfigError(f"файл персоны {resolved} не прочитан: {reason}") from None
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
