@@ -16,6 +16,12 @@ tests/ в assistant-core. Дрейф ловит шаг гейта «синтет
 Все значения вымышленные: домены оканчиваются на .example, пути начинаются с /synthetic/,
 идентификатор Telegram лежит в зарезервированном диапазоне 100000000..100000999.
 
+Конвертер (Фаза 3, D-06, PER-09): synthetic_to_config(SYNTHETIC_PERSONA) превращает этот словарь в
+структуру config/persona.yaml (корень persona), чтобы вторая персона загружалась теми же
+load_persona / seed-CLI / DatabaseService, что и персона по умолчанию. Словарь и каркас Фазы 1
+не меняются: к схеме приспосабливается только конвертер. Модуль остаётся без импортов, чтобы
+одинаково работать в обоих репозиториях; запись в YAML или JSON делает вызывающий тест.
+
 Ожидают Фазы 3
 --------------
 Эти восемь проверок включаются в Фазе 3. Сейчас они только перечислены текстом, без
@@ -86,3 +92,136 @@ SYNTHETIC_PERSONA: dict = {
     "subjects": {"синтетическая механика": "СинтМех"},
     "lesson_slots": {1: ("08:15", "09:45")},
 }
+
+SYNTHETIC_TELEGRAM_ENV = "SYNTHETIC_TELEGRAM_USER_ID"
+
+_CLEARANCE_VIEW = {
+    "public": ("blue", "Открытый"),
+    "internal": ("yellow", "Внутренний"),
+    "restricted_nda": ("red", "Закрытый NDA"),
+}
+
+_FULL_NAME_FORMS = (
+    "nominative",
+    "genitive",
+    "dative_first_patronymic",
+    "genitive_first_patronymic",
+    "instrumental_first_patronymic",
+    "signature",
+)
+_SHORT_NAME_FORMS = ("short", "short_genitive", "initials_genitive")
+
+
+def synthetic_to_config(d: dict, prompts: dict[str, str] | None = None) -> dict:
+    """dict каркаса Фазы 1 -> структура persona.yaml; lesson_slots: {1: (s, e)} -> [{number, start, end}]."""
+    university = d["organizations"]["university"]
+    company = d["organizations"]["company"]
+    area = d["default_area"]
+
+    workspaces = []
+    for ws in d["workspaces"]:
+        color, clearance_label = _CLEARANCE_VIEW[ws["clearance"]]
+        item = {
+            "id": ws["id"],
+            "label": ws["label"],
+            "path": ws["path"],
+            "clearance": ws["clearance"],
+            "account": ws["account"],
+            "clearance_label": clearance_label,
+            "color": color,
+            "remote": ws["remote"],
+            "forbidden_remote_substrings": list(ws["forbidden_remote_substrings"]),
+            "forbidden_keywords": list(ws["forbidden_keywords"]),
+        }
+        if ws["clearance"] == "restricted_nda":
+            item["remote_violation_message"] = (
+                f"CRITICAL: remote пространства «{ws['label']}» указывает на запрещённый аккаунт!"
+            )
+        workspaces.append(item)
+
+    name_forms = {key: d["display_name"] for key in _FULL_NAME_FORMS}
+    name_forms.update({key: d["short_name"] for key in _SHORT_NAME_FORMS})
+
+    return {
+        "persona": {
+            "id": d["id"],
+            "display_name": d["display_name"],
+            "short_name": d["short_name"],
+            "title": d["title"],
+            "name_forms": name_forms,
+            "organizations": {
+                "university": {"name": university, "aliases": []},
+                "company": {"name": company, "aliases": []},
+            },
+            "telegram": {
+                "authorized_user_ids": ["${" + SYNTHETIC_TELEGRAM_ENV + "}"],
+                "bot_username": d["telegram"]["bot_username"],
+            },
+            "default_area": area,
+            "task_areas": [
+                {"value": area, "label": area, "filter_label": area, "show_in_filter": True}
+            ],
+            "ui": {
+                "texts": {
+                    "header_subtitle": f"{d['short_name']} • {university} / {company}",
+                    "schedule_title": f"Расписание: {university}",
+                    "security_intro": f"Политики безопасности между открытыми проектами и закрытым контуром: {company}.",
+                    "clearance_tile_caption": f"{company} (строгая изоляция)",
+                    "remote_tile_caption": "аккаунты и remote пространств",
+                    "airgap_tile_caption": f"Запрет агентам читать закрытые материалы: {company}",
+                    "reminder_context_placeholder": f"Например: {university}: семестр",
+                }
+            },
+            "workspaces": workspaces,
+            "connectors": {
+                "schedule_source": [
+                    {
+                        "id": "main",
+                        "provider": "schedule_site",
+                        "scopes": ["schedule.read"],
+                        "config": {
+                            "base_url": d["schedule_source"]["base_url"],
+                            "subjects": dict(d["subjects"]),
+                            "lesson_slots": [
+                                {"number": number, "start": start, "end": end}
+                                for number, (start, end) in d["lesson_slots"].items()
+                            ],
+                        },
+                    }
+                ],
+                "calendar_sync": [],
+                "timesheet": [
+                    {
+                        "id": "main",
+                        "provider": "aadhk_timesheet",
+                        "scopes": [],
+                        "config": {
+                            "default_project": d["timesheet"]["default_project"],
+                            "daily_norm_hours": d["timesheet"]["daily_norm_hours"],
+                        },
+                    }
+                ],
+                "lms": [
+                    {
+                        "id": "main",
+                        "provider": "lms_portal",
+                        "scopes": [],
+                        "config": {"base_url": d["lms"]["base_url"]},
+                    }
+                ],
+                "git_source": [],
+                "notion": [],
+            },
+            "methodist": {
+                "raw_dir": "/synthetic/methodist/raw",
+                "kb_dir": "/synthetic/methodist/knowledge_base",
+                "file_catalog": [],
+                "scope_rules": {
+                    "out_of_scope_keywords": [company.lower()],
+                    "academic_keywords": list(d["subjects"]),
+                    "out_of_scope_reason": f"Вопрос вне методической работы: {university}",
+                },
+            },
+            "prompts": dict(prompts) if prompts else {},
+        }
+    }

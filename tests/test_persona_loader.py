@@ -1,8 +1,10 @@
 """Загрузчик персоны (PER-01, D-01): подмена файла, строгая схема, безопасный YAML."""
 
+import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.persona.loader import (
     DEFAULT_PERSONA_PATH,
@@ -11,6 +13,8 @@ from src.persona.loader import (
     resolve_persona_path,
 )
 from src.persona.models import PersonaConfigError
+
+from .synthetic_persona import SYNTHETIC_PERSONA, SYNTHETIC_TELEGRAM_ENV, synthetic_to_config
 
 MINIMAL_TEMPLATE = """\
 persona:
@@ -269,3 +273,45 @@ def test_current_persona_and_use_persona_override(tmp_path, monkeypatch):
     reset_persona_cache()
     assert current_persona() is not default  # файл перечитан
     assert current_persona().id == "popov-da-default"
+
+
+def test_synthetic_persona_loads_from_yaml_via_env(monkeypatch, tmp_path):
+    path = tmp_path / "synthetic.yaml"
+    path.write_text(
+        yaml.safe_dump(synthetic_to_config(SYNTHETIC_PERSONA), allow_unicode=True),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(PERSONA_CONFIG_ENV, str(path))
+    monkeypatch.delenv(SYNTHETIC_TELEGRAM_ENV, raising=False)
+    persona = load_persona()
+    assert persona.id == "synthetic-test-persona"
+    assert persona.display_name == SYNTHETIC_PERSONA["display_name"]
+    assert persona.display_name != load_persona(DEFAULT_PERSONA_PATH).display_name
+    assert [(w.id, w.clearance) for w in persona.workspaces] == [
+        (w["id"], w["clearance"]) for w in SYNTHETIC_PERSONA["workspaces"]
+    ]
+    nda = next(w for w in persona.workspaces if w.clearance == "restricted_nda")
+    source = next(w for w in SYNTHETIC_PERSONA["workspaces"] if w["id"] == nda.id)
+    assert nda.forbidden_keywords == source["forbidden_keywords"]
+    assert nda.forbidden_remote_substrings == source["forbidden_remote_substrings"]
+    slots = persona.connectors.schedule_source[0].config["lesson_slots"]
+    assert slots == [{"number": 1, "start": "08:15", "end": "09:45"}]
+    assert persona.default_area == SYNTHETIC_PERSONA["default_area"]
+    # плейсхолдер разворачивается из окружения в момент вызова; без переменной - пусто
+    assert persona.resolve_authorized_user_ids({SYNTHETIC_TELEGRAM_ENV: "100000001"}) == (
+        SYNTHETIC_PERSONA["telegram"]["authorized_user_id"],
+    )
+    assert persona.resolve_authorized_user_ids({}) == ()
+    assert persona.unresolved_env_vars({}) == (SYNTHETIC_TELEGRAM_ENV,)
+
+
+def test_synthetic_persona_loads_from_json(tmp_path):
+    config = synthetic_to_config(SYNTHETIC_PERSONA)
+    yaml_path = tmp_path / "synthetic.yaml"
+    yaml_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    json_path = tmp_path / "synthetic.json"
+    json_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    from_json = load_persona(json_path)
+    from_yaml = load_persona(yaml_path)
+    assert from_json.model_dump() == from_yaml.model_dump()
+    assert from_json.id == SYNTHETIC_PERSONA["id"]
