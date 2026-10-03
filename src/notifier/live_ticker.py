@@ -21,6 +21,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from src import config
 from src.composition import default_timesheet_service
 from src.core.ports.connectors import BaseTimesheetProvider
+from src.persona.bindings import timesheet_settings
 from src.storage.db import Database
 from src.models.schedule import (
     SchedulePayload,
@@ -120,7 +121,7 @@ class LiveTickerService:
                 if self.timesheet_service is not None
                 else default_timesheet_service(self.db)
             )
-            pacing = await service.get_monthly_pacing(project_name="Тидекс")
+            pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
             return pacing
         except Exception as e:
             logger.warning("LiveTicker: error fetching timesheet pacing: %s", e)

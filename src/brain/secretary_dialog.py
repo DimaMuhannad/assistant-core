@@ -26,6 +26,7 @@ from google.genai import types
 
 from src import config
 from src.storage.db import Database
+from src.persona.bindings import format_hours, timesheet_settings
 from src.persona.prompts import render_prompt
 from src.brain.methodist import MethodistService
 from src.brain.key_rotator import key_rotator
@@ -115,7 +116,7 @@ class SecretaryDialogEngine:
         """Fetch working hours pacing from AADHk parser."""
         try:
             service = self.timesheet_service if self.timesheet_service is not None else default_timesheet_service(self.db)
-            pacing = await service.get_monthly_pacing(project_name="Тидекс")
+            pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
 
             month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
             cur_m_name = month_names[pacing["month"]].capitalize()
@@ -123,7 +124,7 @@ class SecretaryDialogEngine:
 
             return (
                 f"⏱️ Табель ООО «Тидекс» ({cur_m_name} {pacing['year']}):\n"
-                f"• Месячная норма: {pacing['monthly_norm_hours']:.1f} ч ({pacing['total_workdays']} раб. дней по 8.5 ч)\n"
+                f"• Месячная норма: {pacing['monthly_norm_hours']:.1f} ч ({pacing['total_workdays']} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)\n"
                 f"• Отработано фактически: {pacing['worked_hours']:.2f} ч ({pacing['total_shifts']} смен/дней)\n"
                 f"• Текущий баланс нормы (ΔH): {delta_sign}{pacing['delta_pacing']:.2f} ч\n"
                 f"• Осталось закрыть: {pacing['remaining_hours_to_norm']:.2f} ч\n"

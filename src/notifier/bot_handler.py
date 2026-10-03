@@ -28,6 +28,7 @@ from src.composition import (
 )
 from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
 from src.core.ports.connectors import BaseTimesheetProvider
+from src.persona.bindings import format_hours, timesheet_settings
 from src.notifier.live_ticker import LiveTickerService
 from src.notifier.telegram import (
     TelegramNotifier,
@@ -1111,7 +1112,7 @@ class EmailBotHandler:
 
         service = self._timesheet()
         await service.reconcile_all_conflicts()
-        pacing = await service.get_monthly_pacing(project_name="Тидекс")
+        pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
 
         month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
         morning_delta = pacing.get("morning_delta", 0.0)
@@ -1121,7 +1122,7 @@ class EmailBotHandler:
         text_lines = [
             f"⏱️ **Табель и баланс: ООО «Тидекс» ({cur_m_name} {pacing['year']})**\n",
             f"• **Дельта нормы (утро):** `{morning_sign}{morning_delta:.2f}` ч (актуально на {rel_date})",
-            f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по 8.5 ч)",
+            f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)",
             f"• **Фактически зачтено:** `{pacing['worked_hours']:.2f}` ч ({pacing['total_shifts']} смен)",
             f"• **Ожидаемый темп на утро:** `{pacing['expected_hours_to_date']:.1f}` ч ({pacing['elapsed_workdays']} раб. дней)",
             f"• **Начислено за месяц:** `{pacing['total_amount']:,.2f}` ₽\n",
@@ -1167,7 +1168,7 @@ class EmailBotHandler:
 
         service = self._timesheet()
         await service.reconcile_all_conflicts()
-        summary = await self.db.get_timesheet_summary(project_name="Тидекс")
+        summary = await self.db.get_timesheet_summary(project_name=timesheet_settings().default_project)
         conflicts = await self.db.get_timesheet_conflicts(limit=5)
 
         text_lines = [

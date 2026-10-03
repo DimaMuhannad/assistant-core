@@ -21,6 +21,7 @@ from aiogram import Bot, Dispatcher
 
 from src import config
 from src.storage.db import Database
+from src.persona.bindings import timesheet_settings
 from src.persona.current import current_persona
 from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
@@ -295,7 +296,7 @@ async def run_morning_brief_cycle(
         try:
             from src.connectors.aadhk.parser import AadhkIngestionService
             aadhk_svc = AadhkIngestionService(db)
-            timesheet_pacing = await aadhk_svc.get_monthly_pacing(project_name="Тидекс")
+            timesheet_pacing = await aadhk_svc.get_monthly_pacing(project_name=timesheet_settings().default_project)
         except Exception as pe:
             logger.debug("Failed to get timesheet pacing for morning brief: %s", pe)
 

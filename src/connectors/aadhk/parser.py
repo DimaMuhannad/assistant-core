@@ -9,9 +9,14 @@ from zoneinfo import ZoneInfo
 
 from src import config
 from src.models.schedule import SchedulePayload, Lesson
+from src.persona.bindings import TimesheetSettings, timesheet_settings
 from src.storage.db import Database
 
 logger = logging.getLogger(__name__)
+
+# Значение по умолчанию «взять из привязки timesheet персоны в момент вызова» (PER-06, D-18).
+# Явный None у project_name сохраняет прежний смысл «все проекты».
+_FROM_PERSONA: Any = object()
 
 
 def parse_timestamp_val(val: Any, tz_str: str = config.TZ) -> datetime | None:
@@ -55,15 +60,23 @@ def parse_timestamp_val(val: Any, tz_str: str = config.TZ) -> datetime | None:
 class AadhkIngestionService:
     """Service for parsing AADHk Time Recording SQLite databases and validating with SUAI."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, settings: TimesheetSettings | None = None) -> None:
         self.db = db
+        self._settings = settings
+
+    @property
+    def settings(self) -> TimesheetSettings:
+        """Явно переданные настройки либо привязка timesheet текущей персоны (при каждом обращении)."""
+        return self._settings if self._settings is not None else timesheet_settings()
 
     async def ingest_backup_file(
         self,
         backup_file_path: str | Path,
-        default_project: str = "Тидекс",
+        default_project: str = _FROM_PERSONA,
     ) -> dict[str, Any]:
         """Parse AADHk backup SQLite file, cross-validate with SUAI timetable, and save to db."""
+        if default_project is _FROM_PERSONA:
+            default_project = self.settings.default_project
         p = Path(backup_file_path)
         if not p.is_file():
             raise FileNotFoundError(f"Backup file not found: {backup_file_path}")
@@ -101,9 +114,11 @@ class AadhkIngestionService:
     def _extract_shifts_from_sqlite(
         self,
         db_path: Path,
-        default_project: str = "Тидекс",
+        default_project: str = _FROM_PERSONA,
     ) -> list[dict[str, Any]]:
         """Connect to SQLite backup and dynamically map tables."""
+        if default_project is _FROM_PERSONA:
+            default_project = self.settings.default_project
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         try:
@@ -406,9 +421,11 @@ class AadhkIngestionService:
         self,
         start_date: str | None = None,
         end_date: str | None = None,
-        project_name: str | None = "Тидекс",
+        project_name: str | None = _FROM_PERSONA,
     ) -> dict[str, Any]:
         """Generate comprehensive timesheet report with conflict details and daily breakdown."""
+        if project_name is _FROM_PERSONA:
+            project_name = self.settings.default_project
         summary = await self.db.get_timesheet_summary(
             start_date=start_date,
             end_date=end_date,
@@ -429,11 +446,15 @@ class AadhkIngestionService:
         self,
         year: int | None = None,
         month: int | None = None,
-        daily_norm: float = 8.5,
-        project_name: str | None = "Тидекс",
+        daily_norm: float = _FROM_PERSONA,
+        project_name: str | None = _FROM_PERSONA,
     ) -> dict[str, Any]:
         """Calculates workdays, worked hours, elapsed pace, and required daily rate to meet monthly norm."""
         import calendar
+        if daily_norm is _FROM_PERSONA:
+            daily_norm = self.settings.daily_norm_hours
+        if project_name is _FROM_PERSONA:
+            project_name = self.settings.default_project
         now = datetime.now(ZoneInfo(config.TZ))
         cur_year = year or now.year
         cur_month = month or now.month
@@ -468,7 +489,7 @@ class AadhkIngestionService:
         elapsed_workdays_count = len(elapsed_workdays)
         expected_hours_to_date = round(elapsed_workdays_count * daily_norm, 2)
         delta_pacing = round(worked_hours - expected_hours_to_date, 2)
-        # Morning delta formula (Dmitry's standard: elapsed_workdays * 8.5 - worked_hours)
+        # Morning delta formula: elapsed_workdays * daily_norm - worked_hours
         morning_delta = round(expected_hours_to_date - worked_hours, 2)
 
         # Determine latest recorded date in timesheet
