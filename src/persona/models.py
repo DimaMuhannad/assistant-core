@@ -8,7 +8,15 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from src.core.domain.entities import Persona
@@ -109,6 +117,48 @@ class ConnectorBindingConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+_HHMM = r"^[0-9]{2}:[0-9]{2}$"
+_HTTP_URL = r"^https?://\S+$"
+
+
+class _LessonSlotParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    number: int = Field(ge=1)
+    # строка, не число: незакавыченное 11:10 PyYAML (YAML 1.1) читает как 670 - это ошибка схемы
+    start: str = Field(pattern=_HHMM)
+    end: str | None = Field(default=None, pattern=_HHMM)
+
+
+class _ScheduleSourceParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_url: str = Field(pattern=_HTTP_URL)
+    lesson_slots: list[_LessonSlotParams]
+    subjects: dict[str, str]
+
+
+class _TimesheetParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    default_project: str = Field(min_length=1)
+    daily_norm_hours: float = Field(gt=0)
+
+
+class _LmsParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    base_url: str = Field(pattern=_HTTP_URL)
+
+
+# Параметры привязок по ролям (WR-04): проверяются при загрузке, а не в момент вызова.
+_ROLE_PARAMS: dict[str, type[BaseModel]] = {
+    "schedule_source": _ScheduleSourceParams,
+    "timesheet": _TimesheetParams,
+    "lms": _LmsParams,
+}
+
+
 class ConnectorsConfig(BaseModel):
     """Привязки по ролям; ключи совпадают с ConnectorRole, на роль допускается несколько (PER-02)."""
 
@@ -127,6 +177,25 @@ class ConnectorsConfig(BaseModel):
             ids = [binding.id for binding in getattr(self, role)]
             if len(ids) != len(set(ids)):
                 raise ValueError(f"идентификаторы привязок роли {role} повторяются")
+        return self
+
+    @model_validator(mode="after")
+    def _role_params_valid(self) -> "ConnectorsConfig":
+        for role, params_model in _ROLE_PARAMS.items():
+            for binding in getattr(self, role):
+                try:
+                    params_model.model_validate(binding.config)
+                except ValidationError as exc:
+                    # только loc и msg: значения конфигурации не печатаются
+                    details = "; ".join(
+                        f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+                        for item in exc.errors(
+                            include_input=False, include_url=False, include_context=False
+                        )
+                    )
+                    raise ValueError(
+                        f"параметры привязки {role} ({binding.id}) некорректны: {details}"
+                    ) from None
         return self
 
 

@@ -212,8 +212,8 @@ def test_connector_roles_match_domain_enum_and_binding_ids_unique(tmp_path):
     twice = (
         "  connectors:\n"
         "    lms:\n"
-        "      - {id: main, provider: lms_portal, scopes: [lms.read]}\n"
-        "      - {id: main, provider: lms_portal, scopes: [lms.read]}\n"
+        "      - {id: main, provider: lms_portal, scopes: [lms.read], config: {base_url: 'https://lms.example'}}\n"
+        "      - {id: main, provider: lms_portal, scopes: [lms.read], config: {base_url: 'https://lms.example'}}\n"
     )
     with pytest.raises(PersonaConfigError):
         load_persona(_persona_from(tmp_path, c=twice))
@@ -221,8 +221,8 @@ def test_connector_roles_match_domain_enum_and_binding_ids_unique(tmp_path):
     two_ids = (
         "  connectors:\n"
         "    lms:\n"
-        "      - {id: main, provider: lms_portal, scopes: [lms.read]}\n"
-        "      - {id: second, provider: lms_portal, scopes: [lms.read]}\n"
+        "      - {id: main, provider: lms_portal, scopes: [lms.read], config: {base_url: 'https://lms.example'}}\n"
+        "      - {id: second, provider: lms_portal, scopes: [lms.read], config: {base_url: 'https://lms.example'}}\n"
     )
     persona = load_persona(_persona_from(tmp_path, c=two_ids))
     assert [b.id for b in persona.connectors.lms] == ["main", "second"]
@@ -370,3 +370,35 @@ def test_cosmetic_schedule_accessors_tolerate_missing_binding(tmp_path):
     with use_persona(persona):
         assert lesson_slot_numbers() == {}
         assert subject_short_names() == {}
+
+
+def test_connector_params_validated_on_load(tmp_path):
+    """WR-04: параметры привязок проверяются при загрузке; 11:10 без кавычек - ошибка, не слот 670."""
+    def schedule(slot: str, extra: str = "") -> str:
+        return (
+            "  connectors:\n"
+            "    schedule_source:\n"
+            "      - id: main\n"
+            "        provider: schedule_site\n"
+            "        config:\n"
+            "          base_url: https://schedule.example/\n"
+            "          subjects: {}\n"
+            "          lesson_slots:\n"
+            f"            - {{number: 1, start: {slot}}}\n" + extra
+        )
+
+    ok = load_persona(_persona_from(tmp_path, c=schedule("'11:10'")))
+    assert ok.connectors.schedule_source[0].config["lesson_slots"][0]["start"] == "11:10"
+
+    with pytest.raises(PersonaConfigError) as excinfo:
+        load_persona(_persona_from(tmp_path, c=schedule("11:10")))  # PyYAML читает как 670
+    assert "schedule_source" in str(excinfo.value)
+    assert "670" not in str(excinfo.value)
+
+    bad_norm = (
+        "  connectors:\n"
+        "    timesheet:\n"
+        "      - {id: main, provider: aadhk_timesheet, config: {default_project: P, daily_norm_hours: 0}}\n"
+    )
+    with pytest.raises(PersonaConfigError):
+        load_persona(_persona_from(tmp_path, c=bad_norm))
