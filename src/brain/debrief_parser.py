@@ -19,38 +19,9 @@ from src.models.second_brain import (
     TaskPriority,
     WaitingForItem,
 )
+from src.persona.prompts import render_prompt
 
 logger = logging.getLogger(__name__)
-
-
-DEBRIEF_SYSTEM_PROMPT = """Ты — персональный исполнительный секретарь (Executive Chief of Staff) доцента кафедры физики ГУАП и научного сотрудника сектора приборов компании «Тидекс» Попова Дмитрия Александровича.
-
-Твоя задача: детально проанализировать расшифровку вечернего голосового сообщения (дебрифинга) Дмитрия Александровича за день и декомпозировать ее в строгий JSON.
-
-Сферы жизни (area):
-- "ГУАП" (лабораторные, лекции, деканат, эффективный контракт, студенты)
-- "Тидекс" (сектор приборов, спектрометры, ячейки Голея, приборный софт, инженерия)
-- "AI & Dev Projects" (chat-app, assistant-core, боты, архитектура)
-- "Наука и статьи" (ВАК, Scopus, РИНЦ, конференции, гранты)
-- "Личное и семья" (быт, здоровье, отдых)
-- "Финансы"
-- "Разное"
-
-Правила классификации:
-1. completed_tasks: Что было фактически завершено/сделано сегодня. Формулируй кратко, выделяя суть действия.
-2. new_tasks: Задачи, которые нужно сделать (завтра или в будущем). Формулируй название с глагола в неопределенной форме ("Подписать приказ", "Написать парсер").
-   - priority: P1 (топ-3 фокус дня), P2 (важно), P3 (мелкое/рутина).
-   - due_date: определи конкретную дату в формате YYYY-MM-DD на основе контекста (если сказано "завтра" — рассчитай относительно переданной даты).
-3. waiting_for_items: Договоренности, обязательства других людей перед Дмитрием Александровичем ("дипломник обещал прислать", "староста должна передать списки", "коллега обещал посмотреть").
-   - person: кто должен сделать.
-   - what: что именно ожидается.
-   - check_date: когда нужно проконтролировать/спросить (YYYY-MM-DD).
-4. journal_entry:
-   - done_summary: маркированный список главных достижений дня (2-5 пунктов).
-   - key_insights: ключевые выводы, мысли, рефлексия, идеи.
-   - raw_transcript: исходный текст без изменений.
-
-Ответ СТРОГО в формате валидного JSON по указанной схеме. Без вводных слов и Markdown-оберток."""
 
 
 class DebriefParser:
@@ -105,6 +76,9 @@ class DebriefParser:
             logger.info("Gemini not configured, using deterministic fallback debrief parser.")
             return self._fallback_parse(clean_text, target_date)
 
+        # Рендер до try: ошибка конфигурации персоны не должна маскироваться запасным разбором
+        system_prompt = render_prompt("debrief")
+
         try:
             client = self.get_client()
             user_prompt = f"Сегодняшняя дата: {date_str} ({target_date.strftime('%A')}).\nТранскрипт вечернего сообщения:\n\"\"\"{clean_text}\"\"\""
@@ -115,7 +89,7 @@ class DebriefParser:
                 contents=[
                     types.Content(
                         role="user",
-                        parts=[types.Part.from_text(text=f"{DEBRIEF_SYSTEM_PROMPT}\n\n{user_prompt}")],
+                        parts=[types.Part.from_text(text=f"{system_prompt}\n\n{user_prompt}")],
                     )
                 ],
                 config=types.GenerateContentConfig(

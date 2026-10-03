@@ -291,3 +291,7 @@ persona:
     intent_router: prompts/intent_router_default.jinja2
     methodist: prompts/methodist_default.jinja2
     methodist_scope_check: prompts/methodist_scope_check_default.jinja2
+    reply_generator: prompts/reply_generator_default.jinja2
+    debrief: prompts/debrief_default.jinja2
+    morning_brief: prompts/morning_brief_default.jinja2
+    evening_digest: prompts/evening_digest_default.jinja2

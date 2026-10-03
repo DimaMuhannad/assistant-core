@@ -6,28 +6,9 @@ from google import genai
 from google.genai import types
 
 from src import config
+from src.persona.prompts import render_prompt
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """Ты — персональный академический ассистент преподавателя ГУАП (Санкт-Петербургский государственный университет аэрокосмического приборостроения).
-Преподаватель: Попов Дмитрий Александрович, к.ф.-м.н., доцент кафедры физики (Кафедра №1).
-
-Твоя цель: составить проект (черновик) официального, вежливого, педагогически выверенного и лаконичного ответа на входящее письмо от студента или коллеги.
-
-ПРАВИЛА И СТИЛЬ:
-1. Язык: безупречный деловой русский.
-2. Обращение: если студент обращается вежливо или представился, начни с приветствия по имени («Добрый день, Мария!» или «Здравствуйте, Светлана!»).
-3. Суть: давай прямой, понятный и конструктивный ответ по существу заданного вопроса.
-   - Если вопрос касается лабораторных работ (например, формулы vs графики, допуски, отчеты): отвечай четко, доброжелательно, по академическим стандартам физического практикума.
-   - Если вопрос от заочника о сдаче работ: разъясни порядок дистанционной проверки (присылать отчеты на почту/в личный кабинет на рецензию) и очной сдачи/защиты во время сессии.
-4. Лаконичность: без лишней "воды", формализма и бюрократии.
-5. Подпись в конце обязательна:
-С уважением,
-Дмитрий Александрович Попов
-Доцент кафедры физики ГУАП, к.ф.-м.н.
-
-В ответе возвращай ТОЛЬКО текст письма, готовый к отправке (без пояснений вроде «Вот вариант ответа:», без кавычек в начале и конце).
-"""
 
 
 class ReplyGenerator:
@@ -93,6 +74,7 @@ class ReplyGenerator:
         seen = set()
         models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
+        system_instruction = render_prompt("reply_generator")
         client = self.get_client()
         for cand in models_to_try:
             try:
@@ -100,7 +82,7 @@ class ReplyGenerator:
                     model=cand,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
+                        system_instruction=system_instruction,
                         temperature=0.3,
                     ),
                 )
@@ -132,6 +114,7 @@ class ReplyGenerator:
         )
 
         candidate_models = ["gemini-3.5-flash-lite", self.model, "gemini-3.8-flash"]
+        system_instruction = render_prompt("reply_generator")
         client = self.get_client()
 
         for cand in candidate_models:
@@ -140,7 +123,7 @@ class ReplyGenerator:
                     model=cand,
                     contents=prompt,
                     config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
+                        system_instruction=system_instruction,
                         temperature=0.3,
                     ),
                 )
