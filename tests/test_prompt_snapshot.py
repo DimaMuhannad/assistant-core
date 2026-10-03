@@ -257,11 +257,29 @@ async def test_evening_digest_prompt_matches_snapshot() -> None:
     assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("evening_digest")
 
 
-TEMPLATE_KEYS = ["secretary", "intent_router", "methodist", "methodist_scope_check"]
+TEMPLATE_KEYS = [
+    "secretary",
+    "intent_router",
+    "methodist",
+    "methodist_scope_check",
+    "reply_generator",
+    "debrief",
+    "morning_brief",
+    "evening_digest",
+]
+# Входы динамических промптов - литералы, вычисленные из inputs манифеста:
+# target_date 2026-09-30 (среда), tomorrow_date 2026-10-01 (четверг).
 RENDER_VARS = {
     "methodist_scope_check": {
         "question": MANIFEST["prompts"]["methodist_scope_check"]["inputs"]["question"]
-    }
+    },
+    "morning_brief": {"date_str": "30.09.2026", "weekday": "среда"},
+    "evening_digest": {
+        "date_str": "30.09.2026",
+        "weekday": "среда",
+        "tomorrow_date_str": "01.10.2026",
+        "tomorrow_weekday": "четверг",
+    },
 }
 
 
