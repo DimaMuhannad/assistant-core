@@ -109,3 +109,18 @@ async def test_same_consumer_path_uses_active_persona(
     captured = captured_system_instruction(fake)
     assert captured == render_prompt("reply_generator", persona=synthetic_persona_loaded)
     assert captured != render_prompt("reply_generator", persona=default_persona)
+
+
+def test_template_context_excludes_nda_workspaces(tmp_path, default_persona: PersonaConfig) -> None:
+    """WR-05: правила NDA не доступны шаблонам (текст уходит во внешнюю LLM)."""
+    import pytest
+
+    from src.persona.models import PersonaConfigError
+
+    (tmp_path / "t.jinja2").write_text("{{ persona.workspaces }}\n", encoding="utf-8")
+    persona = default_persona.model_copy(
+        update={"prompts": {"leak": "t.jinja2"}}
+    )
+    persona._source_path = tmp_path / "p.yaml"
+    with pytest.raises(PersonaConfigError):
+        render_prompt("leak", persona=persona)

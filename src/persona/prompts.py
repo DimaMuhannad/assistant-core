@@ -21,6 +21,25 @@ from src.persona.current import current_persona
 from src.persona.models import PersonaConfig, PersonaConfigError
 
 
+# Белый список полей персоны, доступных шаблонам (WR-05): текст шаблона уходит во внешнюю LLM,
+# поэтому правила NDA (workspaces), telegram, methodist и prompts в контекст не попадают.
+# connectors оставлены: секретарь берёт из них норму часов табеля (в них нет правил NDA).
+TEMPLATE_PERSONA_FIELDS = frozenset(
+    {
+        "id",
+        "display_name",
+        "short_name",
+        "title",
+        "organizations",
+        "name_forms",
+        "default_area",
+        "task_areas",
+        "ui",
+        "connectors",
+    }
+)
+
+
 @lru_cache(maxsize=8)
 def _environment(base_dir: str) -> SandboxedEnvironment:
     return SandboxedEnvironment(
@@ -47,7 +66,8 @@ def render_prompt(
             f"персона {persona.id} создана не из файла: каталог шаблонов неизвестен"
         )
     # persona задаётся последней: runtime-переменные не подменяют данные персоны
-    context = {**runtime_vars, "persona": persona.model_dump(mode="json")}
+    persona_view = persona.model_dump(mode="json", include=set(TEMPLATE_PERSONA_FIELDS))
+    context = {**runtime_vars, "persona": persona_view}
     try:
         template = _environment(str(base_dir)).get_template(relpath)
         return template.render(context)
