@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -163,7 +163,7 @@ class PersonaConfig(BaseModel):
     workspaces: list[WorkspaceConfig] = Field(default_factory=list)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
     methodist: MethodistConfig
-    prompts: dict[str, str] = Field(default_factory=dict)  # проверка путей - план 03-07
+    prompts: dict[str, str] = Field(default_factory=dict)  # ключ -> путь шаблона .jinja2 (D-09)
 
     _source_path: Path | None = PrivateAttr(default=None)
 
@@ -173,6 +173,25 @@ class PersonaConfig(BaseModel):
         ids = [ws.id for ws in value]
         if len(ids) != len(set(ids)):
             raise ValueError("идентификаторы рабочих пространств повторяются")
+        return value
+
+    @field_validator("prompts")
+    @classmethod
+    def _prompt_paths_relative(cls, value: dict[str, str]) -> dict[str, str]:
+        # форма пути; существование и выход за каталог (symlink) проверяет загрузчик (T-03-23)
+        for key, relpath in value.items():
+            pure = PurePosixPath(relpath)
+            if (
+                not relpath.strip()
+                or "\\" in relpath
+                or pure.is_absolute()
+                or ".." in pure.parts
+                or pure.suffix != ".jinja2"
+            ):
+                raise ValueError(
+                    f"путь шаблона {key} должен быть относительным, внутри каталога персоны, "
+                    "с расширением .jinja2"
+                )
         return value
 
     @model_validator(mode="after")

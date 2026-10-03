@@ -1,0 +1,10 @@
+Определи, относится ли следующий вопрос к методическому и образовательному контексту кафедры физики {{ persona.organizations.university.name }} (эффективный контракт ППС {{ persona.organizations.university.name }}, критерии и баллы, учебники Коваленко, задачники {{ persona.organizations.university.name }} 1-3 семестров, лабораторные работы по физике/ФОНТ/ОПД, расчет погрешностей, правила оформления отчетов по ГОСТ 7.32/2.105, титульные листы, правила защиты, БРС {{ persona.organizations.university.name }}, правила сдачи долгов/экзаменов).
+
+Вопрос: "{{ question }}"
+
+Ответь строго в формате JSON:
+{
+  "is_in_scope": true/false,
+  "category": "gost" | "rpd" | "lab_manual" | "textbook" | "problem_book" | "templates" | "admin_lna" | "dept_physics" | "out_of_scope",
+  "reason": "краткое пояснение"
+}

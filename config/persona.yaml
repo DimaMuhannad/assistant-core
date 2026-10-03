@@ -286,3 +286,8 @@ persona:
       - соавтор
       - варост
       out_of_scope_reason: Вопрос относится к сторонней теме вне методической работы кафедры физики ГУАП
+  prompts:
+    secretary: prompts/secretary_default.jinja2
+    intent_router: prompts/intent_router_default.jinja2
+    methodist: prompts/methodist_default.jinja2
+    methodist_scope_check: prompts/methodist_scope_check_default.jinja2

@@ -57,4 +57,17 @@ def load_persona(
         raise PersonaConfigError(_format_validation_error(resolved, exc)) from None
     persona = parsed.persona
     persona._source_path = resolved
+    _check_template_files(resolved, persona)
     return persona
+
+
+def _check_template_files(resolved: Path, persona: PersonaConfig) -> None:
+    """Каждый шаблон persona.prompts - существующий файл внутри каталога персоны (T-03-23)."""
+    base = resolved.parent.resolve()
+    for key, relpath in persona.prompts.items():
+        target = (resolved.parent / relpath).resolve()  # resolve() раскрывает symlink
+        if not target.is_relative_to(base) or not target.is_file():
+            raise PersonaConfigError(
+                f"файл персоны {resolved}: шаблон «{key}» ({relpath}) "
+                "не найден внутри каталога персоны"
+            )
