@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator
 import aiosqlite
+from assistant_shared.db.connection import get_async_connection
 from assistant_shared.db.migrator import run_migrations
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,6 @@ class Database:
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[aiosqlite.Connection, None]:
-        await self._ensure_dir_exists()
         if self.db_path == ":memory:":
             if self._shared_conn is None:
                 self._shared_conn = await aiosqlite.connect(":memory:", check_same_thread=False)
@@ -33,9 +33,7 @@ class Database:
                 await self._shared_conn.execute("PRAGMA foreign_keys = ON;")
             yield self._shared_conn
         else:
-            async with aiosqlite.connect(self.db_path) as conn:
-                conn.row_factory = aiosqlite.Row
-                await conn.execute("PRAGMA foreign_keys = ON;")
+            async with get_async_connection(self.db_path) as conn:
                 yield conn
 
     async def close(self) -> None:
