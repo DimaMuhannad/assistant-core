@@ -7,6 +7,7 @@ from google.genai import types
 
 from src import config
 from src.models.schedule import Lesson, format_academic_lesson_line
+from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,9 @@ class GeminiSummarizer:
 
             return self._generate_fallback_brief(target_date, lessons, action_items, actionable_emails, upcoming_lessons, timesheet_pacing)
 
+        except PersonaConfigError as e:
+            logger.error("Ошибка конфигурации персоны при генерации утреннего дайджеста: %s", e)
+            return self._generate_fallback_brief(target_date, lessons, action_items, actionable_emails, upcoming_lessons, timesheet_pacing)
         except Exception as e:
             logger.exception("Failed to generate brief via Gemini API: %s", e)
             return self._generate_fallback_brief(target_date, lessons, action_items, actionable_emails, upcoming_lessons, timesheet_pacing)
@@ -379,6 +383,9 @@ class GeminiSummarizer:
 
             return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)
 
+        except PersonaConfigError as e:
+            logger.error("Ошибка конфигурации персоны при генерации вечернего дайджеста: %s", e)
+            return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)
         except Exception as e:
             logger.exception("Failed to generate evening digest via Gemini: %s", e)
             return self._generate_fallback_evening_digest(target_date, email_stats, tomorrow_date, tomorrow_lessons, action_items)

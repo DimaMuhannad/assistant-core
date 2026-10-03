@@ -18,6 +18,7 @@ from google.genai import types
 from src import config
 from src.storage.db import Database
 from src.persona.bindings import methodist_settings
+from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -434,6 +435,9 @@ class MethodistService:
             )
             raw = (resp.text or "{}").strip()
             return json.loads(raw)
+        except PersonaConfigError as e:
+            logger.error("Ошибка конфигурации персоны в проверке области методиста: %s", e)
+            return {"is_in_scope": False, "category": "out_of_scope", "reason": "Unrecognized scope"}
         except Exception as e:
             logger.debug("Scope check error: %s", e)
             return {"is_in_scope": False, "category": "out_of_scope", "reason": "Unrecognized scope"}

@@ -27,6 +27,7 @@ from google.genai import types
 from src import config
 from src.storage.db import Database
 from src.persona.bindings import format_hours, methodist_settings, timesheet_settings
+from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
 from src.brain.methodist import MethodistService
 from src.brain.key_rotator import key_rotator
@@ -131,7 +132,9 @@ class SecretaryDialogEngine:
                 f"• Требуемый темп: {pacing['required_daily_pacing']:.2f} ч/день (осталось раб. дней: {pacing['remaining_workdays']})"
             )
         except Exception as e:
-            logger.debug("Could not compute Tydex pacing: %s", e)
+            # ошибка конфигурации персоны не должна теряться в debug-логах (WR-02)
+            log = logger.error if isinstance(e, PersonaConfigError) else logger.debug
+            log("Could not compute Tydex pacing: %s", e)
             return "⏱️ Табель «Тидекс»: данные выработки временно обновляются."
 
     async def _get_email_overview(self) -> str:

@@ -22,6 +22,7 @@ from src import config
 from src.composition import default_timesheet_service
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.persona.bindings import timesheet_settings
+from src.persona.models import PersonaConfigError
 from src.storage.db import Database
 from src.models.schedule import (
     SchedulePayload,
@@ -123,6 +124,15 @@ class LiveTickerService:
             )
             pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
             return pacing
+        except PersonaConfigError as e:
+            logger.error("LiveTicker: ошибка конфигурации персоны при чтении табеля: %s", e)
+            return {
+                "worked_hours": 0.0,
+                "monthly_norm_hours": 0.0,
+                "morning_delta": 0.0,
+                "remaining_hours_to_norm": 0.0,
+                "latest_date_formatted": "н/д",
+            }
         except Exception as e:
             logger.warning("LiveTicker: error fetching timesheet pacing: %s", e)
             return {

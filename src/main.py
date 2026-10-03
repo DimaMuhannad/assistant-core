@@ -24,6 +24,7 @@ from src.storage.db import Database
 from src.composition import schedule_site_url
 from src.persona.bindings import lms_settings, timesheet_settings
 from src.persona.current import current_persona
+from src.persona.models import PersonaConfigError
 from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
 from src.detector.diff import ScheduleChangeDetector
@@ -298,6 +299,8 @@ async def run_morning_brief_cycle(
             from src.connectors.aadhk.parser import AadhkIngestionService
             aadhk_svc = AadhkIngestionService(db)
             timesheet_pacing = await aadhk_svc.get_monthly_pacing(project_name=timesheet_settings().default_project)
+        except PersonaConfigError as pe:
+            logger.error("Ошибка конфигурации персоны: табель выпал из утреннего дайджеста: %s", pe)
         except Exception as pe:
             logger.debug("Failed to get timesheet pacing for morning brief: %s", pe)
 
