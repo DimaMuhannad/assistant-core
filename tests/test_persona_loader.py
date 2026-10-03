@@ -315,3 +315,46 @@ def test_synthetic_persona_loads_from_json(tmp_path):
     from_yaml = load_persona(yaml_path)
     assert from_json.model_dump() == from_yaml.model_dump()
     assert from_json.id == SYNTHETIC_PERSONA["id"]
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    ["/etc/passwd.jinja2", "../x.jinja2", "prompts/../../x.jinja2", "x.txt", ""],
+)
+def test_prompt_paths_must_stay_inside_persona_dir(tmp_path, bad_path):
+    path = _write_persona(
+        tmp_path / "p.yaml", extra=f'  prompts:\n    secretary: "{bad_path}"\n'
+    )
+    with pytest.raises(PersonaConfigError):
+        load_persona(path)
+
+
+def test_missing_template_rejected_on_load(tmp_path):
+    path = _write_persona(
+        tmp_path / "p.yaml", extra="  prompts:\n    secretary: prompts/net_takogo.jinja2\n"
+    )
+    with pytest.raises(PersonaConfigError) as excinfo:
+        load_persona(path)
+    assert "secretary" in str(excinfo.value)
+    assert "prompts/net_takogo.jinja2" in str(excinfo.value)
+
+
+def test_render_unknown_variable_raises(tmp_path):
+    from jinja2.exceptions import UndefinedError
+
+    from src.persona.prompts import render_prompt
+
+    (tmp_path / "t.jinja2").write_text("привет {{ net_takoy }}\n", encoding="utf-8")
+    path = _write_persona(tmp_path / "p.yaml", extra="  prompts:\n    greet: t.jinja2\n")
+    persona = load_persona(path)
+    with pytest.raises(UndefinedError):
+        render_prompt("greet", persona=persona)
+
+
+def test_render_unknown_prompt_key_raises(tmp_path):
+    from src.persona.prompts import render_prompt
+
+    persona = load_persona(_write_persona(tmp_path / "p.yaml"))
+    with pytest.raises(PersonaConfigError) as excinfo:
+        render_prompt("net_takogo_klyucha", persona=persona)
+    assert "net_takogo_klyucha" in str(excinfo.value)

@@ -255,3 +255,25 @@ async def test_evening_digest_prompt_matches_snapshot() -> None:
     )
 
     assert captured_system_instruction(fake).encode("utf-8") == snapshot_bytes("evening_digest")
+
+
+TEMPLATE_KEYS = ["secretary", "intent_router", "methodist", "methodist_scope_check"]
+RENDER_VARS = {
+    "methodist_scope_check": {
+        "question": MANIFEST["prompts"]["methodist_scope_check"]["inputs"]["question"]
+    }
+}
+
+
+@pytest.mark.parametrize("key", TEMPLATE_KEYS)
+def test_default_template_renders_to_snapshot(key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PER-07: шаблон персоны по умолчанию рендерится в эталон 03-01 байт в байт."""
+    from src.persona.loader import PERSONA_CONFIG_ENV, load_persona
+    from src.persona.prompts import render_prompt
+
+    monkeypatch.delenv(PERSONA_CONFIG_ENV, raising=False)
+    persona = load_persona()
+
+    rendered = render_prompt(key, persona=persona, **RENDER_VARS.get(key, {}))
+
+    assert rendered.encode("utf-8") == snapshot_bytes(key)
