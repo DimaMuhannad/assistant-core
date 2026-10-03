@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.storage.db import Database
-from src.brain.intent_router import FastIntentRouter, IntentResult, ROUTER_SYSTEM_PROMPT
+from src.brain.intent_router import FastIntentRouter, IntentResult
 
 
 @pytest.fixture
