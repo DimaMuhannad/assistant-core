@@ -17,6 +17,7 @@ from google.genai import types
 
 from src import config
 from src.storage.db import Database
+from src.persona.bindings import methodist_settings
 from src.persona.prompts import render_prompt
 
 logger = logging.getLogger(__name__)
@@ -34,14 +35,15 @@ class MethodistService:
     def __init__(
         self,
         db: Database,
-        raw_dir: str | Path = "/opt/assistant-core/data/methodist/raw",
-        kb_dir: str | Path = "/opt/assistant-core/data/methodist/knowledge_base",
+        raw_dir: str | Path | None = None,
+        kb_dir: str | Path | None = None,
         api_key: str | None = config.GEMINI_API_KEY,
         model: str = config.GEMINI_MODEL,
     ) -> None:
         self.db = db
-        self.raw_dir = Path(raw_dir)
-        self.kb_dir = Path(kb_dir)
+        settings = methodist_settings()
+        self.raw_dir = Path(raw_dir if raw_dir is not None else settings.raw_dir)
+        self.kb_dir = Path(kb_dir if kb_dir is not None else settings.kb_dir)
         self.api_key = api_key or ""
         self.model = model
         self._client: genai.Client | None = None
@@ -408,32 +410,15 @@ class MethodistService:
     async def check_scope(self, question: str) -> dict[str, Any]:
         """Check if question falls strictly inside Methodist domain using heuristics and LLM."""
         q_lower = question.lower()
-        out_of_scope_keywords = [
-            "тидекс", "табель", "смен", "часы работы", "выработка", "погод",
-            "анекдот", "фильм", "игра", "криптовалют", "биткоин", "ресторан",
-            "билет", "поезд", "рейс", "курс валют", "новости", "политик",
-        ]
-        if any(k in q_lower for k in out_of_scope_keywords):
+        rules = methodist_settings().scope_rules
+        if any(k in q_lower for k in rules.out_of_scope_keywords):
             return {
                 "is_in_scope": False,
                 "category": "out_of_scope",
-                "reason": "Вопрос относится к сторонней теме вне методической работы кафедры физики ГУАП",
+                "reason": rules.out_of_scope_reason,
             }
 
-        academic_keywords = [
-            "гост", "титульн", "отчет", "лабораторн", "физик", "фонт", "опд",
-            "брс", "баллы", "погрешност", "протокол", "допуск", "защита",
-            "практикум", "зачет", "экзамен", "кафедр", "попов", "гастелло",
-            "формул", "график", "мнк", "шрифт", "поля", "студент", "семестр",
-            "дедлайн", "пересдач", "рпд", "проектн", "лаба", "лабы", "методичк",
-            "оформлен", "подпис", "правил", "коваленко", "задачник", "задач",
-            "учебник", "комптон", "фотоэффект", "спектрометр", "ньютон",
-            "интерференц", "дифракц", "маятник", "гистерезис", "холл",
-            "эффективн", "контракт", "стимулирующ", "надбавк", "критери",
-            "базов уровень", "повышенн уровень", "ппс", "новиков", "приказ 05-259",
-            "печ.л", "п.л", "печатн лист", "соавтор", "варост",
-        ]
-        if any(k in q_lower for k in academic_keywords):
+        if any(k in q_lower for k in rules.academic_keywords):
             return {"is_in_scope": True, "category": "academic", "reason": "Academic keyword matched"}
 
         try:

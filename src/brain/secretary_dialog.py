@@ -26,7 +26,7 @@ from google.genai import types
 
 from src import config
 from src.storage.db import Database
-from src.persona.bindings import format_hours, timesheet_settings
+from src.persona.bindings import format_hours, methodist_settings, timesheet_settings
 from src.persona.prompts import render_prompt
 from src.brain.methodist import MethodistService
 from src.brain.key_rotator import key_rotator
@@ -240,54 +240,20 @@ class SecretaryDialogEngine:
     def _search_local_files_context(self, user_msg: str) -> tuple[str, list[dict[str, Any]]]:
         """Search local documents, templates, and regulations in methodist raw storage."""
         msg_lower = user_msg.lower()
-        base_dir = Path("/opt/assistant-core/data/methodist/raw")
+        settings = methodist_settings()
+        base_dir = Path(settings.raw_dir)
         if not base_dir.exists():
             return "", []
 
         found_files = []
         catalog = [
             {
-                "path": base_dir / "templates" / "Форма_отчета_эффективный_контракт_ППС_2026.docx",
-                "name": "Форма_отчета_эффективный_контракт_ППС_2026.docx",
-                "desc": "Официальный действующий бланк отчета кафедры физики от Новиковой Ю.А. (август 2026)",
-                "keywords": ["контракт", "эффективн", "шаблон", "бланк", "форма", "ппс", "новиков"],
-            },
-            {
-                "path": base_dir / "dept_physics" / "Попов_ДА_Образец_отчета_эффективный_контракт.docx",
-                "name": "Попов_ДА_Образец_отчета_эффективный_контракт.docx",
-                "desc": "Утвержденный заполненный образец отчета доцента Д.А. Попова (10.8 балла)",
-                "keywords": ["контракт", "эффективн", "попов", "образец", "пример", "отчет"],
-            },
-            {
-                "path": base_dir / "admin_lna" / "Приказ_ГУАП_05-259-26_Эффективный_контракт_2026.pdf",
-                "name": "Приказ_ГУАП_05-259-26_Эффективный_контракт_2026.pdf",
-                "desc": "Приказ ректора ГУАП № 05-259/26 от 17.04.2026 об утверждении изменений в критериях",
-                "keywords": ["приказ", "контракт", "эффективн", "05-259", "регламент", "лна"],
-            },
-            {
-                "path": base_dir / "admin_lna" / "Критерии_эффективного_контракта_ГУАП_2026.pdf",
-                "name": "Критерии_эффективного_контракта_ГУАП_2026.pdf",
-                "desc": "Официальная шкала баллов и критериев стимулирующих выплат (Таблица 3 Положения)",
-                "keywords": ["критери", "балл", "таблиц", "шкал", "контракт", "эффективн", "стимулир"],
-            },
-            {
-                "path": base_dir / "admin_lna" / "polozhenie_ob_effektivnom_kontrakte_guap_2026.md",
-                "name": "polozhenie_ob_effektivnom_kontrakte_guap_2026.md",
-                "desc": "Сводный аналитический регламент эффективного контракта кафедры физики ГУАП 2026",
-                "keywords": ["положен", "регламент", "контракт", "эффективн"],
-            },
-            {
-                "path": base_dir / "templates" / "Титульный_лист_и_протокол_ЛР2_Оптика.docx",
-                "name": "Титульный_лист_и_протокол_ЛР2_Оптика.docx",
-                "desc": "Официальный шаблон титульного листа и протокола измерений ЛР по оптике",
-                "keywords": ["титульн", "оптик", "протокол", "лаб"],
-            },
-            {
-                "path": base_dir / "templates" / "Титульный_лист_отчета_о_практической_работе_2025.docx",
-                "name": "Титульный_лист_отчета_о_практической_работе_2025.docx",
-                "desc": "Официальный шаблон титульного листа практической работы ГУАП",
-                "keywords": ["титульн", "практик", "отчет"],
-            },
+                "path": base_dir / entry.relpath,
+                "name": Path(entry.relpath).name,
+                "desc": entry.desc,
+                "keywords": entry.keywords,
+            }
+            for entry in settings.file_catalog
         ]
 
         for item in catalog:

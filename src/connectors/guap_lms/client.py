@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src import config
+from src.persona.bindings import lms_settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class GuapLmsClient:
         email: str | None = None,
         password: str | None = None,
         timeout: float = 20.0,
+        base_url: str | None = None,
     ) -> None:
         self.email = config.GUAP_EMAIL if email is None else email
         self.password = (
@@ -30,7 +32,7 @@ class GuapLmsClient:
         )
         self.timeout = timeout
 
-        self.base_url = "https://pro.guap.ru"
+        self.base_url = (base_url or lms_settings().base_url).rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": (

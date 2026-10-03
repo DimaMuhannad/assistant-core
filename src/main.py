@@ -22,7 +22,7 @@ from aiogram import Bot, Dispatcher
 from src import config
 from src.storage.db import Database
 from src.composition import schedule_site_url
-from src.persona.bindings import timesheet_settings
+from src.persona.bindings import lms_settings, timesheet_settings
 from src.persona.current import current_persona
 from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
@@ -439,7 +439,7 @@ async def run_lms_monitor_cycle(
                     f"📌 **Задание:** {sub['task_title']}\n"
                     f"📅 **Дата загрузки:** {sub.get('upload_date', '—')}\n"
                     f"📊 **Статус:** {sub.get('status', 'Ожидает проверки')}\n\n"
-                    f"🔗 [Открыть задание в pro.guap.ru](https://pro.guap.ru/inside/professor/tasks/{sub['task_id']}/show)"
+                    f"🔗 [Открыть задание в pro.guap.ru]({lms_settings().base_url.rstrip('/')}/inside/professor/tasks/{sub['task_id']}/show)"
                 )
                 await notifier.send_message(text)
                 await db.mark_lms_submission_notified(sub["report_id"])
