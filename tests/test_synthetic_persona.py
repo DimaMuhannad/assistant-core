@@ -1,8 +1,9 @@
-"""Тесты каркаса второй синтетической персоны (FND-03, D-14).
+"""Тесты каркаса второй синтетической персоны (FND-03, D-14; PER-08, D-16).
 
-Проверяются только сами данные персоны. Проверки, которые подключат персону к реальным
-кодовым путям, ожидают Фазы 3 и перечислены текстом в докстринге synthetic_persona.py
-и в разделе «Ожидают Фазы 3» документа docs/BASELINE.md.
+Проверяются данные синтетической персоны против данных персоны по умолчанию (фикстура
+default_persona_config): токены профиля и отличия вычисляются из персоны, а не из копий
+в тестах. Проверки, которые подключают персону к реальным кодовым путям, включены в Фазе 3
+(список в докстринге synthetic_persona.py и в разделе «Включено в Фазе 3» docs/BASELINE.md).
 
 Файл не зависит от репозитория: он лежит байт-в-байт в обоих тестовых наборах.
 """
@@ -11,57 +12,8 @@ import importlib.util
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .synthetic_persona import SYNTHETIC_PERSONA
-
-# Токены владельца. Одна константа; Фаза 3 (PER-08) заменит её данными персоны по умолчанию.
-OWNER_TOKEN_DENYLIST = (
-    "ГУАП",
-    "GUAP",
-    "Тидекс",
-    "Tydex",
-    "Попов",
-    "Дмитрий Александрович",
-    "DimaMuhannad",
-    "guap.ru",
-)
-
-# То, что зашито в коде сегодня. Реальный Telegram ID владельца сюда не копируется
-# (персональные данные): отличие проверяется зарезервированным диапазоном.
-CURRENT_HARDCODED_DEFAULTS = {
-    "display_name": "Попов Дмитрий Александрович",
-    "short_name": "Попов Д.А.",
-    "title": "доцент кафедры физики, к.ф.-м.н.",
-    "organizations.university": "ГУАП",
-    "organizations.company": "Тидекс",
-    "telegram.bot_username": "opd_guap_popov_bot",
-    "timesheet.default_project": "Тидекс",
-    "timesheet.daily_norm_hours": 8.5,
-    "schedule_source.base_url": "https://guap.ru/rasp",
-    "lms.base_url": "https://pro.guap.ru",
-    "default_area": "ГУАП",
-    "workspace_ids": {"chat-app", "assistant-core", "tydex-optics", "guap-physics"},
-    "workspace_paths": {
-        "/opt/chat-app",
-        "/opt/assistant-core",
-        "/opt/work-tydex",
-        "/opt/personal/guap-physics",
-    },
-    "workspace_names": {
-        "🤖 Antigravity Web Studio (chat-app)",
-        "⚙️ Assistant Core Daemon",
-        "🔬 Оптические приборы и измерения (ООО «Тидекс»)",
-        "🏛️ Кафедра физики ГУАП (Лабораторные и LMS)",
-    },
-    "forbidden_remote_substrings": {"github.com/DimaMuhannad"},
-    "subject_names": {
-        "физические основы нанотехнологий",
-        "основы проектной деятельности в профессии",
-        "основы проектной деятельности",
-        "физика",
-    },
-    "subject_short_names": {"ФОНТ", "ОПДвП", "ОПД", "Физика"},
-    "lesson_slot_starts": {"09:30", "11:10", "13:00", "15:10", "17:00", "18:40", "20:20"},
-}
+from .persona_tokens import owner_tokens
+from .synthetic_persona import SYNTHETIC_PERSONA, synthetic_to_config
 
 IDENTIFYING_FIELDS = (
     "id",
@@ -128,16 +80,52 @@ def test_identifying_fields_present_and_non_empty(synthetic_persona):
             assert workspace["forbidden_keywords"]
 
 
-def test_no_owner_tokens(synthetic_persona):
-    lowered = [token.lower() for token in OWNER_TOKEN_DENYLIST]
+def test_no_owner_tokens(synthetic_persona, default_persona_config):
+    tokens = {
+        token.casefold()
+        for values in owner_tokens(default_persona_config).values()
+        for token in values
+    }
+    assert tokens, "токены персоны по умолчанию не вычислены - проверка была бы бессмысленной"
     for text in _all_strings(synthetic_persona):
-        low = text.lower()
-        for token in lowered:
-            assert token not in low, f"токен владельца {token!r} в строке {text!r}"
+        low = text.casefold()
+        for token in tokens:
+            assert token not in low, f"токен профиля владельца (длина {len(token)}) в строке {text!r}"
 
 
-def test_every_identifying_field_differs_from_current_hardcode(synthetic_persona):
-    current = CURRENT_HARDCODED_DEFAULTS
+def _default_view(default: dict) -> dict:
+    """Поля персоны по умолчанию в тех же координатах, что и у словаря каркаса."""
+    schedule = default["connectors"]["schedule_source"][0]["config"]
+    timesheet = default["connectors"]["timesheet"][0]["config"]
+    workspaces = default["workspaces"]
+    return {
+        "display_name": default["display_name"],
+        "short_name": default["short_name"],
+        "title": default["title"],
+        "organizations.university": default["organizations"]["university"]["name"],
+        "organizations.company": default["organizations"]["company"]["name"],
+        "telegram.bot_username": default["telegram"]["bot_username"],
+        "timesheet.default_project": timesheet["default_project"],
+        "timesheet.daily_norm_hours": timesheet["daily_norm_hours"],
+        "schedule_source.base_url": schedule["base_url"],
+        "lms.base_url": default["connectors"]["lms"][0]["config"]["base_url"],
+        "default_area": default["default_area"],
+        "workspace_ids": {w["id"] for w in workspaces},
+        "workspace_paths": {w["path"] for w in workspaces},
+        "workspace_names": {w["label"] for w in workspaces},
+        "forbidden_remote_substrings": {
+            rule for w in workspaces for rule in w.get("forbidden_remote_substrings") or []
+        },
+        "subject_names": set(schedule["subjects"]),
+        "subject_short_names": set(schedule["subjects"].values()),
+        "lesson_slot_starts": {str(slot["start"]) for slot in schedule["lesson_slots"]},
+    }
+
+
+def test_every_identifying_field_differs_from_default_persona(synthetic_persona, default_persona_config):
+    current = _default_view(default_persona_config)
+    # Синтетическая персона проходит через тот же конвертер, что и в тестах Фазы 3.
+    assert synthetic_to_config(synthetic_persona)["persona"]["id"] != default_persona_config["id"]
     for path in (
         "display_name",
         "short_name",
@@ -151,7 +139,7 @@ def test_every_identifying_field_differs_from_current_hardcode(synthetic_persona
         "lms.base_url",
         "default_area",
     ):
-        assert _get(synthetic_persona, path) != current[path], f"совпадает с зашитым: {path}"
+        assert _get(synthetic_persona, path) != current[path], f"совпадает с персоной по умолчанию: {path}"
 
     workspaces = synthetic_persona["workspaces"]
     assert {w["id"] for w in workspaces}.isdisjoint(current["workspace_ids"])
