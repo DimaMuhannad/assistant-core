@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from jinja2 import FileSystemLoader, StrictUndefined
+from jinja2 import FileSystemLoader, StrictUndefined, TemplateError
 from jinja2.sandbox import SandboxedEnvironment
 
 from src.persona.current import current_persona
@@ -46,7 +46,13 @@ def render_prompt(
         raise PersonaConfigError(
             f"персона {persona.id} создана не из файла: каталог шаблонов неизвестен"
         )
-    template = _environment(str(base_dir)).get_template(relpath)
     # persona задаётся последней: runtime-переменные не подменяют данные персоны
     context = {**runtime_vars, "persona": persona.model_dump(mode="json")}
-    return template.render(context)
+    try:
+        template = _environment(str(base_dir)).get_template(relpath)
+        return template.render(context)
+    except TemplateError as exc:
+        # без значений контекста: в персоне бывают NDA-слова; только ключ и тип ошибки
+        raise PersonaConfigError(
+            f"шаблон «{key}» персоны {persona.id} не отрендерен: {type(exc).__name__}"
+        ) from None

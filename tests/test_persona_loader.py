@@ -340,15 +340,15 @@ def test_missing_template_rejected_on_load(tmp_path):
 
 
 def test_render_unknown_variable_raises(tmp_path):
-    from jinja2.exceptions import UndefinedError
-
     from src.persona.prompts import render_prompt
 
     (tmp_path / "t.jinja2").write_text("привет {{ net_takoy }}\n", encoding="utf-8")
     path = _write_persona(tmp_path / "p.yaml", extra="  prompts:\n    greet: t.jinja2\n")
     persona = load_persona(path)
-    with pytest.raises(UndefinedError):
+    with pytest.raises(PersonaConfigError) as excinfo:
         render_prompt("greet", persona=persona)
+    assert "greet" in str(excinfo.value)
+    assert "UndefinedError" in str(excinfo.value)
 
 
 def test_render_unknown_prompt_key_raises(tmp_path):
