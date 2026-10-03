@@ -358,3 +358,15 @@ def test_render_unknown_prompt_key_raises(tmp_path):
     with pytest.raises(PersonaConfigError) as excinfo:
         render_prompt("net_takogo_klyucha", persona=persona)
     assert "net_takogo_klyucha" in str(excinfo.value)
+
+
+def test_cosmetic_schedule_accessors_tolerate_missing_binding(tmp_path):
+    """WR-08: без привязки schedule_source слоты и сокращения пусты, а не PersonaConfigError."""
+    from src.models.schedule import lesson_slot_numbers, subject_short_names
+    from src.persona.current import use_persona
+
+    persona = load_persona(_write_persona(tmp_path / "p.yaml"))
+    assert persona.connectors.schedule_source == []
+    with use_persona(persona):
+        assert lesson_slot_numbers() == {}
+        assert subject_short_names() == {}

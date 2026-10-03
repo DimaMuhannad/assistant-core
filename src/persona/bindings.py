@@ -57,6 +57,12 @@ def binding(role: str, persona: PersonaConfig | None = None) -> ConnectorBinding
     return bindings[0]
 
 
+def has_binding(role: str, persona: PersonaConfig | None = None) -> bool:
+    """Есть ли у персоны хотя бы одна привязка роли (для необязательных, косметических обращений)."""
+    persona = persona or current_persona()
+    return bool(getattr(persona.connectors, role, None))
+
+
 def _config_value(bound: ConnectorBindingConfig, role: str, key: str) -> Any:
     try:
         return bound.config[key]

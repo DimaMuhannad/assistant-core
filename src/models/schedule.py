@@ -3,7 +3,7 @@ from enum import Enum
 import hashlib
 from pydantic import BaseModel, Field
 
-from src.persona.bindings import schedule_source_settings
+from src.persona.bindings import has_binding, schedule_source_settings
 
 
 class LessonType(str, Enum):
@@ -85,11 +85,15 @@ LESSON_TYPE_SHORT: dict[LessonType, str] = {
 
 def lesson_slot_numbers() -> dict[str, int]:
     """Слоты пар текущей персоны: время начала HH:MM -> номер (привязка schedule_source)."""
+    if not has_binding("schedule_source"):
+        return {}  # косметика: без привязки слотов нет, форматирование не должно падать
     return {slot.start: slot.number for slot in schedule_source_settings().lesson_slots}
 
 
 def subject_short_names() -> dict[str, str]:
     """Короткие названия предметов текущей персоны: полное в нижнем регистре -> короткое."""
+    if not has_binding("schedule_source"):
+        return {}  # косметика: без привязки сокращений нет, остаются полные названия
     return schedule_source_settings().subjects
 
 
