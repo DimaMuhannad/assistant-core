@@ -318,3 +318,108 @@ def test_schedule_parser_default_base_url_from_persona(synthetic_loaded: Persona
     with use_persona(synthetic_loaded):
         assert ScheduleParser().base_url == "https://schedule.synthetic.example"
     assert ScheduleParser(base_url="https://explicit.example/").base_url == "https://explicit.example"
+
+
+# --- Задача 3: методист и личный кабинет ---------------------------------------------------
+
+
+def _synthetic_with_methodist(tmp_path: Path, **methodist_overrides) -> PersonaConfig:
+    config = synthetic_to_config(SYNTHETIC_PERSONA)
+    config["persona"]["methodist"].update(methodist_overrides)
+    path = tmp_path / "persona_methodist.json"
+    path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    return load_persona(path)
+
+
+def test_methodist_dirs_and_catalog_from_persona(tmp_path: Path, synthetic_loaded: PersonaConfig) -> None:
+    from src.brain.methodist import MethodistService
+    from src.brain.secretary_dialog import SecretaryDialogEngine
+    from src.persona.bindings import methodist_settings
+    from src.storage.db import Database
+
+    default = methodist_settings()
+    service = MethodistService(Database(db_path=":memory:"), api_key="")
+    assert service.raw_dir == Path(default.raw_dir)
+    assert service.kb_dir == Path(default.kb_dir)
+    assert MethodistService(Database(db_path=":memory:"), raw_dir=tmp_path, api_key="").raw_dir == tmp_path
+
+    with use_persona(synthetic_loaded):
+        synthetic_service = MethodistService(Database(db_path=":memory:"), api_key="")
+    assert synthetic_service.raw_dir == Path("/synthetic/methodist/raw")
+    assert synthetic_service.kb_dir == Path("/synthetic/methodist/knowledge_base")
+
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "Синтетический_бланк.docx").write_bytes(b"x")
+    persona = _synthetic_with_methodist(
+        tmp_path,
+        raw_dir=str(tmp_path),
+        file_catalog=[
+            {
+                "relpath": "templates/Синтетический_бланк.docx",
+                "desc": "Синтетический бланк",
+                "keywords": ["бланк"],
+            }
+        ],
+    )
+    engine = SecretaryDialogEngine(db=Database(db_path=":memory:"), api_key="")
+    with use_persona(persona):
+        ctx, files = engine._search_local_files_context("пришли бланк")
+        no_hit_ctx, no_hit_files = engine._search_local_files_context("погода")
+
+    assert [f["name"] for f in files] == ["Синтетический_бланк.docx"]
+    assert files[0]["path"] == tmp_path / "templates" / "Синтетический_бланк.docx"
+    assert "Синтетический бланк" in ctx
+    assert (no_hit_ctx, no_hit_files) == ("", [])
+
+
+def test_default_file_catalog_text_unchanged() -> None:
+    from src.brain.secretary_dialog import SecretaryDialogEngine
+    from src.storage.db import Database
+
+    engine = SecretaryDialogEngine(db=Database(db_path=":memory:"), api_key="")
+    ctx, _ = engine._search_local_files_context("скинь шаблон эффективного контракта")
+
+    assert (
+        "• `Форма_отчета_эффективный_контракт_ППС_2026.docx` — Официальный действующий бланк отчета "
+        "кафедры физики от Новиковой Ю.А. (август 2026) "
+        "(Путь: /opt/assistant-core/data/methodist/raw/templates/Форма_отчета_эффективный_контракт_ППС_2026.docx)"
+    ) in ctx
+
+
+async def test_check_scope_decisions_follow_persona(synthetic_loaded: PersonaConfig) -> None:
+    from src.brain.methodist import MethodistService
+    from src.persona.bindings import methodist_settings
+    from src.storage.db import Database
+
+    service = MethodistService(Database(db_path=":memory:"), api_key="")
+    owner_reason = methodist_settings().scope_rules.out_of_scope_reason
+
+    owner_out = await service.check_scope("сколько часов в табеле Тидекс")
+    assert owner_out["category"] == "out_of_scope"
+    assert owner_out["reason"] == owner_reason
+    owner_academic = await service.check_scope("как оформить лабораторную работу по физике")
+    assert owner_academic["category"] == "academic"
+
+    with use_persona(synthetic_loaded):
+        # те же фразы не совпадают по ключевым словам синтетической персоны: решает ветка без LLM
+        synthetic_phrase = await service.check_scope("сколько часов в табеле Тидекс")
+        synthetic_academic = await service.check_scope("как оформить лабораторную работу по физике")
+        synthetic_out = await service.check_scope("новости Тестовая компания Бета")
+        synthetic_in = await service.check_scope("задача по синтетическая механика")
+
+    assert synthetic_phrase["reason"] != owner_reason
+    assert synthetic_academic["category"] != "academic"
+    assert synthetic_out["category"] == "out_of_scope"
+    assert synthetic_out["reason"] == "Вопрос вне методической работы: Тестовый университет Альфа"
+    assert synthetic_in["category"] == "academic"
+
+
+def test_lms_base_url_from_persona(synthetic_loaded: PersonaConfig) -> None:
+    from src.connectors.guap_lms.client import GuapLmsClient
+
+    assert GuapLmsClient(email="", password="").base_url == "https://pro.guap.ru"
+    with use_persona(synthetic_loaded):
+        client = GuapLmsClient(email="", password="")
+    assert client.base_url == "https://lms.synthetic.example"
+    assert client.session.headers["Origin"] == "https://lms.synthetic.example"
+    assert GuapLmsClient(email="", password="", base_url="https://explicit.example").base_url == "https://explicit.example"

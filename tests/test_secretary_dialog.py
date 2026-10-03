@@ -1,11 +1,14 @@
 """Unit tests for SecretaryDialogEngine and Conversational Telegram Assistant."""
 
+from pathlib import Path
+
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from datetime import datetime, timezone
 from src.storage.db import Database
 from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.notifier.bot_handler import EmailBotHandler
+from src.persona.bindings import methodist_settings
 
 
 @pytest.mark.asyncio
@@ -142,7 +145,10 @@ def test_search_local_files_catalog():
     db = Database(db_path=":memory:")
     engine = SecretaryDialogEngine(db=db, api_key="")
     ctx, files = engine._search_local_files_context("скинь шаблон эффективного контракта")
+    # BCK-02, D-17: ожидаемое имя бланка берётся из каталога персоны по умолчанию
+    entry = next(e for e in methodist_settings().file_catalog if "контракт" in e.keywords)
+    expected_name = Path(entry.relpath).stem
     assert len(files) >= 1
-    assert any("Форма_отчета_эффективный_контракт" in f["name"] for f in files)
+    assert any(expected_name in f["name"] for f in files)
     assert "ДОСТУПНЫЕ ЛОКАЛЬНЫЕ ФАЙЛЫ" in ctx
 
