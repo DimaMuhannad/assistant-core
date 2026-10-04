@@ -23,7 +23,6 @@ HARDCODE_BASELINE: dict[str, dict[str, int]] = {
     "scripts/publish_lab1_tasks.py": {"name": 3, "organization": 2},
     "scripts/reconcile_schedule.py": {"domain": 2, "name": 1, "organization": 6},
     "scripts/run_stt_stress_test.py": {"organization": 2},
-    "scripts/security_shield.py": {"account": 2, "organization": 6},
     "scripts/test_secretary_simulation.py": {"account": 1, "domain": 4, "organization": 14},
     "src/brain/debrief_parser.py": {"organization": 8},
     "src/brain/intent_router.py": {"organization": 1},
@@ -46,5 +45,5 @@ HARDCODE_BASELINE: dict[str, dict[str, int]] = {
     "src/notifier/live_ticker.py": {"domain": 1, "organization": 18},
     "src/notifier/telegram.py": {"organization": 3},
     "src/sender/email_sender.py": {"domain": 1, "name": 2, "organization": 8},
-    "src/storage/db.py": {"domain": 3, "name": 2, "organization": 34},
+    "src/storage/db.py": {"domain": 3, "name": 2, "organization": 29},
 }

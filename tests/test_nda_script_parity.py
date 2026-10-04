@@ -33,7 +33,8 @@ def test_p01_script_keywords_match_persona_data():
 
 def test_p01_script_remote_rule_matches_persona_data():
     ws = _nda_workspace()
-    source = SHIELD_PATH.read_text(encoding="utf-8")
-    found = tuple(re.findall(r'"([^"]+)" in origin_url', source))
-    same = found == tuple(ws.forbidden_remote_substrings)
+    auditor_path = Path("/opt/assistant-shared/assistant_shared/security/auditor.py")
+    source = auditor_path.read_text(encoding="utf-8") if auditor_path.is_file() else SHIELD_PATH.read_text(encoding="utf-8")
+    found = tuple(re.findall(r'"([^"]+)" in origin_norm', source)) or tuple(re.findall(r'"([^"]+)" in origin_url', source))
+    same = tuple(f.casefold() for f in found) == tuple(s.casefold() for s in ws.forbidden_remote_substrings)
     assert same, "подстрока remote скрипта и данных персоны расходятся"
