@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Перебор путей поиска Python гарантирует корректную работу в dev, CI и изолированных тестах tmp_path
+PYTHON_BIN=""
+for candidate in "${VIRTUAL_ENV}/bin/python" "${REPO_ROOT}/backend/.venv/bin/python" "${REPO_ROOT}/.venv/bin/python" "/opt/chat-app/backend/.venv/bin/python" "/opt/assistant-core/.venv/bin/python"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+        PYTHON_BIN="${candidate}"
+        break
+    fi
+done
+if [ -z "${PYTHON_BIN}" ]; then
+    PYTHON_BIN="python3"
+fi
+
+echo "🛡️ [Pre-Commit Hook] Запуск Security Shield проверки индексированных файлов..."
+exec "${PYTHON_BIN}" "${REPO_ROOT}/scripts/security_shield.py" "${REPO_ROOT}"
