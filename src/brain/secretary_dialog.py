@@ -34,6 +34,7 @@ from src.brain.key_rotator import key_rotator
 from src.composition import default_timesheet_service
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.models.schedule import SchedulePayload, Lesson
+from src.security.airgap import is_nda_email, mask_nda_email_data, NDA_MASK_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,11 @@ class SecretaryDialogEngine:
             for em in actionable:
                 sender = em.get("sender_name") or em.get("sender_email")
                 subj = em.get("subject", "Без темы")
-                snip = (em.get("snippet") or "")[:120]
+                if is_nda_email(em):
+                    em = mask_nda_email_data(em)
+                    snip = NDA_MASK_MARKER
+                else:
+                    snip = (em.get("snippet") or "")[:120]
                 lines.append(f"• От {sender}: «{subj}» — {snip}")
             return "\n".join(lines)
         except Exception as e:
@@ -167,8 +172,12 @@ class SecretaryDialogEngine:
                 date_str = str(em.get("date_sent", ""))[:16].replace("T", " ")
                 sender = em.get("sender_name") or em.get("sender_email")
                 subj = em.get("subject", "Без темы")
-                body = (em.get("body_plain") or em.get("snippet") or "")[:280].strip()
-                snippet_clean = " ".join(body.split())
+                if is_nda_email(em):
+                    em = mask_nda_email_data(em)
+                    snippet_clean = NDA_MASK_MARKER
+                else:
+                    body = (em.get("body_plain") or em.get("snippet") or "")[:280].strip()
+                    snippet_clean = " ".join(body.split())
                 lines.append(f"• [{date_str}] От: {sender} ({em.get('sender_email')})\n  Тема: «{subj}»\n  Текст: {snippet_clean}")
 
             return "\n".join(lines)

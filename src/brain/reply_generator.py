@@ -6,7 +6,9 @@ from google import genai
 from google.genai import types
 
 from src import config
+from src.core.exceptions import AirGapViolationError
 from src.persona.prompts import render_prompt
+from src.security.airgap import is_nda_email
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,10 @@ class ReplyGenerator:
         user_instructions: str | None = None,
     ) -> str:
         """Generate draft reply for an incoming email message."""
+        if is_nda_email(email_data):
+            logger.warning("Reply generation blocked for restricted_nda email: %s", email_data.get("id"))
+            raise AirGapViolationError("Автогенерация ответа запрещена политикой Air-Gap")
+
         sender_name = email_data.get("sender_name") or ""
         sender_email = email_data.get("sender_email") or ""
         subject = email_data.get("subject") or "Без темы"

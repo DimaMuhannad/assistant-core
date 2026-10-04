@@ -75,6 +75,7 @@ forbidden_modules =
     src.config
     src.composition
     src.persona
+    src.security
 allow_indirect_imports = True
 ignore_imports =
 

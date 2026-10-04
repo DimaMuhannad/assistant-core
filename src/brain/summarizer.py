@@ -9,6 +9,7 @@ from src import config
 from src.models.schedule import Lesson, format_academic_lesson_line
 from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
+from src.security.airgap import is_nda_email, mask_nda_email_data
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ class GeminiSummarizer:
         timesheet_pacing: dict[str, Any] | None = None,
     ) -> str:
         """Generate an executive morning brief combining schedule, emails, and action items."""
+        if actionable_emails:
+            actionable_emails = [
+                mask_nda_email_data(e) if is_nda_email(e) else e
+                for e in actionable_emails
+            ]
+
         if not self.is_configured:
             logger.info("Gemini API key not configured, falling back to deterministic template.")
             return self._generate_fallback_brief(target_date, lessons, action_items, actionable_emails, upcoming_lessons, timesheet_pacing)
@@ -303,8 +310,14 @@ class GeminiSummarizer:
             weekday_today = weekday_names[target_date.weekday()]
             weekday_tmr = weekday_names[tomorrow_date.weekday()]
 
-            bot_answered = email_stats.get("bot_answered", [])
-            pending = email_stats.get("pending_actionable", [])
+            bot_answered = [
+                mask_nda_email_data(em) if is_nda_email(em) else em
+                for em in email_stats.get("bot_answered", [])
+            ]
+            pending = [
+                mask_nda_email_data(em) if is_nda_email(em) else em
+                for em in email_stats.get("pending_actionable", [])
+            ]
 
             email_lines = [
                 f"Обработано и отправлено ответов за сегодня: {len(bot_answered)}.",
@@ -404,8 +417,14 @@ class GeminiSummarizer:
 
         lines = [f"🌙 **Вечерний дайджест за {target_date.strftime('%d.%m.%Y')} ({weekday_today})**\n"]
 
-        bot_answered = email_stats.get("bot_answered", [])
-        pending = email_stats.get("pending_actionable", [])
+        bot_answered = [
+            mask_nda_email_data(em) if is_nda_email(em) else em
+            for em in email_stats.get("bot_answered", [])
+        ]
+        pending = [
+            mask_nda_email_data(em) if is_nda_email(em) else em
+            for em in email_stats.get("pending_actionable", [])
+        ]
 
         lines.append("📬 **Почтовый щит: статистика за день**")
         lines.append(f"• Всего отвечено писем: **{len(bot_answered)}**")
