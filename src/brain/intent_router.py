@@ -119,7 +119,19 @@ class FastIntentRouter:
             await self._audit(user_id, cleaned, res)
             return res
 
-        if lower in ("/timesheet", "табель", "покажи табель", "часы тидекс", "выработка", "норма часов", "баланс часов", "карточка тидекс"):
+        timesheet_cmds = {"/timesheet", "табель", "покажи табель", "выработка", "норма часов", "баланс часов"}
+        try:
+            from src.persona.current import current_persona
+            comp = current_persona().organizations.get("company")
+            if comp:
+                for a in [comp.name] + list(comp.aliases):
+                    if a:
+                        timesheet_cmds.add(f"часы {a.lower()}")
+                        timesheet_cmds.add(f"карточка {a.lower()}")
+        except Exception:
+            pass
+
+        if lower in timesheet_cmds:
             res = IntentResult(
                 action="timesheet",
                 confidence=1.0,

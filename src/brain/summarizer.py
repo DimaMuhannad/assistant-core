@@ -37,6 +37,16 @@ class GeminiSummarizer:
             self._client = genai.Client(api_key=self.api_key)
         return self._client
 
+    def _get_org_names(self) -> tuple[str, str]:
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            u_name = persona.organizations.get("university", {}).name or "Университет"
+            c_name = persona.organizations.get("company", {}).name or "Компания"
+            return u_name, c_name
+        except Exception:
+            return "Университет", "Компания"
+
     async def generate_morning_brief(
         self,
         target_date: date,
@@ -79,8 +89,8 @@ class GeminiSummarizer:
             # 2. Actionable emails summary context
             emails_section = ""
             if actionable_emails:
-                stud_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_student")
-                dept_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_dept")
+                stud_cnt = sum(1 for e in actionable_emails if "student" in e.get("category", ""))
+                dept_cnt = sum(1 for e in actionable_emails if "dept" in e.get("category", ""))
                 emails_section = (
                     f"=== СВОДКА ПО ВХОДЯЩЕЙ ПОЧТЕ ===\n"
                     f"Всего неотвеченных писем, требующих действия: {len(actionable_emails)} (студенты: {stud_cnt}, кафедра: {dept_cnt}).\n"
@@ -128,8 +138,9 @@ class GeminiSummarizer:
                 m_delta = timesheet_pacing.get("morning_delta", 0.0)
                 m_sign = "+" if m_delta > 0 else ""
                 rel_d = timesheet_pacing.get("latest_date_formatted", "сегодня")
+                _, c_name = self._get_org_names()
                 timesheet_section = (
-                    f"=== ТАБЕЛЬ И БАЛАНС ЧАСОВ «ТИДЕКС» ===\n"
+                    f"=== ТАБЕЛЬ И БАЛАНС ЧАСОВ «{c_name}» ===\n"
                     f"Дельта нормы на утро: {m_sign}{m_delta:.1f} ч (актуально на {rel_d})\n\n"
                 )
 
@@ -228,12 +239,13 @@ class GeminiSummarizer:
             m_delta = timesheet_pacing.get("morning_delta", 0.0)
             m_sign = "+" if m_delta > 0 else ""
             rel_d = timesheet_pacing.get("latest_date_formatted", "сегодня")
-            lines.append("⏱️ **Табель «Тидекс»:**")
+            _, c_name = self._get_org_names()
+            lines.append(f"⏱️ **Табель «{c_name}»:**")
             lines.append(f"• Дельта нормы на утро: `{m_sign}{m_delta:.1f}` ч (актуально на {rel_d})\n")
 
         if actionable_emails:
-            stud_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_student")
-            dept_cnt = sum(1 for e in actionable_emails if e.get("category") == "guap_dept")
+            stud_cnt = sum(1 for e in actionable_emails if "student" in e.get("category", ""))
+            dept_cnt = sum(1 for e in actionable_emails if "dept" in e.get("category", ""))
             other_cnt = len(actionable_emails) - stud_cnt - dept_cnt
             breakdown = []
             if stud_cnt:
@@ -266,7 +278,8 @@ class GeminiSummarizer:
             else:
                 general_tasks.append(summary)
 
-        lines.append("💬 **Мессенджеры (ОПД ГУАП):**")
+        u_name, _ = self._get_org_names()
+        lines.append(f"💬 **Мессенджеры (ОПД {u_name}):**")
         if opd_items:
             for it in opd_items[:5]:
                 lines.append(f"• {it}")
@@ -325,7 +338,8 @@ class GeminiSummarizer:
             if bot_answered:
                 email_lines.append("Список отправленных ответов:")
                 for em in bot_answered:
-                    cat = "Студент" if em.get("category") == "guap_student" else "Кафедра/ГУАП"
+                    u_name, _ = self._get_org_names()
+                    cat = "Студент" if "student" in em.get("category", "") else f"Кафедра/{u_name}"
                     s_name = em.get("sender_name") or em.get("sender_email")
                     time_str = str(em.get("updated_at", ""))
                     if "T" in time_str:
@@ -360,7 +374,8 @@ class GeminiSummarizer:
 
             msg_section = ""
             if opd_lines:
-                msg_section = "=== СВОДКА ПО МЕССЕНДЖЕРАМ (ОПД ГУАП) ===\n" + "\n".join(f"• {it}" for it in opd_lines[:5]) + "\n\n"
+                u_name, _ = self._get_org_names()
+                msg_section = f"=== СВОДКА ПО МЕССЕНДЖЕРАМ (ОПД {u_name}) ===\n" + "\n".join(f"• {it}" for it in opd_lines[:5]) + "\n\n"
 
             prompt = (
                 f"Сегодня завершается: {target_date.strftime('%d.%m.%Y')} ({weekday_today}).\n\n"
@@ -465,7 +480,8 @@ class GeminiSummarizer:
                     opd_items.append(f"[{grp_tag}] {clean_sum}")
 
         if opd_items:
-            lines.append("💬 **Мессенджеры (ОПД ГУАП):**")
+            u_name, _ = self._get_org_names()
+            lines.append(f"💬 **Мессенджеры (ОПД {u_name}):**")
             for it in opd_items[:5]:
                 lines.append(f"• {it}")
             lines.append("")

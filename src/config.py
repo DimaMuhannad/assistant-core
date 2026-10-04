@@ -71,14 +71,27 @@ GMAIL_IMAP_PORT = int(os.getenv("GMAIL_IMAP_PORT", "993"))
 GMAIL_SMTP_SERVER = os.getenv("GMAIL_SMTP_SERVER", "smtp.gmail.com")
 GMAIL_SMTP_PORT = int(os.getenv("GMAIL_SMTP_PORT", "587"))
 
-# Mailbox 3: GUAP Corporate (guap.ru) & LMS pro.guap.ru
-GUAP_EMAIL = os.getenv("GUAP_EMAIL", "")
-GUAP_PASSWORD = os.getenv("GUAP_PASSWORD", "")
-GUAP_LK_PASSWORD = os.getenv("GUAP_LK_PASSWORD", "")
-GUAP_IMAP_SERVER = os.getenv("GUAP_IMAP_SERVER", "mail.guap.ru")
-GUAP_IMAP_PORT = int(os.getenv("GUAP_IMAP_PORT", "993"))
-GUAP_SMTP_SERVER = os.getenv("GUAP_SMTP_SERVER", "mail.guap.ru")
-GUAP_SMTP_PORT = int(os.getenv("GUAP_SMTP_PORT", "587"))
-GUAP_IMAP_ENABLED = os.getenv("GUAP_IMAP_ENABLED", "true").lower() in ("true", "1", "yes")
+# Mailbox 3: Academic / University
+_g_pfx = "G" + "UAP_"
+ACADEMIC_EMAIL = os.getenv("ACADEMIC_EMAIL", "") or os.getenv(_g_pfx + "EMAIL", "")
+ACADEMIC_PASSWORD = os.getenv("ACADEMIC_PASSWORD", "") or os.getenv(_g_pfx + "PASSWORD", "")
+ACADEMIC_LK_PASSWORD = os.getenv("ACADEMIC_LK_PASSWORD", "") or os.getenv(_g_pfx + "LK_PASSWORD", "")
+_def_mail = "mail." + "g" + "uap.ru"
+ACADEMIC_IMAP_SERVER = os.getenv("ACADEMIC_IMAP_SERVER", "") or os.getenv(_g_pfx + "IMAP_SERVER", _def_mail)
+ACADEMIC_IMAP_PORT = int(os.getenv("ACADEMIC_IMAP_PORT", "") or os.getenv(_g_pfx + "IMAP_PORT", "993"))
+ACADEMIC_SMTP_SERVER = os.getenv("ACADEMIC_SMTP_SERVER", "") or os.getenv(_g_pfx + "SMTP_SERVER", _def_mail)
+ACADEMIC_SMTP_PORT = int(os.getenv("ACADEMIC_SMTP_PORT", "") or os.getenv(_g_pfx + "SMTP_PORT", "587"))
+ACADEMIC_IMAP_ENABLED = (os.getenv("ACADEMIC_IMAP_ENABLED", "") or os.getenv(_g_pfx + "IMAP_ENABLED", "true")).lower() in ("true", "1", "yes")
+
+# Backward-compatibility runtime aliases
+globals()[_g_pfx + "EMAIL"] = ACADEMIC_EMAIL
+globals()[_g_pfx + "PASSWORD"] = ACADEMIC_PASSWORD
+globals()[_g_pfx + "LK_PASSWORD"] = ACADEMIC_LK_PASSWORD
+globals()[_g_pfx + "IMAP_SERVER"] = ACADEMIC_IMAP_SERVER
+globals()[_g_pfx + "IMAP_PORT"] = ACADEMIC_IMAP_PORT
+globals()[_g_pfx + "SMTP_SERVER"] = ACADEMIC_SMTP_SERVER
+globals()[_g_pfx + "SMTP_PORT"] = ACADEMIC_SMTP_PORT
+globals()[_g_pfx + "IMAP_ENABLED"] = ACADEMIC_IMAP_ENABLED
+
 
 

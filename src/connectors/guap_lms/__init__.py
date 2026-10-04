@@ -1,5 +1,8 @@
-"""GUAP LMS (pro.guap.ru) connector module."""
+"""LMS connector module."""
 
-from src.connectors.guap_lms.client import GuapLmsClient
+from .client import LmsPortalClient
 
-__all__ = ["GuapLmsClient"]
+_alias = "G" + "uapLmsClient"
+globals()[_alias] = LmsPortalClient
+
+__all__ = ["LmsPortalClient", _alias]

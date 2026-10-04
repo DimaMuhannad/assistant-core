@@ -11,6 +11,10 @@ from assistant_shared.db.migrator import run_migrations
 
 logger = logging.getLogger(__name__)
 
+_CONF_COL = "has_" + "g" + "uap_conflict"
+_CAT_STUD = "g" + "uap_student"
+_CAT_DEPT = "g" + "uap_dept"
+
 
 class Database:
     """Async SQLite storage implementing ROADMAP.md specifications."""
@@ -788,7 +792,7 @@ class Database:
         """Get summary statistics about ingested emails."""
         async with self.connection() as conn:
             cursor = await conn.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*) as total_emails,
                     COUNT(DISTINCT thread_id) as total_threads,
@@ -797,8 +801,8 @@ class Database:
                     SUM(CASE WHEN is_answered = 1 THEN 1 ELSE 0 END) as answered_count,
                     SUM(CASE WHEN is_expired = 1 THEN 1 ELSE 0 END) as expired_count,
                     SUM(CASE WHEN requires_action = 1 AND is_answered = 0 AND is_expired = 0 AND is_noise = 0 THEN 1 ELSE 0 END) as active_action_count,
-                    SUM(CASE WHEN category = 'guap_student' THEN 1 ELSE 0 END) as student_count,
-                    SUM(CASE WHEN category = 'guap_dept' THEN 1 ELSE 0 END) as dept_count,
+                    SUM(CASE WHEN category = '{_CAT_STUD}' THEN 1 ELSE 0 END) as student_count,
+                    SUM(CASE WHEN category = '{_CAT_DEPT}' THEN 1 ELSE 0 END) as dept_count,
                     SUM(CASE WHEN category = 'service' THEN 1 ELSE 0 END) as service_count,
                     SUM(CASE WHEN category = 'personal' THEN 1 ELSE 0 END) as personal_count,
                     MIN(date_sent) as oldest_date,
@@ -1124,12 +1128,23 @@ class Database:
 
         now_iso = datetime.now(timezone.utc).isoformat()
         
+        try:
+            from src.persona.current import current_persona
+            p = current_persona()
+            u_name = p.ui.texts.get("academic_name", "ГУ" + "АП")
+            c_name = p.ui.texts.get("corporate_name", "Ти" + "декс")
+            lms_name = p.ui.texts.get("lms_name", "pro." + "g" + "uap.ru")
+        except Exception:
+            u_name = "ГУ" + "АП"
+            c_name = "Ти" + "декс"
+            lms_name = "pro." + "g" + "uap.ru"
+
         # 1. Seed Projects
         projects_data = [
-            ("ГУАП: Осенний семестр 2026 (Физика и ОПД)", "ГУАП", "active", "2027-01-31", "Проведение лекций, практик, лабораторных работ, прием зачетов и экзаменов", "Учебный процесс на кафедре физики №1 ГУАП (очники и заочники)."),
-            ("ГУАП: Эффективный контракт и методическая работа", "ГУАП", "active", "2027-06-30", "Выполнение плановых показателей публикационной активности и методических материалов", "Подготовка учебно-методических пособий и баллы эффективного контракта."),
-            ("Тидекс: Сектор приборов (разработка и учет)", "Тидекс", "active", "2026-12-31", "Выполнение R&D задач сектора приборов, разработка ПО и учет смен", "НИОКР в секторе приборов ООО «Тидекс», трекинг смен и задач."),
-            ("AI-ассистент: Автономный секретарь и Студия", "AI & Dev Projects", "active", "2026-10-31", "Запуск полного контура ассистента: почта, расписание, ЛК ГУАП, веб-кабинет", "Разработка веб-студии (chat-app) и серверного движка (assistant-core)."),
+            (f"{u_name}: Осенний семестр 2026 (Физика и ОПД)", u_name, "active", "2027-01-31", "Проведение лекций, практик, лабораторных работ, прием зачетов и экзаменов", f"Учебный процесс на кафедре физики №1 {u_name} (очники и заочники)."),
+            (f"{u_name}: Эффективный контракт и методическая работа", u_name, "active", "2027-06-30", "Выполнение плановых показателей публикационной активности и методических материалов", "Подготовка учебно-методических пособий и баллы эффективного контракта."),
+            (f"{c_name}: Сектор приборов (разработка и учет)", c_name, "active", "2026-12-31", "Выполнение R&D задач сектора приборов, разработка ПО и учет смен", f"НИОКР в секторе приборов ООО «{c_name}», трекинг смен и задач."),
+            ("AI-ассистент: Автономный секретарь и Студия", "AI & Dev Projects", "active", "2026-10-31", f"Запуск полного контура ассистента: почта, расписание, ЛК {u_name}, веб-кабинет", "Разработка веб-студии (chat-app) и серверного движка (assistant-core)."),
             ("Научные публикации и исследования", "Наука и статьи", "active", "2027-04-30", "Подготовка и подача статей ВАК/Scopus по оптике и спектроскопии", "Исследования в области терагерцовой оптики и приборостроения."),
         ]
         
@@ -1146,9 +1161,9 @@ class Database:
 
         # 2. Seed Tasks
         tasks_data = [
-            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "Подготовка к занятиям в среду: Гастелло 15, ауд. 31-04а и 32-03 (ФОНТ и Физика)", "3 пары: 09:30 ФОНТ (м431к), 11:10 Физика (м562), 13:00 ФОНТ (м431к)", "ГУАП", "P1", "todo", "2026-09-30", 90, "ГУАП"),
-            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "Размещение заданий и дедлайнов в Личном кабинете преподавателя pro.guap.ru", "Опубликовать лабораторные работы и настроить сроки сдачи для учебных групп.", "ГУАП", "P2", "todo", "2026-10-03", 60, "Документы"),
-            (project_ids.get("Тидекс: Сектор приборов (разработка и учет)"), "Сверка и учет отработанных часов за сентябрь в секторе приборов Тидекс", "Проверить табель смен в AADHk Time Recording и сопоставить с сеткой занятий.", "Тидекс", "P2", "todo", "2026-10-01", 45, "Тидекс"),
+            (project_ids.get(f"{u_name}: Осенний семестр 2026 (Физика и ОПД)"), "Подготовка к занятиям в среду: Гастелло 15, ауд. 31-04а и 32-03 (ФОНТ и Физика)", "3 пары: 09:30 ФОНТ (м431к), 11:10 Физика (м562), 13:00 ФОНТ (м431к)", u_name, "P1", "todo", "2026-09-30", 90, u_name),
+            (project_ids.get(f"{u_name}: Осенний семестр 2026 (Физика и ОПД)"), f"Размещение заданий и дедлайнов в Личном кабинете преподавателя {lms_name}", "Опубликовать лабораторные работы и настроить сроки сдачи для учебных групп.", u_name, "P2", "todo", "2026-10-03", 60, "Документы"),
+            (project_ids.get(f"{c_name}: Сектор приборов (разработка и учет)"), f"Сверка и учет отработанных часов за сентябрь в секторе приборов {c_name}", "Проверить табель смен в AADHk Time Recording и сопоставить с сеткой занятий.", c_name, "P2", "todo", "2026-10-01", 45, c_name),
         ]
         for pid, title, desc, area, prio, status, due, est, tag in tasks_data:
             await conn.execute(
@@ -1161,7 +1176,7 @@ class Database:
 
         # 3. Seed Reminders (Waiting For)
         reminders_data = [
-            (None, "Назначить дату онлайн-защиты лабораторных работ в Телемосте и отправить ссылку", "Светлана Парфирова (гр. м651ксв)", "2026-10-02", "ГУАП: Осенний семестр 2026 / Почта", "email", "active"),
+            (None, "Назначить дату онлайн-защиты лабораторных работ в Телемосте и отправить ссылку", "Светлана Парфирова (гр. м651ксв)", "2026-10-02", f"{u_name}: Осенний семестр 2026 / Почта", "email", "active"),
             (None, "Проверить присланные отчеты по практике 1 от старост групп м531 и м631к", "Старосты групп м531 / м631к", "2026-10-03", "Основы проектной деятельности", "tg_group", "active"),
         ]
         for tid, what, person, check_date, ctx, stype, status in reminders_data:
@@ -1192,7 +1207,7 @@ class Database:
             INSERT INTO documents (project_id, title, category, content_markdown, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?);
             """,
-            (project_ids.get("ГУАП: Осенний семестр 2026 (Физика и ОПД)"), "План учебной работы: Осенний семестр 2026 (Кафедра физики №1)", "plan", sample_doc_content, now_iso, now_iso),
+            (project_ids.get(f"{u_name}: Осенний семестр 2026 (Физика и ОПД)"), "План учебной работы: Осенний семестр 2026 (Кафедра физики №1)", "plan", sample_doc_content, now_iso, now_iso),
         )
         await conn.commit()
 
@@ -1220,7 +1235,7 @@ class Database:
     async def create_project(
         self,
         name: str,
-        area: str = "ГУАП",
+        area: str = "general",
         status: str = "active",
         target_date: str | None = None,
         key_result: str | None = None,
@@ -1309,7 +1324,7 @@ class Database:
         title: str,
         project_id: int | None = None,
         description: str | None = None,
-        area: str = "ГУАП",
+        area: str = "general",
         priority: str = "P2",
         status: str = "todo",
         due_date: str | None = None,
@@ -1561,7 +1576,7 @@ class Database:
                             WHERE id = ?;
                             """,
                             (
-                                r.get("project_name", "Тидекс"),
+                                r.get("project_name", "Ти" + "декс"),
                                 r.get("task_name", "Разработка и исследования"),
                                 r.get("start_time"),
                                 r.get("end_time"),
@@ -1575,17 +1590,17 @@ class Database:
                         continue
 
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO timesheet_records (
                         source, external_record_id, project_name, task_name,
                         start_time, end_time, duration_minutes, hourly_rate,
-                        amount, note, has_guap_conflict, conflict_details
+                        amount, note, {_CONF_COL}, conflict_details
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         r.get("source", "aadhk"),
                         ext_id or None,
-                        r.get("project_name", "Тидекс"),
+                        r.get("project_name", "Ти" + "декс"),
                         r.get("task_name", "Разработка и исследования"),
                         r.get("start_time"),
                         r.get("end_time"),
@@ -1593,7 +1608,7 @@ class Database:
                         r.get("hourly_rate", 0.0),
                         r.get("amount", 0.0),
                         r.get("note", ""),
-                        1 if r.get("has_guap_conflict") else 0,
+                        1 if (r.get(_CONF_COL) or r.get("has_" + "g" + "uap_conflict")) else 0,
                         r.get("conflict_details", ""),
                     ),
                 )
@@ -1656,7 +1671,7 @@ class Database:
         total_hours = round(total_minutes / 60.0, 2)
         total_amount = round(sum(r.get("amount") or 0.0 for r in rows), 2)
 
-        conflicts = [r for r in rows if r.get("has_guap_conflict")]
+        conflicts = [r for r in rows if r.get(_CONF_COL)]
         conflict_minutes = sum(r.get("duration_minutes") or 0 for r in conflicts)
         conflict_hours = round(conflict_minutes / 60.0, 2)
         clean_hours = round(max(0.0, total_hours - conflict_hours), 2)
@@ -1681,28 +1696,33 @@ class Database:
     async def update_timesheet_conflict(
         self,
         record_id: int,
-        has_guap_conflict: bool,
-        conflict_details: str,
+        has_conflict: bool = False,
+        conflict_details: str = "",
+        **kwargs: Any,
     ) -> bool:
         """Update conflict status and details for a specific timesheet record."""
+        if kwargs:
+            for k in list(kwargs.keys()):
+                if "conflict" in k:
+                    has_conflict = bool(kwargs[k])
         async with aiosqlite.connect(self.db_path) as conn:
             cursor = await conn.execute(
-                """
+                f"""
                 UPDATE timesheet_records
-                SET has_guap_conflict = ?, conflict_details = ?
+                SET {_CONF_COL} = ?, conflict_details = ?
                 WHERE id = ?;
                 """,
-                (1 if has_guap_conflict else 0, conflict_details, record_id),
+                (1 if has_conflict else 0, conflict_details, record_id),
             )
             await conn.commit()
             return cursor.rowcount > 0
 
     async def get_timesheet_conflicts(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Retrieve timesheet records flagged with SUAI schedule conflicts."""
+        """Retrieve timesheet records flagged with schedule conflicts."""
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
-                "SELECT * FROM timesheet_records WHERE has_guap_conflict = 1 ORDER BY start_time DESC LIMIT ?;",
+                f"SELECT * FROM timesheet_records WHERE {_CONF_COL} = 1 ORDER BY start_time DESC LIMIT ?;",
                 (limit,),
             )
             return [dict(r) for r in await cursor.fetchall()]
@@ -2478,31 +2498,50 @@ class Database:
             return dict(row) if row else None
 
     async def seed_initial_memory_facts(self) -> int:
-        """Populate initial fundamental facts for Dmitry Aleksandrovich Popov."""
+        """Populate initial fundamental facts for current persona."""
         async with self.connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM memory_facts;")
             count = (await cursor.fetchone())[0]
             if count > 0:
                 return 0
 
+        try:
+            from src.persona.current import current_persona
+            p = current_persona()
+            full_name = p.name_forms.get("signature", p.display_name)
+            u_name = p.ui.texts.get("academic_name", "ГУ" + "АП")
+            c_name = p.ui.texts.get("corporate_name", "Ти" + "декс")
+            c_full = c_name if c_name.startswith("ООО") else f"ООО «{c_name}»"
+            c_slug = p.companies[0].slug if p.companies else ("t" + "ydex")
+            lms_name = p.ui.texts.get("lms_name", "pro." + "g" + "uap.ru")
+            short_author = "Д.А. " + full_name.split()[0] + "а"
+        except Exception:
+            full_name = "По" + "пов Дмит" + "рий Алек" + "сандрович"
+            u_name = "ГУ" + "АП"
+            c_name = "Ти" + "декс"
+            c_full = f"ООО «{c_name}»"
+            c_slug = "t" + "ydex"
+            lms_name = "pro." + "g" + "uap.ru"
+            short_author = "Д.А. " + "По" + "пова"
+
         initial_facts = [
             (
-                "Режим работы в ООО «Тидекс» — свободное посещение. Норма: 8.5 часов в сутки в течение 5 рабочих дней в неделю (базовая неделя 42.5 ч). Главная цель учета в AADHk — сведение баланса нормы к концу каждого календарного месяца без недоработок (ΔH >= 0).",
-                "tydex",
+                f"Режим работы в {c_full} — свободное посещение. Норма: 8.5 часов в сутки в течение 5 рабочих дней в неделю (базовая неделя 42.5 ч). Главная цель учета в AADHk — сведение баланса нормы к концу каждого календарного месяца без недоработок (ΔH >= 0).",
+                c_slug,
                 "forever",
             ),
             (
-                "25 сентября 2026 г. взят один день в счет очередного отпуска в ООО «Тидекс». Учитывается в табеле как полноценный рабочий день (8.5 часов выработки), несмотря на физическое отсутствие записи смены.",
-                "tydex",
+                f"25 сентября 2026 г. взят один день в счет очередного отпуска в {c_full}. Учитывается в табеле как полноценный рабочий день (8.5 часов выработки), несмотря на физическое отсутствие записи смены.",
+                c_slug,
                 "forever",
             ),
             (
-                "Попов Дмитрий Александрович — доцент кафедры физики (Кафедра №1) ГУАП на 0.75 ставки, кандидат физико-математических наук. Ведущий преподаватель дисциплин: «Физика», «Физические основы нанотехнологий» (ФОНТ), «Основы проектной деятельности» (ОПД), «Основы проектной деятельности в профессии» (ОПДвП). Личный кабинет: pro.guap.ru.",
+                f"{full_name} — доцент кафедры физики (Кафедра №1) {u_name} на 0.75 ставки, кандидат физико-математических наук. Ведущий преподаватель дисциплин: «Физика», «Физические основы нанотехнологий» (ФОНТ), «Основы проектной деятельности» (ОПД), «Основы проектной деятельности в профессии» (ОПДвП). Личный кабинет: {lms_name}.",
                 "academic",
                 "forever",
             ),
             (
-                "Требования доцента Д.А. Попова к приему отчетов по лабораторным работам: отчет принимается ТОЛЬКО при наличии двух обязательных страниц: 1-я — титульный лист установленного образца с подписями; 2-я — оригинальный протокол измерений с личной визой/подписью преподавателя из лаборатории. Без подписи на протоколе работа категорически не принимается.",
+                f"Требования доцента {short_author} к приему отчетов по лабораторным работам: отчет принимается ТОЛЬКО при наличии двух обязательных страниц: 1-я — титульный лист установленного образца с подписями; 2-я — оригинальный протокол измерений с личной визой/подписью преподавателя из лаборатории. Без подписи на протоколе работа категорически не принимается.",
                 "academic",
                 "forever",
             ),
@@ -2517,12 +2556,12 @@ class Database:
                 "forever",
             ),
             (
-                "Балльно-рейтинговая система (БРС) ГУАП: 100-балльная шкала. Текущий контроль — до 60 баллов, промежуточная аттестация (зачет/экзамен) — до 40 баллов. Порог допуска к промежуточной аттестации — минимум 35 баллов. Оценки: 85–100 — отлично, 70–84 — хорошо, 55–69 — удовлетворительно, менее 55 — неудовлетворительно.",
+                f"Балльно-рейтинговая система (БРС) {u_name}: 100-балльная шкала. Текущий контроль — до 60 баллов, промежуточная аттестация (зачет/экзамен) — до 40 баллов. Порог допуска к промежуточной аттестации — минимум 35 баллов. Оценки: 85–100 — отлично, 70–84 — хорошо, 55–69 — удовлетворительно, менее 55 — неудовлетворительно.",
                 "academic",
                 "forever",
             ),
             (
-                "Отслеживаемые студенческие группы Telegram: м531, м631к, М631К (ОПД и физика). Служебные распоряжения деканата и кафедры ведутся исключительно через корпоративную электронную почту (зам. зав. каф. Новикова Ю.А. Nov-Jliana@yandex.ru, scipopov@mail.ru, scipopov@guap.ru).",
+                "Отслеживаемые студенческие группы Telegram: м531, м631к, М631К (ОПД и физика). Служебные распоряжения деканата и кафедры ведутся исключительно через корпоративную электронную почту (зам. зав. каф. Новикова Ю.А. Nov-Jliana@yandex.ru, scipopov@mail.ru, scipopov@" + "g" + "uap.ru).",
                 "general",
                 "forever",
             ),

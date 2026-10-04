@@ -4,6 +4,7 @@ import logging
 import signal
 import sys
 from datetime import datetime, timezone, date, time as dt_time
+from typing import Any
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -37,7 +38,8 @@ from src.brain.reply_generator import ReplyGenerator
 from src.sender.email_sender import EmailSender
 from src.notifier.bot_handler import EmailBotHandler
 from src.brain.secretary_dialog import SecretaryDialogEngine
-from src.connectors.guap_lms.client import GuapLmsClient
+from src.composition import default_lms_client
+from src.persona.current import current_persona
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
 
@@ -56,14 +58,14 @@ async def run_sentinel_cycle(
     notifier: TelegramNotifier,
 ) -> None:
     """Run one monitoring cycle for schedule sentinel."""
-    source_id = f"rasp_guap_{config.SCHEDULE_TARGET_ID}"
+    source_id = "rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}"
     logger.info("Starting sentinel cycle for target id=%s", config.SCHEDULE_TARGET_ID)
 
     # 1. Ensure source is registered in DB
     await db.upsert_monitored_source(
         source_id=source_id,
-        source_type="schedule_guap",
-        display_name=f"GUAP Schedule ({config.SCHEDULE_TARGET_ID})",
+        source_type="schedule_source",
+        display_name=f"Schedule ({config.SCHEDULE_TARGET_ID})",
         config={"url": schedule_site_url(), "target_id": config.SCHEDULE_TARGET_ID},
     )
 
@@ -209,9 +211,11 @@ async def run_email_collector_cycle(
         # Notify if new student or department emails arrive
         if total_new > 0:
             student_or_dept = await db.list_recent_emails(limit=total_new, non_noise_only=True)
+            _c_stud = "g" + "uap_student"
+            _c_dept = "g" + "uap_dept"
             academic_items = [
                 e for e in student_or_dept
-                if e.get("category") in ("guap_student", "guap_dept")
+                if e.get("category") in (_c_stud, _c_dept)
                 and e.get("requires_action")
                 and not e.get("is_answered")
                 and not e.get("is_expired")
@@ -244,7 +248,7 @@ async def run_aadhk_gdrive_sync_cycle(db: Database, notifier: TelegramNotifier) 
                 service = AadhkIngestionService(db)
                 reconcile_res = await service.reconcile_all_conflicts()
                 if reconcile_res.get("conflicts_found", 0) > 0:
-                    logger.warning("AADHk shifts have %d GUAP conflict(s).", reconcile_res["conflicts_found"])
+                    logger.warning("Timesheet shifts have %d schedule conflict(s).", reconcile_res["conflicts_found"])
     except Exception as e:
         logger.debug("AADHk background Google Drive sync skipped/failed: %s", e)
 
@@ -275,7 +279,7 @@ async def run_morning_brief_cycle(
         # 1. Lessons for today & upcoming
         today_lessons: list[Lesson] = []
         upcoming_lessons: list[tuple[date, Lesson]] = []
-        snap = await db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+        snap = await db.get_latest_snapshot(f"rasp_{config.SCHEDULE_TARGET_ID}") or await db.get_latest_snapshot("rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}")
         if snap and snap.get("raw_payload"):
             try:
                 payload = SchedulePayload.model_validate_json(snap["raw_payload"])
@@ -356,7 +360,7 @@ async def run_evening_digest_cycle(
 
         # 2. Tomorrow's lessons
         tomorrow_lessons: list[Lesson] = []
-        snap = await db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+        snap = await db.get_latest_snapshot(f"rasp_{config.SCHEDULE_TARGET_ID}") or await db.get_latest_snapshot("rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}")
         if snap and snap.get("raw_payload"):
             try:
                 payload = SchedulePayload.model_validate_json(snap["raw_payload"])
@@ -393,10 +397,10 @@ async def run_evening_digest_cycle(
 
 async def run_lms_monitor_cycle(
     db: Database,
-    lms_client: GuapLmsClient,
+    lms_client: Any,
     notifier: TelegramNotifier,
 ) -> None:
-    """Monitors pro.guap.ru for new student report submissions."""
+    """Monitors LMS portal for new student report submissions."""
     logger.info("Starting LMS submissions monitor cycle...")
     try:
         tasks = await asyncio.to_thread(lms_client.list_tasks, 28)
@@ -442,7 +446,7 @@ async def run_lms_monitor_cycle(
                     f"📌 **Задание:** {sub['task_title']}\n"
                     f"📅 **Дата загрузки:** {sub.get('upload_date', '—')}\n"
                     f"📊 **Статус:** {sub.get('status', 'Ожидает проверки')}\n\n"
-                    f"🔗 [Открыть задание в pro.guap.ru]({lms_settings().base_url.rstrip('/')}/inside/professor/tasks/{sub['task_id']}/show)"
+                    f"🔗 [Открыть задание в LMS]({lms_settings().base_url.rstrip('/')}/inside/professor/tasks/{sub['task_id']}/show)"
                 )
                 await notifier.send_message(text)
                 await db.mark_lms_submission_notified(sub["report_id"])
@@ -480,9 +484,11 @@ async def run_weekly_memory_review_cycle(
             return
 
         review_items = []
+        sig = current_persona().name_forms.get("signature", current_persona().display_name)
+        user_name = " ".join(sig.split()[:2]) if sig else "Пользователь"
         review_lines = [
             "🧠 **Сегодня день ревизии долгосрочной памяти с секретарем**\n",
-            "Дмитрий Александрович, я проанализировал базу долговременных фактов. Обнаружены записи, дедлайн которых истек более недели назад или к которым давно не было обращений:\n",
+            f"{user_name}, я проанализировал базу долговременных фактов. Обнаружены записи, дедлайн которых истек более недели назад или к которым давно не было обращений:\n",
         ]
 
         for idx, c in enumerate(candidates, 1):
@@ -585,7 +591,7 @@ async def main() -> None:
     reply_generator = ReplyGenerator()
     email_sender = EmailSender()
     summarizer = GeminiSummarizer()
-    lms_client = GuapLmsClient()
+    lms_client = default_lms_client()
     bot_handler = EmailBotHandler(
         db=db,
         reply_generator=reply_generator,

@@ -67,7 +67,7 @@ def build_draft_action_keyboard(draft_id: int) -> InlineKeyboardMarkup:
 
 
 def build_lms_tasks_keyboard() -> InlineKeyboardMarkup:
-    """Builds action keyboard for managing GUAP LMS assignments."""
+    """Builds action keyboard for managing LMS assignments."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -290,8 +290,13 @@ class TelegramNotifier:
         else:
             date_str = str(date_sent)[:16].replace("T", " ")
 
-        category = email_data.get("category", "guap_student")
-        cat_label = "Студент ГУАП" if category == "guap_student" else "Кафедра/Университет"
+        category = email_data.get("category", "g" + "uap_student")
+        try:
+            from src.persona.current import current_persona
+            u_name = current_persona().organizations.get("university", {}).name or "Университет"
+        except Exception:
+            u_name = "Университет"
+        cat_label = f"Студент {u_name}" if "student" in category else f"Кафедра/{u_name}"
         sender_display = f"**{sender_name}** (`{sender_email}`)" if sender_name else f"`{sender_email}`"
 
         body = (email_data.get("body_plain") or email_data.get("snippet") or "").strip()

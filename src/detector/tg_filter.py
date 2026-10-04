@@ -73,7 +73,6 @@ class TelegramMessageFilter:
                 r"\bприказ\w*",
                 r"\bсобрани\w*",
                 r"\bзаседани\w*",
-                r"\bгуап\b",
                 r"\bдирекци\w*",
                 r"\bучебно-методическ\w*",
             ],
@@ -94,11 +93,24 @@ class TelegramMessageFilter:
     ]
 
     def __init__(self) -> None:
-        # Precompile category patterns
-        self.compiled_rules = [
-            (category, priority, [re.compile(p, re.IGNORECASE) for p in patterns])
-            for category, priority, patterns in self.CATEGORIES_CONFIG
-        ]
+        org_patterns = []
+        try:
+            from src.persona.current import current_persona
+            for org in current_persona().organizations.values():
+                for name in [org.name] + list(org.aliases):
+                    if name:
+                        org_patterns.append(rf"\b{re.escape(name.lower())}\b")
+        except Exception:
+            pass
+
+        self.compiled_rules = []
+        for category, priority, patterns in self.CATEGORIES_CONFIG:
+            cat_pats = list(patterns)
+            if category == "faculty_notice" and org_patterns:
+                cat_pats.extend(org_patterns)
+            self.compiled_rules.append(
+                (category, priority, [re.compile(p, re.IGNORECASE) for p in cat_pats])
+            )
 
     def filter_message(
         self,

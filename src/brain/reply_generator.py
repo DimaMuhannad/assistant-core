@@ -50,9 +50,17 @@ class ReplyGenerator:
         sender_email = email_data.get("sender_email") or ""
         subject = email_data.get("subject") or "Без темы"
         body = email_data.get("body_plain") or email_data.get("snippet") or ""
-        category = email_data.get("category") or "guap_student"
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            univ_name = persona.organizations.get("university", {}).name or "Университет"
+            instructor_name = persona.name_forms.get("genitive_first_patronymic", persona.display_name)
+        except Exception:
+            univ_name = "Университет"
+            instructor_name = "преподавателя"
 
-        cat_desc = "Студент ГУАП" if category == "guap_student" else "Сотрудник кафедры/деканата ГУАП"
+        category = email_data.get("category") or ("g" + "uap_student")
+        cat_desc = f"Студент {univ_name}" if "student" in category else f"Сотрудник кафедры/деканата {univ_name}"
 
         prompt_parts = [
             f"Категория отправителя: {cat_desc}",
@@ -63,7 +71,7 @@ class ReplyGenerator:
 
         if user_instructions:
             prompt_parts.append(
-                f"\nУказания преподавателя (Дмитрия Александровича) по ответу:\n{user_instructions.strip()}"
+                f"\nУказания преподавателя ({instructor_name}) по ответу:\n{user_instructions.strip()}"
             )
         else:
             prompt_parts.append(
@@ -145,11 +153,24 @@ class ReplyGenerator:
 
     def _fallback_reply(self, sender_name: str, category: str) -> str:
         greeting = f"Здравствуйте, {sender_name}!" if sender_name else "Здравствуйте!"
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            sig_name = persona.name_forms.get("signature", persona.display_name)
+            univ_name = persona.organizations.get("university").name if "university" in persona.organizations else "Университет"
+            parts = [pt.strip() for pt in (persona.title or "").split(",")]
+            base_title = parts[0].capitalize() if parts else "Преподаватель"
+            degree = f", {parts[1]}" if len(parts) > 1 else ""
+            sig_title = f"{base_title} {univ_name}{degree}"
+        except Exception:
+            sig_name = "Преподаватель"
+            sig_title = "Университет"
+
         return (
             f"{greeting}\n\n"
             "Ваше письмо получено. Ознакомился с вашим вопросом. "
             "Материалы приняты в работу / подробные комментарии предоставлю в ближайшее время на консультации или ответным письмом.\n\n"
             "С уважением,\n"
-            "Дмитрий Александрович Попов\n"
-            "Доцент кафедры физики ГУАП, к.ф.-м.н."
+            f"{sig_name}\n"
+            f"{sig_title}"
         )

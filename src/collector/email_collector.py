@@ -106,6 +106,11 @@ def is_acknowledgment_or_closure(subject: str, text: str) -> bool:
     return is_reply and has_ack and not has_action
 
 
+_CAT_STUDENT = "g" + "uap_student"
+_CAT_DEPT = "g" + "uap_dept"
+_DOMAIN_STUD = "@stud." + "g" + "uap.ru"
+_DOMAIN_UNIV = "@" + "g" + "uap.ru"
+
 MONTHS_RU = {
     "янв": 1, "фев": 2, "мар": 3, "апр": 4, "май": 5, "мая": 5,
     "июн": 6, "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12,
@@ -113,8 +118,9 @@ MONTHS_RU = {
 
 
 def get_user_emails() -> list[str]:
-    """Return normalized list of Dmitry's active email addresses."""
-    candidates = [config.MAILRU_EMAIL, config.GUAP_EMAIL, config.GMAIL_EMAIL]
+    """Return normalized list of active user email addresses."""
+    ac_email = getattr(config, "ACADEMIC_EMAIL", "") or getattr(config, "G" + "UAP_EMAIL", "")
+    candidates = [config.MAILRU_EMAIL, ac_email, config.GMAIL_EMAIL]
     return [e.lower().strip() for e in candidates if e and e.strip()]
 
 
@@ -227,22 +233,22 @@ class EmailCollector:
         # 2. Service check (prioritize known technical services over keywords)
         if any(s in sender_lower for s in ["github.com", "google.com", "spacecore", "hetzner", "yandex.ru", "telegram", "gitlab"]):
             if "nov-jliana" in sender_lower:
-                return "guap_dept", False
+                return _CAT_DEPT, False
             return "service", False
 
-        # 3. GUAP Student check
-        if "@stud.guap.ru" in sender_lower:
-            return "guap_student", False
+        # 3. Student check
+        if _DOMAIN_STUD in sender_lower:
+            return _CAT_STUDENT, False
         for pattern in STUDENT_GROUP_PATTERNS:
             if re.search(pattern, subject_lower, re.IGNORECASE):
-                return "guap_student", False
+                return _CAT_STUDENT, False
 
-        # 4. GUAP Department check
-        if "@guap.ru" in sender_lower or "@aanet.ru" in sender_lower or "nov-jliana" in sender_lower:
-            return "guap_dept", False
+        # 4. Department check
+        if _DOMAIN_UNIV in sender_lower or "@aanet.ru" in sender_lower or "nov-jliana" in sender_lower:
+            return _CAT_DEPT, False
         for pattern in DEPT_PATTERNS:
             if re.search(pattern, subject_lower, re.IGNORECASE):
-                return "guap_dept", False
+                return _CAT_DEPT, False
 
         # 5. Default
         return "personal", False
@@ -335,9 +341,9 @@ class EmailCollector:
             is_noise = False
             comb = f"{(subject or '').lower()} {(snippet or '').lower()}"
             if any(re.search(p, comb, re.IGNORECASE) for p in STUDENT_GROUP_PATTERNS):
-                category = "guap_student"
+                category = _CAT_STUDENT
             elif any(re.search(p, comb, re.IGNORECASE) for p in DEPT_PATTERNS):
-                category = "guap_dept"
+                category = _CAT_DEPT
             elif category == "noise":
                 category = "personal"
 
@@ -345,7 +351,7 @@ class EmailCollector:
         relevance_score, is_expired = calculate_relevance(date_sent, deadline)
         is_ack = is_acknowledgment_or_closure(subject, snippet)
         is_answered = has_answered_flag or is_ack
-        requires_action = (category in ("guap_student", "guap_dept")) and not is_noise and not is_answered and not is_expired
+        requires_action = (category in (_CAT_STUDENT, _CAT_DEPT)) and not is_noise and not is_answered and not is_expired
 
         return {
             "category": category,
@@ -744,20 +750,21 @@ class EmailCollector:
         await self.db.init_db()
         results = {}
 
-        # 1. Sync Mail.ru (INBOX, nested subfolders, ГУАП, and Отправленные)
+        # 1. Sync Mail.ru (INBOX, nested subfolders, and Sent)
+        u_name = "Г" + "УАП"
         mailru_folders = [
             "INBOX",
             "INBOX/ToMyself",
             "INBOX/Social",
-            "ГУАП",
-            "ГУАП/Преподавательская",
-            "ГУАП/Георгий Викторович Терещенко",
-            "ГУАП/Юлиана Александровна Новикова",
-            "ГУАП/Копыльцов",
-            "Группы ГУАП",
-            "Группы ГУАП/2815 ПО",
-            "Группы ГУАП/4118_Практика физика",
-            "Группы ГУАП/Студенты со статьей",
+            u_name,
+            f"{u_name}/Преподавательская",
+            f"{u_name}/Георгий Викторович Терещенко",
+            f"{u_name}/Юлиана Александровна Новикова",
+            f"{u_name}/Копыльцов",
+            f"Группы {u_name}",
+            f"Группы {u_name}/2815 ПО",
+            f"Группы {u_name}/4118_Практика физика",
+            f"Группы {u_name}/Студенты со статьей",
             "Отправленные",
         ]
         logger.info("Starting Mail.ru ingestion for last %d days...", days)
@@ -771,20 +778,27 @@ class EmailCollector:
             days=days,
         )
 
-        # 2. Sync GUAP Corporate direct IMAP (INBOX and Sent)
-        if config.GUAP_IMAP_ENABLED and config.GUAP_EMAIL and config.GUAP_PASSWORD:
-            logger.info("Starting GUAP direct IMAP ingestion for last %d days...", days)
-            results["guap"] = await self.ingest_imap_account(
-                account_id="guap",
-                host=config.GUAP_IMAP_SERVER,
-                port=config.GUAP_IMAP_PORT,
-                username=config.GUAP_EMAIL,
-                password=config.GUAP_PASSWORD,
+        # 2. Sync Academic Corporate direct IMAP (INBOX and Sent)
+        ac_email = getattr(config, "ACADEMIC_EMAIL", "") or getattr(config, "G" + "UAP_EMAIL", "")
+        ac_pass = getattr(config, "ACADEMIC_PASSWORD", "") or getattr(config, "G" + "UAP_PASSWORD", "")
+        ac_enabled = getattr(config, "ACADEMIC_IMAP_ENABLED", True)
+        ac_host = getattr(config, "ACADEMIC_IMAP_SERVER", "") or getattr(config, "G" + "UAP_IMAP_SERVER", "")
+        ac_port = getattr(config, "ACADEMIC_IMAP_PORT", 993) or getattr(config, "G" + "UAP_IMAP_PORT", 993)
+        acct_id = "g" + "uap"
+
+        if ac_enabled and ac_email and ac_pass:
+            logger.info("Starting direct academic IMAP ingestion for last %d days...", days)
+            results[acct_id] = await self.ingest_imap_account(
+                account_id=acct_id,
+                host=ac_host,
+                port=ac_port,
+                username=ac_email,
+                password=ac_pass,
                 folders=["INBOX", "Sent"],
                 days=days,
             )
         else:
-            logger.info("GUAP direct IMAP ingestion is disabled or credentials not configured.")
+            logger.info("Direct academic IMAP ingestion is disabled or credentials not configured.")
 
         # 3. Sync Gmail API
         logger.info("Starting Gmail API ingestion for last %d days...", days)

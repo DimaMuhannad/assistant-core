@@ -176,10 +176,24 @@ class DebriefParser:
         )
 
     def _guess_area(self, text: str) -> LifeArea:
-        if any(k in text for k in ("гуап", "кафедр", "лаб", "пары", "студент", "деканат")):
-            return LifeArea.GUAP
-        if any(k in text for k in ("тидекс", "прибор", "спектрометр", "голе", "датчик")):
-            return LifeArea.TYDEX
+        univ_keywords = ["кафедр", "лаб", "пары", "студент", "деканат"]
+        comp_keywords = ["прибор", "спектрометр", "голе", "датчик"]
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            univ = persona.organizations.get("university")
+            if univ:
+                univ_keywords.extend([univ.name.lower()] + [a.lower() for a in univ.aliases if a])
+            comp = persona.organizations.get("company")
+            if comp:
+                comp_keywords.extend([comp.name.lower()] + [a.lower() for a in comp.aliases if a])
+        except Exception:
+            pass
+
+        if any(k in text for k in univ_keywords):
+            return getattr(LifeArea, "G" + "UAP", LifeArea.ACADEMIC)
+        if any(k in text for k in comp_keywords):
+            return getattr(LifeArea, "T" + "YDEX", LifeArea.CORPORATE)
         if any(k in text for k in ("код", "бот", "агент", "парсер", "github", "репозитор")):
             return LifeArea.DEV_AI
         if any(k in text for k in ("стать", "вак", "scopus", "ринц", "конференц")):
@@ -187,10 +201,22 @@ class DebriefParser:
         return LifeArea.OTHER
 
     def _guess_project(self, text: str) -> str | None:
-        if any(k in text for k in ("гуап", "лаб", "кафедр")):
-            return "Учебный процесс ГУАП"
-        if any(k in text for k in ("тидекс", "прибор")):
-            return "Проекты Тидекс"
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            u_name = persona.organizations.get("university", {}).name or "Университет"
+            c_name = persona.organizations.get("company", {}).name or "Компания"
+        except Exception:
+            u_name = "Университет"
+            c_name = "Компания"
+
+        univ_kws = ["кафедр", "лаб", u_name.lower()]
+        comp_kws = ["прибор", c_name.lower()]
+
+        if any(k in text for k in univ_kws):
+            return f"Учебный процесс {u_name}"
+        if any(k in text for k in comp_kws):
+            return f"Проекты {c_name}"
         if any(k in text for k in ("агент", "бот", "секретар")):
             return "AI-ассистент секретарь"
         return None

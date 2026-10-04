@@ -56,6 +56,13 @@ class MethodistService:
             self._client = genai.Client(api_key=self.api_key)
         return self._client
 
+    def _get_univ_name(self) -> str:
+        try:
+            from src.persona.current import current_persona
+            return current_persona().organizations.get("university", {}).name or "университета"
+        except Exception:
+            return "университета"
+
     # --- 1. TOC Extraction & Document Parsing (Training Mode) ---
 
     def _extract_toc_from_pdf(self, pdf_path: Path) -> tuple[int, list[dict[str, Any]]]:
@@ -237,7 +244,7 @@ class MethodistService:
         title = p.stem.replace("_", " ")
         total_pages, toc_entries = self._extract_toc_from_pdf(p)
 
-        summary = f"Учебное издание ГУАП ({category}). Всего страниц: {total_pages}. Разделов в оглавлении: {len(toc_entries)}."
+        summary = f"Учебное издание {self._get_univ_name()} ({category}). Всего страниц: {total_pages}. Разделов в оглавлении: {len(toc_entries)}."
 
         doc_id = await self.db.save_methodist_document(
             category=category,
@@ -281,7 +288,7 @@ class MethodistService:
         title = p.stem.replace("_", " ")
 
         chunks = self._extract_docx_chunks(p)
-        summary = f"Шаблон/бланк ГУАП: {title}. Содержит обязательные реквизиты, формулировки и формы таблиц."
+        summary = f"Шаблон/бланк {self._get_univ_name()}: {title}. Содержит обязательные реквизиты, формулировки и формы таблиц."
 
         doc_id = await self.db.save_methodist_document(
             category=category,
@@ -452,7 +459,7 @@ class MethodistService:
         cleaned_q = question.strip()
         if not cleaned_q:
             return {
-                "answer": "Пожалуйста, задайте вопрос по методическим указаниям, РПД, ГОСТам или учебникам ГУАП.",
+                "answer": f"Пожалуйста, задайте вопрос по методическим указаниям, РПД, ГОСТам или учебникам {self._get_univ_name()}.",
                 "is_out_of_scope": True,
                 "sources": [],
             }
@@ -460,10 +467,11 @@ class MethodistService:
         # 1. Guardrail Scope Check
         scope_res = await self.check_scope(cleaned_q)
         if not scope_res.get("is_in_scope", True):
+            u_name = self._get_univ_name()
             rejection_text = (
-                "Извините, я — специализированный агент-методист кафедры физики ГУАП. "
+                f"Извините, я — специализированный агент-методист кафедры физики {u_name}. "
                 "Моя область знаний строго ограничена учебными программами (РПД), методическими указаниями, "
-                "учебниками Коваленко, задачниками, ГОСТами оформления студенческих работ и регламентами ГУАП. "
+                f"учебниками Коваленко, задачниками, ГОСТами оформления студенческих работ и регламентами {u_name}. "
                 "Я не уполномочен отвечать на вопросы вне этой предметной области."
             )
             await self.db.log_methodist_qa(
@@ -537,7 +545,7 @@ class MethodistService:
 
         combined_context = "\n\n".join(context_blocks)
         if not combined_context:
-            combined_context = "В базе знаний кафедры нет точных текстуальных совпадений. Отвечай на основе утвержденных стандартов кафедры физики ГУАП."
+            combined_context = f"В базе знаний кафедры нет точных текстуальных совпадений. Отвечай на основе утвержденных стандартов кафедры физики {self._get_univ_name()}."
 
         # 5. Generate Response via Gemini (Isolated turn, base prompt stays frozen)
         user_prompt = f"""КОНТЕКСТ МЕТОДИЧЕСКОЙ БАЗЫ ЗНАНИЙ (ТОЧЕЧНЫЕ ВЫГРУЗКИ СТРАНИЦ И РЕГЛАМЕНТЫ):

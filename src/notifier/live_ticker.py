@@ -2,11 +2,11 @@
 
 Architecture & Specifications:
 - Generates dynamic single-line ticker for pinned message header:
-  e.g. '⚡ 15:10 [Лаб] Физика (через 25м, ауд. 13-04) | 📬 0 треб. | ⏱️ Тидекс: +1.2ч'
+  e.g. '⚡ 15:10 [Лаб] Физика (через 25м, ауд. 13-04) | 📬 0 треб. | ⏱️ Табель: +1.2ч'
 - In-place screen swapping:
-  1. 'schedule': Today's SUAI/GUAP classes with live progress, countdown, and rooms
+  1. 'schedule': Today's classes with live progress, countdown, and rooms
   2. 'emails': Ingested emails, answered by AI, and urgent actionable threads
-  3. 'timesheet': Tydex work hours, pacing delta, and month balance
+  3. 'timesheet': Work hours, pacing delta, and month balance
   4. 'system': Assistant 24/7 daemon health, server time, and sync timestamps
 - Silent updates via bot.edit_message_text without sending notification pings
 """
@@ -31,7 +31,7 @@ from src.models.schedule import (
     LESSON_TYPE_SHORT,
     subject_short_names,
     format_academic_lesson_line,
-    get_guap_pair_number,
+    get_pair_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,11 +44,28 @@ SCREEN_SYSTEM = "system"
 VALID_SCREENS = {SCREEN_SCHEDULE, SCREEN_EMAILS, SCREEN_TIMESHEET, SCREEN_SYSTEM}
 
 
+def _get_comp_name() -> str:
+    try:
+        from src.persona.current import current_persona
+        return current_persona().organizations.get("company", {}).name or "Компания"
+    except Exception:
+        return "Компания"
+
+
+def _get_univ_name() -> str:
+    try:
+        from src.persona.current import current_persona
+        return current_persona().organizations.get("university", {}).name or "Университет"
+    except Exception:
+        return "Университет"
+
+
 def build_ticker_keyboard(current_screen: str) -> InlineKeyboardMarkup:
     """Builds inline navigation keyboard with the active screen highlighted."""
+    c_name = _get_comp_name()
     sc_sched = "• 🎓 Пары •" if current_screen == SCREEN_SCHEDULE else "🎓 Пары"
     sc_mail = "• 📬 Почта •" if current_screen == SCREEN_EMAILS else "📬 Почта"
-    sc_time = "• ⏱️ Тидекс •" if current_screen == SCREEN_TIMESHEET else "⏱️ Тидекс"
+    sc_time = f"• ⏱️ {c_name} •" if current_screen == SCREEN_TIMESHEET else f"⏱️ {c_name}"
     sc_sys = "• 🛡️ Статус •" if current_screen == SCREEN_SYSTEM else "🛡️ Статус"
 
     return InlineKeyboardMarkup(
@@ -76,9 +93,9 @@ class LiveTickerService:
         self.timesheet_service = timesheet_service
 
     async def get_today_schedule(self, target_date: date) -> list[Lesson]:
-        """Fetch parsed lessons for target_date from the latest GUAP schedule snapshot."""
-        source_id = f"rasp_guap_{config.SCHEDULE_TARGET_ID}"
-        snap = await self.db.get_latest_snapshot(source_id)
+        """Fetch parsed lessons for target_date from the latest schedule snapshot."""
+        source_id = f"rasp_{config.SCHEDULE_TARGET_ID}"
+        snap = await self.db.get_latest_snapshot(source_id) or await self.db.get_latest_snapshot("rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}")
         if not snap or not snap.get("raw_payload"):
             return []
         try:
@@ -115,7 +132,7 @@ class LiveTickerService:
         }
 
     async def get_timesheet_metrics(self) -> dict[str, Any]:
-        """Fetch AADHk Tydex work hour metrics."""
+        """Fetch timesheet work hour metrics."""
         try:
             service = (
                 self.timesheet_service
@@ -204,10 +221,11 @@ class LiveTickerService:
         delta = timesheet_metrics.get("morning_delta", 0.0)
         sign = "+" if delta > 0 else ""
         worked = timesheet_metrics.get("worked_hours", 0.0)
+        c_name = _get_comp_name()
         if delta != 0.0:
-            time_part = f"⏱️ Тидекс: {sign}{delta:.1f}ч"
+            time_part = f"⏱️ {c_name}: {sign}{delta:.1f}ч"
         else:
-            time_part = f"⏱️ Тидекс: {worked:.1f}ч"
+            time_part = f"⏱️ {c_name}: {worked:.1f}ч"
 
         # Compose line
         line = f"{sched_part} | {mail_part} | {time_part}"
@@ -224,14 +242,15 @@ class LiveTickerService:
         day_str = f"{weekday_names[day_date.weekday()]}, {day_date.strftime('%d.%m.%Y')}"
         now_time = now_dt.time()
 
+        u_name = _get_univ_name()
         lines = [
-            f"🎓 **РАСПИСАНИЕ ГУАП НА СЕГОДНЯ**",
+            f"🎓 **РАСПИСАНИЕ {u_name.upper()} НА СЕГОДНЯ**",
             f"📅 _{day_str}_ • Время: `{now_dt.strftime('%H:%M:%S')}`\n",
         ]
 
         if not lessons:
             lines.append("🎉 **Пар в расписании нет!**")
-            lines.append("Учебных занятий в ГУАП на сегодня не запланировано.")
+            lines.append(f"Учебных занятий в {u_name} на сегодня не запланировано.")
             lines.append("Свободное время для научно-исследовательской работы и сектора приборов.")
         else:
             lines.append("📚 **Учебные пары на день:**")
@@ -269,7 +288,7 @@ class LiveTickerService:
     ) -> str:
         """Renders full email processing center screen body."""
         lines = [
-            "📬 **ЦЕНТР ВХОДЯЩЕЙ ПОЧТЫ (ГУАП & Gmail)**",
+            "📬 **ЦЕНТР ВХОДЯЩЕЙ ПОЧТЫ**",
             f"📅 _{day_date.strftime('%d.%m.%Y')}_ • Актуально на `{now_dt.strftime('%H:%M:%S')}`\n",
             "📊 **Статистика за сегодня:**",
             f"• 📥 Всего поступило: **{email_metrics.get('received_today', 0)}**",
@@ -298,7 +317,7 @@ class LiveTickerService:
         now_dt: datetime,
         day_date: date,
     ) -> str:
-        """Renders full Tydex timesheet and pacing screen body."""
+        """Renders full timesheet and pacing screen body."""
         month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
         cur_m_name = month_names[day_date.month] if day_date.month <= 12 else ""
         year = timesheet_metrics.get("year", day_date.year)
@@ -307,8 +326,11 @@ class LiveTickerService:
         sign = "+" if delta > 0 else ""
         rel_date = timesheet_metrics.get("latest_date_formatted", day_date.strftime("%d.%m.%Y"))
 
+        c_name = _get_comp_name()
+        full_comp = c_name if c_name.startswith("ООО") else f"ООО «{c_name}»"
+
         lines = [
-            f"⏱️ **ТАБЕЛЬ И БАЛАНС ЧАСОВ: ООО «ТИДЕКС»**",
+            f"⏱️ **ТАБЕЛЬ И БАЛАНС ЧАСОВ: {full_comp.upper()}**",
             f"📅 _{cur_m_name.capitalize()} {year}_ • Актуально на `{now_dt.strftime('%H:%M:%S')}`\n",
             f"• 📈 **Дельта нормы (утро):** `{sign}{delta:.2f}` ч (на {rel_date})",
             f"• 🎯 **Месячная норма:** `{timesheet_metrics.get('monthly_norm_hours', 0.0):.1f}` ч ({timesheet_metrics.get('total_workdays', 0)} раб. дн.)",
@@ -343,9 +365,9 @@ class LiveTickerService:
             f"📅 _{day_date.strftime('%d.%m.%Y')}_ • `{now_dt.strftime('%H:%M:%S')}` MSK\n",
             "🤖 **Фоновые службы и сенсоры (24/7):**",
             "• 🟢 `assistant-worker.service`: **Активен (running)**",
-            "• 🟢 `guap_schedule_sentinel`: **Мониторинг расписания (каждые 3 ч)**",
-            "• 🟢 `email_collector_daemon`: **IMAP/SMTP ГУАП + Mail.ru (каждые 15 мин)**",
-            "• 🟢 `pro_guap_lms_monitor`: **Синхронизация отчетов pro.guap.ru (30 мин)**",
+            "• 🟢 `schedule_sentinel`: **Мониторинг расписания (каждые 3 ч)**",
+            "• 🟢 `email_collector_daemon`: **Синхронизация почты IMAP/SMTP (каждые 15 мин)**",
+            "• 🟢 `lms_submissions_monitor`: **Синхронизация отчетов LMS (30 мин)**",
             "• 🟢 `aadhk_gdrive_sync`: **Архивация SQLite табеля AADHk (2 ч)**\n",
             "🧠 **Интеллектуальное ядро:**",
             "• Fast Intent Router: stateless gemini-3.8-flash (Low Effort)",

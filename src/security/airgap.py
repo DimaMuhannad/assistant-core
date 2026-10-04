@@ -106,7 +106,7 @@ def is_nda_email(email_data: dict[str, Any] | Any, persona: Any | None = None) -
     for ws in nda_workspaces:
         if ws.account:
             acc = ws.account.lower()
-            # Поиск названия компании/аккаунта (например, 'тидекс' / 'tydex')
+            # Поиск названия организации/аккаунта в таргетах
             for token in org_tokens:
                 if token in acc:
                     for target in targets:

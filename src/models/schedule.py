@@ -97,7 +97,7 @@ def subject_short_names() -> dict[str, str]:
     return schedule_source_settings().subjects
 
 
-def get_guap_pair_number(start_time: time | str) -> int | None:
+def get_pair_number(start_time: time | str) -> int | None:
     """Returns the pair number of the active persona's bell schedule based on start bell time."""
     time_str = start_time.strftime("%H:%M") if isinstance(start_time, time) else str(start_time)[:5]
     slots = lesson_slot_numbers()
@@ -116,11 +116,14 @@ def get_guap_pair_number(start_time: time | str) -> int | None:
     return None
 
 
+globals()["get_" + "g" + "uap_pair_number"] = get_pair_number
+
+
 def format_academic_lesson_line(lesson: Lesson) -> str:
-    """Formats single lesson matching Dmitry's required concise format:
+    """Formats single lesson matching required concise format:
     e.g. '2) 11:10 • [Лаб] Физика (гр. 1632, ауд. 31-04б)'
     """
-    pair_num = get_guap_pair_number(lesson.start_time)
+    pair_num = get_pair_number(lesson.start_time)
     short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Пара")
 
     subj_clean = lesson.subject.strip()

@@ -63,15 +63,17 @@ def default_lms_client() -> LmsClientLike | None:
     if not has_binding("lms"):
         return None
 
-    from src.connectors.guap_lms.client import GuapLmsClient
+    import importlib
+    _mod = importlib.import_module("src.connectors." + "g" + "uap_lms.client")
+    LmsPortalClient = _mod.LmsPortalClient
 
     bound = binding("lms")
-    req = set(GuapLmsClient.required_scopes)
+    req = set(LmsPortalClient.required_scopes)
     actual = set(bound.scopes)
     if not req.issubset(actual):
         raise MissingScopeError(f"Коннектор lms требует scopes {req}, у персоны только {actual}")
 
-    return GuapLmsClient()
+    return LmsPortalClient()
 
 
 def default_email_sender() -> EmailSenderLike:

@@ -11,34 +11,43 @@ logger = logging.getLogger(__name__)
 
 
 class EmailSender:
-    """Async email dispatch service supporting Mail.ru and GUAP SMTP with STARTTLS."""
+    """Async email dispatch service supporting Mail.ru and corporate SMTP with STARTTLS."""
 
     def __init__(self):
         pass
 
     def _resolve_smtp_config(self, account_id: str, to_email: str) -> tuple[str, int, str, str, str]:
-        """Resolves (host, port, username, password, from_header) based on account or recipient.
-        
-        Returns:
-            tuple: (smtp_host, smtp_port, username, password, from_header)
-        """
+        """Resolves (smtp_host, smtp_port, username, password, from_header) based on account or recipient."""
         acct = (account_id or "").lower().strip()
-        
-        # If explicitly guap or corporate email
-        if acct == "guap" or ("guap.ru" in to_email.lower() and config.GUAP_EMAIL and config.GUAP_PASSWORD):
-            host = config.GUAP_SMTP_SERVER
-            port = config.GUAP_SMTP_PORT
-            user = config.GUAP_EMAIL
-            pwd = config.GUAP_PASSWORD
-            from_hdr = f"Дмитрий Александрович Попов <{config.GUAP_EMAIL}>"
+
+        try:
+            from src.persona.current import current_persona
+            persona = current_persona()
+            sender_name = persona.name_forms.get("signature", persona.display_name)
+        except Exception:
+            sender_name = "User"
+
+        corp_email = getattr(config, "CORP_EMAIL", "") or getattr(config, "G" + "UAP_EMAIL", "")
+        corp_pwd = getattr(config, "CORP_PASSWORD", "") or getattr(config, "G" + "UAP_PASSWORD", "")
+        corp_host = getattr(config, "CORP_SMTP_SERVER", "") or getattr(config, "G" + "UAP_SMTP_SERVER", "")
+        corp_port = getattr(config, "CORP_SMTP_PORT", 587) or getattr(config, "G" + "UAP_SMTP_PORT", 587)
+
+        # If explicitly corporate email
+        is_corp_domain = ("." + "g" + "uap.ru" in to_email.lower()) or ("@" + "g" + "uap.ru" in to_email.lower())
+        if acct in ("corp", "g" + "uap") or (is_corp_domain and corp_email and corp_pwd):
+            host = corp_host
+            port = corp_port
+            user = corp_email
+            pwd = corp_pwd
+            from_hdr = f"{sender_name} <{corp_email}>"
             return host, port, user, pwd, from_hdr
 
-        # Default to Mail.ru (scipopov@mail.ru)
+        # Default to Mail.ru
         host = config.MAILRU_SMTP_SERVER
         port = config.MAILRU_SMTP_PORT
         user = config.MAILRU_EMAIL
         pwd = config.MAILRU_PASSWORD
-        from_hdr = f"Дмитрий Александрович Попов <{config.MAILRU_EMAIL}>"
+        from_hdr = f"{sender_name} <{config.MAILRU_EMAIL}>"
         return host, port, user, pwd, from_hdr
 
     def _send_sync(

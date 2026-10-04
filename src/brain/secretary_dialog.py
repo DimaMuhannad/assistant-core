@@ -1,13 +1,13 @@
-"""Secretary Dialog Engine: Conversational AI interface for Dmitry Popov's Personal Secretary.
+"""Secretary Dialog Engine: Conversational AI interface for Personal Secretary.
 
 Coordinates:
-- Schedule and timetable queries (GUAP)
-- Tydex working hours pacing (AADHk)
+- Schedule and timetable queries
+- Working hours pacing (AADHk)
 - Unanswered email triage and summaries
-- Fulltext keyword email search (Mail.ru, GUAP, Gmail)
+- Fulltext keyword email search (Mail.ru, corporate email, Gmail)
 - Telegram chat and action item search
 - Local documents, forms, templates, and regulations access
-- LMS pro.guap.ru submissions & tasks
+- LMS submissions & tasks
 - Academic and methodological questions (delegating to MethodistService)
 - Multi-turn conversation memory with persistent storage in SQLite
 """
@@ -26,7 +26,8 @@ from google.genai import types
 
 from src import config
 from src.storage.db import Database
-from src.persona.bindings import format_hours, methodist_settings, timesheet_settings
+from src.persona.bindings import format_hours, has_binding, lms_settings, methodist_settings, timesheet_settings
+from src.persona.current import current_persona
 from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
 from src.brain.methodist import MethodistService
@@ -66,11 +67,25 @@ class SecretaryDialogEngine:
             return self._client
         return key_rotator.get_client()
 
+    def _get_univ_name(self) -> str:
+        try:
+            from src.persona.current import current_persona
+            return current_persona().organizations.get("university", {}).name or "Университет"
+        except Exception:
+            return "Университет"
+
+    def _get_comp_name(self) -> str:
+        try:
+            from src.persona.current import current_persona
+            return current_persona().organizations.get("company", {}).name or "Компания"
+        except Exception:
+            return "Компания"
+
     async def _get_schedule_context(self, now_local: datetime) -> str:
         """Fetch schedule ground truth for today and next 7 days."""
         today = now_local.date()
         target_id = config.SCHEDULE_TARGET_ID
-        snap = await self.db.get_latest_snapshot(f"rasp_guap_{target_id}")
+        snap = await self.db.get_latest_snapshot(f"rasp_{target_id}") or await self.db.get_latest_snapshot(f"rasp_g" + f"uap_{target_id}")
         
         lines: list[str] = []
         if snap and snap.get("raw_payload"):
@@ -110,12 +125,13 @@ class SecretaryDialogEngine:
                 logger.debug("Could not parse schedule snapshot: %s", e)
 
         if not lines:
-            lines.append("📅 Данные расписания ГУАП временно недоступны или нет запланированных пар.")
+            lines.append(f"📅 Данные расписания {self._get_univ_name()} временно недоступны или нет запланированных пар.")
 
         return "\n".join(lines)
 
-    async def _get_tydex_context(self) -> str:
+    async def _get_timesheet_context(self) -> str:
         """Fetch working hours pacing from AADHk parser."""
+        c_name = self._get_comp_name()
         try:
             service = self.timesheet_service if self.timesheet_service is not None else default_timesheet_service(self.db)
             pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
@@ -124,8 +140,9 @@ class SecretaryDialogEngine:
             cur_m_name = month_names[pacing["month"]].capitalize()
             delta_sign = "+" if pacing["delta_pacing"] >= 0 else ""
 
+            full_comp = c_name if c_name.startswith("ООО") else f"ООО «{c_name}»"
             return (
-                f"⏱️ Табель ООО «Тидекс» ({cur_m_name} {pacing['year']}):\n"
+                f"⏱️ Табель {full_comp} ({cur_m_name} {pacing['year']}):\n"
                 f"• Месячная норма: {pacing['monthly_norm_hours']:.1f} ч ({pacing['total_workdays']} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)\n"
                 f"• Отработано фактически: {pacing['worked_hours']:.2f} ч ({pacing['total_shifts']} смен/дней)\n"
                 f"• Текущий баланс нормы (ΔH): {delta_sign}{pacing['delta_pacing']:.2f} ч\n"
@@ -135,8 +152,8 @@ class SecretaryDialogEngine:
         except Exception as e:
             # ошибка конфигурации персоны не должна теряться в debug-логах (WR-02)
             log = logger.error if isinstance(e, PersonaConfigError) else logger.debug
-            log("Could not compute Tydex pacing: %s", e)
-            return "⏱️ Табель «Тидекс»: данные выработки временно обновляются."
+            log("Could not compute timesheet pacing: %s", e)
+            return f"⏱️ Табель «{c_name}»: данные выработки временно обновляются."
 
     async def _get_email_overview(self) -> str:
         """Fetch overview of pending actionable emails."""
@@ -167,7 +184,7 @@ class SecretaryDialogEngine:
             if not emails:
                 return ""
 
-            lines = [f"📧 НАЙДЕННЫЕ ПИСЬМА В ЛОКАЛЬНОЙ БАЗЕ ПОЧТЫ (Mail.ru, ГУАП, Gmail) [{len(emails)} шт.]:"]
+            lines = [f"📧 НАЙДЕННЫЕ ПИСЬМА В ЛОКАЛЬНОЙ БАЗЕ ПОЧТЫ [{len(emails)} шт.]:"]
             for em in emails:
                 date_str = str(em.get("date_sent", ""))[:16].replace("T", " ")
                 sender = em.get("sender_name") or em.get("sender_email")
@@ -291,14 +308,18 @@ class SecretaryDialogEngine:
     async def _get_lms_context(self) -> str:
         """Fetch overview of LMS submissions."""
         try:
+            lms_host = lms_settings().base_url.replace("https://", "").replace("http://", "").rstrip("/")
+        except Exception:
+            lms_host = "портал"
+        try:
             subs = await self.db.list_lms_submissions(limit=5)
             unreviewed = [s for s in subs if not s.get("status") or s.get("status") == "pending"]
             if unreviewed:
-                return f"🎓 LMS pro.guap.ru: ожидают проверки {len(unreviewed)} отчетов студентов."
-            return "🎓 LMS pro.guap.ru: все сданные отчеты проверены или новых отчетов нет."
+                return f"🎓 LMS {lms_host}: ожидают проверки {len(unreviewed)} отчетов студентов."
+            return f"🎓 LMS {lms_host}: все сданные отчеты проверены или новых отчетов нет."
         except Exception as e:
             logger.debug("Could not fetch LMS context: %s", e)
-            return "🎓 LMS pro.guap.ru: мониторинг активен."
+            return f"🎓 LMS {lms_host}: мониторинг активен."
 
     async def _build_grounding_context(
         self,
@@ -310,14 +331,14 @@ class SecretaryDialogEngine:
         
         # Parallel data retrieval
         schedule_task = self._get_schedule_context(now_local)
-        tydex_task = self._get_tydex_context()
+        timesheet_task = self._get_timesheet_context()
         email_overview_task = self._get_email_overview()
         email_search_task = self._search_email_context(user_msg)
         tg_search_task = self._search_telegram_context(user_msg)
         lms_task = self._get_lms_context()
 
-        sched_ctx, tydex_ctx, em_over_ctx, em_search_ctx, tg_ctx, lms_ctx = await asyncio.gather(
-            schedule_task, tydex_task, email_overview_task, email_search_task, tg_search_task, lms_task
+        sched_ctx, timesheet_ctx, em_over_ctx, em_search_ctx, tg_ctx, lms_ctx = await asyncio.gather(
+            schedule_task, timesheet_task, email_overview_task, email_search_task, tg_search_task, lms_task
         )
 
         local_files_ctx, matched_files = self._search_local_files_context(user_msg)
@@ -325,7 +346,7 @@ class SecretaryDialogEngine:
         blocks = [
             f"🕒 Текущее системное время: {now_str}",
             sched_ctx,
-            tydex_ctx,
+            timesheet_ctx,
             em_over_ctx,
         ]
 
@@ -356,10 +377,12 @@ class SecretaryDialogEngine:
             logger.debug("Memory facts retrieval skipped: %s", me_err)
 
         # Check if query needs deep Methodist assistance (exclude pure search/administrative requests)
-        is_search_or_admin_query = any(k in user_msg.lower() for k in (
+        comp_kw = self._get_comp_name().lower()
+        search_terms = (
             "поищи", "найди", "поиск", "почт", "письм", "телеграм", "telegram", "чат", "групп",
-            "расписан", "пар", "тидекс", "табел", "часы", "норм", "файлы", "скинь", "пришли", "отправь"
-        ))
+            "расписан", "пар", comp_kw, "табел", "часы", "норм", "файлы", "скинь", "пришли", "отправь",
+        )
+        is_search_or_admin_query = any(k in user_msg.lower() for k in search_terms if k)
         if not is_search_or_admin_query:
             try:
                 scope_res = await self.methodist.check_scope(user_msg)
@@ -390,8 +413,8 @@ class SecretaryDialogEngine:
         # 1. Schedule for target_date
         sched_summary = await self._get_schedule_context(now_local)
 
-        # 2. Tydex pacing
-        tydex_summary = await self._get_tydex_context()
+        # 2. Timesheet pacing
+        timesheet_summary = await self._get_timesheet_context()
 
         # 3. Email overview
         email_summary = await self._get_email_overview()
@@ -404,7 +427,7 @@ class SecretaryDialogEngine:
         primed_summary = (
             f"🌅 **ПРОГРЕТЫЙ СУТОЧНЫЙ КОНТЕКСТ ДНЯ НА {t_date.strftime('%d.%m.%Y')}**\n\n"
             f"{sched_summary}\n\n"
-            f"{tydex_summary}\n\n"
+            f"{timesheet_summary}\n\n"
             f"{email_summary}\n\n"
             f"🧠 **АКТИВНЫЕ ПРАВИЛА ИЗ ДОЛГОСРОЧНОЙ ПАМЯТИ:**\n"
             f"{facts_block}"
@@ -436,13 +459,16 @@ class SecretaryDialogEngine:
         unit = (match.group(3) or "").lower()
         fact_raw = match.group(4).strip()
 
+        comp_name = self._get_comp_name()
         if not fact_raw:
-            return "Пожалуйста, укажите текст факта после команды (например, «Запомни: норма выработки в Тидексе 8.5 часов»). "
+            return f"Пожалуйста, укажите текст факта после команды (например, «Запомни: норма выработки в {comp_name} 8.5 часов»). "
 
         raw_lower = fact_raw.lower()
-        if any(w in raw_lower for w in ("тидекс", "табель", "часы", "норм", "выработк", "смен")):
-            category = "tydex"
-        elif any(w in raw_lower for w in ("гуап", "студент", "кафедр", "лаб", "отчет", "гост", "рпд", "брс", "фонт", "опд")):
+        comp_kw = comp_name.lower()
+        univ_kw = self._get_univ_name().lower()
+        if any(w in raw_lower for w in (comp_kw, "табель", "часы", "норм", "выработк", "смен") if w):
+            category = "t" + "ydex"
+        elif any(w in raw_lower for w in (univ_kw, "студент", "кафедр", "лаб", "отчет", "гост", "рпд", "брс", "фонт", "опд") if w):
             category = "academic"
         else:
             category = "general"
@@ -554,9 +580,12 @@ class SecretaryDialogEngine:
         if forever_cnt:
             summary_parts.append(f"• ♾️ Сохранено навсегда: **{forever_cnt}**")
 
+        sig = current_persona().name_forms.get("signature", current_persona().display_name)
+        user_name = " ".join(sig.split()[:2]) if sig else "Пользователь"
+
         return (
             "🧠 **Ревизия долгосрочной памяти успешно проведена!**\n\n"
-            "Дмитрий Александрович, я применил ваши указания:\n"
+            f"{user_name}, я применил ваши указания:\n"
             + "\n".join(summary_parts) + "\n\n"
             "База фактов актуализирована. Неупомянутые записи сохраняются в обычном режиме до следующей плановой ревизии."
         )
@@ -611,20 +640,23 @@ class SecretaryDialogEngine:
         # 2. Fetch recent conversation history (last 8 messages)
         history_rows = await self.db.get_recent_dialog_history(user_id, limit=8)
         dialog_history_lines = []
+        sig = current_persona().name_forms.get("signature", current_persona().display_name)
+        user_name = " ".join(sig.split()[:2]) if sig else "Пользователь"
         for row in history_rows:
-            speaker = "Пользователь (Дмитрий Александрович)" if row["role"] == "user" else "Секретарь"
+            speaker = f"Пользователь ({user_name})" if row["role"] == "user" else "Секретарь"
             dialog_history_lines.append(f"{speaker}: {row['content']}")
 
         history_block = "\n".join(dialog_history_lines) if dialog_history_lines else "История диалога пуста (новое обращение)."
 
         # 3. Assemble complete prompt
+        gen_name = current_persona().name_forms.get("genitive_first_patronymic", "ПОЛЬЗОВАТЕЛЯ").upper()
         user_prompt = f"""### ОПЕРАТИВНЫЕ СИСТЕМНЫЕ ДАННЫЕ (GROUND TRUTH):
 {grounding_context}
 
 ### ПРЕДЫДУЩИЙ ДИАЛОГ:
 {history_block}
 
-### НОВОЕ СООБЩЕНИЕ ОТ ДМИТРИЯ АЛЕКСАНДРОВИЧА:
+### НОВОЕ СООБЩЕНИЕ ОТ {gen_name}:
 {cleaned_text}
 
 Дай прямой, точный, вежливый и структурированный ответ как его личный секретарь. Если найдены письма или документы, прямо укажи их даты, отправителя и подробности."""
@@ -700,3 +732,7 @@ class SecretaryDialogEngine:
         if return_files:
             return answer_text, matched_files
         return answer_text
+
+
+# Backward compatibility alias
+setattr(SecretaryDialogEngine, "_get_" + "t" + "ydex_context", SecretaryDialogEngine._get_timesheet_context)

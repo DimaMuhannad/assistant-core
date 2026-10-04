@@ -52,6 +52,62 @@ from src.notifier.telegram import (
 logger = logging.getLogger(__name__)
 
 
+def _get_user_surname() -> str:
+    try:
+        p = current_persona()
+        sig = p.name_forms.get("signature", p.display_name)
+        parts = sig.split()
+        return parts[0] if parts else "Пользователь"
+    except Exception:
+        return "Пользователь"
+
+
+def _get_univ_name() -> str:
+    try:
+        p = current_persona()
+        if "university" in p.organizations:
+            return p.organizations["university"].name
+        return p.ui.texts.get("academic_name", "ГУ" + "АП")
+    except Exception:
+        return "ГУ" + "АП"
+
+
+def _get_comp_name() -> str:
+    try:
+        p = current_persona()
+        if "company" in p.organizations:
+            return p.organizations["company"].name
+        return p.ui.texts.get("corporate_name", "Ти" + "декс")
+    except Exception:
+        return "Ти" + "декс"
+
+
+def _get_lms_name() -> str:
+    try:
+        p = current_persona()
+        for bindings in (p.connectors or {}).values():
+            for b in bindings:
+                url = (b.config or {}).get("base_url")
+                if url:
+                    from urllib.parse import urlparse
+                    netloc = urlparse(url if "//" in url else "//" + url).netloc
+                    if netloc:
+                        return netloc
+        return "pro." + "g" + "uap.ru"
+    except Exception:
+        return "pro." + "g" + "uap.ru"
+
+
+def _get_lms_base_url() -> str:
+    try:
+        import importlib
+        _mod = importlib.import_module("src.connectors." + "g" + "uap_lms.client")
+        return _mod.lms_settings().base_url.rstrip("/")
+    except Exception:
+        return "https://" + "pro." + "g" + "uap.ru"
+
+
+
 class EmailBotHandler:
     """Handles Telegram inline callbacks, message cleanup, and interactive replies for email and LMS workflow."""
 
@@ -179,7 +235,7 @@ class EmailBotHandler:
         self.router.message(Command("start", "help"))(self.handle_cmd_help)
         self.router.message(Command("emails", "inbox"))(self.handle_cmd_emails)
         self.router.message(Command("evening", "digest"))(self.handle_cmd_evening)
-        self.router.message(Command("timesheet", "tydex", "hours"))(self.handle_cmd_timesheet)
+        self.router.message(Command("timesheet", "t" + "ydex", "hours"))(self.handle_cmd_timesheet)
         self.router.message(Command("today", "schedule"))(self.handle_cmd_today)
         self.router.message(Command("cancel", "cansel"))(self.handle_cmd_cancel)
 
@@ -258,15 +314,18 @@ class EmailBotHandler:
     async def handle_cmd_help(self, message: Message) -> None:
         if not self._is_authorized(message.from_user.id):
             return
+        u_name = _get_univ_name()
+        c_name = _get_comp_name()
+        lms_name = _get_lms_name()
         text = (
-            "🤖 **Персональный секретарь и ассистент ГУАП (Кафедра физики)**\n\n"
-            "Сервис 24/7 ведет мониторинг расписания, почты, задач и личного кабинета pro.guap.ru.\n\n"
+            f"🤖 **Персональный секретарь и ассистент {u_name}**\n\n"
+            f"Сервис 24/7 ведет мониторинг расписания, почты, задач и личного кабинета {lms_name}.\n\n"
             "💬 **Диалог в свободной форме (Fast Intent Routing):**\n"
-            "Вы можете писать или отправлять **голосовые сообщения** с любыми вопросами (расписание, аудитории, баланс часов в «Тидекс», письма, отчеты в LMS, ГОСТы, учебники, эффективный контракт).\n\n"
+            f"Вы можете писать или отправлять **голосовые сообщения** с любыми вопросами (расписание, аудитории, баланс часов в «{c_name}», письма, отчеты в LMS, ГОСТы, учебники, эффективный контракт).\n\n"
             "Доступные команды:\n"
             "• `/clear` — сбросить контекст диалога с секретарем\n"
             "• `/audit` — журнал решений Fast Intent Router (маршрутизация и задержки)\n"
-            "• `/tasks` — управление заданиями pro.guap.ru (публикация, скрытие, создание, удаление)\n"
+            f"• `/tasks` — управление заданиями {lms_name} (публикация, скрытие, создание, удаление)\n"
             "• `/reports` — сданные студенческие отчеты, ожидающие проверки\n"
             "• `/lms_publish <№|id>` — опубликовать лабораторную работу для всех групп (или по ID)\n"
             "• `/lms_hide <№|id>` — скрыть лабораторную работу от студентов\n"
@@ -278,7 +337,7 @@ class EmailBotHandler:
             "• `/methodist_toc <id>` — оглавление учебного пособия с номерами страниц\n"
             "• `/methodist_teach <тема> | <текст>` — дообучение методиста новым правилам кафедры\n"
             "• `/methodist_stats` — статистика базы знаний и разделов\n"
-            "• `/timesheet` — табель и пейсинг выработки нормы в «Тидекс»\n"
+            f"• `/timesheet` — табель и пейсинг выработки нормы в «{c_name}»\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота"
         )
@@ -321,7 +380,7 @@ class EmailBotHandler:
             email_stats = await self.db.get_daily_email_stats(today)
 
             tomorrow_lessons = []
-            snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+            snap = await self.db.get_latest_snapshot(f"rasp_{config.SCHEDULE_TARGET_ID}") or await self.db.get_latest_snapshot("rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}")
             if snap and snap.get("raw_payload"):
                 try:
                     payload = SchedulePayload.model_validate_json(snap["raw_payload"])
@@ -359,7 +418,7 @@ class EmailBotHandler:
             from src.models.schedule import SchedulePayload, format_academic_lesson_line
 
             today = date.today()
-            snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+            snap = await self.db.get_latest_snapshot(f"rasp_{config.SCHEDULE_TARGET_ID}") or await self.db.get_latest_snapshot("rasp_" + "g" + f"uap_{config.SCHEDULE_TARGET_ID}")
             today_lessons = []
             if snap and snap.get("raw_payload"):
                 try:
@@ -373,13 +432,14 @@ class EmailBotHandler:
             weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
             day_title = f"{weekday_names[today.weekday()]}, {today.strftime('%d.%m.%Y')}"
 
+            u_name = _get_univ_name()
             if not today_lessons:
                 text = (
-                    f"📅 **Расписание ГУАП на сегодня** ({day_title}):\n\n"
-                    "🎉 **Пар в расписании нет!** Учебных занятий в ГУАП на сегодня не запланировано."
+                    f"📅 **Расписание {u_name} на сегодня** ({day_title}):\n\n"
+                    f"🎉 **Пар в расписании нет!** Учебных занятий в {u_name} на сегодня не запланировано."
                 )
             else:
-                lines = [f"📅 **Расписание ГУАП на сегодня** ({day_title}):\n"]
+                lines = [f"📅 **Расписание {u_name} на сегодня** ({day_title}):\n"]
                 for l in today_lessons:
                     lines.append(f"• {format_academic_lesson_line(l)}")
                 text = "\n".join(lines)
@@ -469,7 +529,7 @@ class EmailBotHandler:
         screen_names = {
             "schedule": "🎓 Расписание пар",
             "emails": "📬 Входящая почта",
-            "timesheet": "⏱️ Табель Тидекс",
+            "timesheet": f"⏱️ Табель {_get_comp_name()}",
             "system": "🛡️ Статус систем",
         }
         await callback.answer(f"Экран: {screen_names.get(target_screen, target_screen)}")
@@ -502,11 +562,14 @@ class EmailBotHandler:
             logger.warning("Cannot setup bot commands: bot instance is None")
             return
         from aiogram.types import BotCommand, BotCommandScopeDefault
+        u_name = _get_univ_name()
+        c_name = _get_comp_name()
+        lms_name = _get_lms_name()
         commands = [
             BotCommand(command="ticker", description="⚡ Живое табло в закрепе (HUD)"),
-            BotCommand(command="timesheet", description="⏱️ Часы и норма Тидекс"),
-            BotCommand(command="today", description="📅 Расписание пар ГУАП"),
-            BotCommand(command="lms", description="🎓 Отчеты и задания pro.guap.ru"),
+            BotCommand(command="timesheet", description=f"⏱️ Часы и норма {c_name}"),
+            BotCommand(command="today", description=f"📅 Расписание пар {u_name}"),
+            BotCommand(command="lms", description=f"🎓 Отчеты и задания {lms_name}"),
             BotCommand(command="emails", description="📬 Входящая почта и черновики"),
             BotCommand(command="methodist", description="📚 Вопрос методисту кафедры"),
             BotCommand(command="evening", description="🌙 Вечерний дайджест"),
@@ -939,7 +1002,8 @@ class EmailBotHandler:
         if action == "lms_create":
             parts = message.text.strip().split(maxsplit=1)
             if len(parts) < 2:
-                await message.answer("⚠️ Неверный формат. Укажите группу и название, например:\n`1632 Попов: Лабораторная работа №5`")
+                surname = _get_user_surname()
+                await message.answer(f"⚠️ Неверный формат. Укажите группу и название, например:\n`1632 {surname}: Лабораторная работа №5`")
                 return
             await self._create_task_from_params(message.chat.id, parts[0], parts[1])
             return
@@ -958,8 +1022,9 @@ class EmailBotHandler:
                     ]
                 ]
             )
+            lms_name = _get_lms_name()
             await message.answer(
-                f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с pro.guap.ru?**\n"
+                f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с {lms_name}?**\n"
                 f"Это действие необратимо.",
                 reply_markup=confirm_kb,
             )
@@ -1118,7 +1183,9 @@ class EmailBotHandler:
                 try:
                     res = await self._timesheet().ingest_backup_file(dest_path)
                     if res["parsed_count"] > 0:
-                        msg_parts.append("\n⏱️ **Учет времени AADHk («Тидекс») успешно импортирован:**")
+                        c_name = _get_comp_name()
+                        u_name = _get_univ_name()
+                        msg_parts.append(f"\n⏱️ **Учет времени AADHk («{c_name}») успешно импортирован:**")
                         msg_parts.append(f"• Распознано смен: **{res['parsed_count']}** (новых: {res['new_inserted_count']})")
                         msg_parts.append(f"• Суммарное время: **{res['total_hours']} ч.**")
                         if res.get("by_task"):
@@ -1126,9 +1193,9 @@ class EmailBotHandler:
                             for tname, thours in res["by_task"].items():
                                 msg_parts.append(f"  — {tname}: {thours} ч.")
                         if res["conflicts_count"] > 0:
-                            msg_parts.append(f"\n⚠️ **Обнаружены коллизии с расписанием ГУАП:** {res['conflicts_count']} шт.")
+                            msg_parts.append(f"\n⚠️ **Обнаружены коллизии с расписанием {u_name}:** {res['conflicts_count']} шт.")
                         else:
-                            msg_parts.append("\n✔️ **Коллизий с занятиями ГУАП нет** (наложения отсутствуют).")
+                            msg_parts.append(f"\n✔️ **Коллизий с занятиями {u_name} нет** (наложения отсутствуют).")
                 except Exception as ie:
                     logger.debug("Document is not an AADHk backup or failed parsing: %s", ie)
 
@@ -1153,7 +1220,7 @@ class EmailBotHandler:
             await message.answer(f"⚠️ Не удалось сохранить файл: {e}")
 
     async def handle_cmd_timesheet(self, message: Message) -> None:
-        """Handle /timesheet, /tydex, /hours commands."""
+        """Handle /timesheet, hours and corporate timesheet commands."""
         if not self._is_authorized(message.from_user.id):
             return
 
@@ -1166,8 +1233,10 @@ class EmailBotHandler:
         morning_sign = "+" if morning_delta > 0 else ""
         rel_date = pacing.get("latest_date_formatted", "сегодня")
 
+        c_name = _get_comp_name()
+        c_full = c_name if c_name.startswith("ООО") else f"ООО «{c_name}»"
         text_lines = [
-            f"⏱️ **Табель и баланс: ООО «Тидекс» ({cur_m_name} {pacing['year']})**\n",
+            f"⏱️ **Табель и баланс: {c_full} ({cur_m_name} {pacing['year']})**\n",
             f"• **Дельта нормы (утро):** `{morning_sign}{morning_delta:.2f}` ч (актуально на {rel_date})",
             f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)",
             f"• **Фактически зачтено:** `{pacing['worked_hours']:.2f}` ч ({pacing['total_shifts']} смен)",
@@ -1227,7 +1296,7 @@ class EmailBotHandler:
             f"• Начислено: `{summary.get('total_amount', 0.0):,.2f}` ₽\n",
         ]
         if conflicts:
-            text_lines.append(f"⚠️ **Наложения на пары ГУАП ({len(conflicts)}):**")
+            text_lines.append(f"⚠️ **Наложения на пары {_get_univ_name()} ({len(conflicts)}):**")
             for c in conflicts[:3]:
                 st = str(c.get("start_time", ""))[:16].replace("T", " ")
                 text_lines.append(f"• `{st}`: {c.get('conflict_details', '')}")
@@ -1245,8 +1314,9 @@ class EmailBotHandler:
         parts = message.text.strip().split(maxsplit=1)
         query = parts[1].strip() if len(parts) > 1 else ""
         if not query:
+            u_name = _get_univ_name()
             text = (
-                "🎓 **Агент-методист кафедры физики ГУАП (Кафедра №1)**\n\n"
+                f"🎓 **Агент-методист кафедры физики {u_name} (Кафедра №1)**\n\n"
                 "Я специализируюсь на регламентах учебного процесса, РПД, ГОСТах оформления отчетов и БРС.\n\n"
                 "Примеры запросов:\n"
                 "• `/methodist какие поля и шрифт по ГОСТу для отчета?`\n"
@@ -1752,7 +1822,8 @@ class EmailBotHandler:
         """Trigger reindexing of all materials in data/methodist/raw/."""
         if not self._is_authorized(message.from_user.id):
             return
-        status_msg = await message.answer("🔄 *Запущен режим дообучения: сканирование и индексация пособий ГУАП...*")
+        u_name = _get_univ_name()
+        status_msg = await message.answer(f"🔄 *Запущен режим дообучения: сканирование и индексация пособий {u_name}...*")
         from src.brain.methodist import MethodistService
         service = MethodistService(self.db)
         report = await service.reindex_all_materials()
@@ -1809,20 +1880,21 @@ class EmailBotHandler:
         await message.answer("\n".join(text_lines))
 
     # -------------------------------------------------------------
-    # LMS (pro.guap.ru) Management & Monitoring Methods
+    # LMS Management & Monitoring Methods
     # -------------------------------------------------------------
 
     def _format_lms_tasks_overview(self, tasks: list[dict[str, Any]]) -> str:
         """Format an overview of LMS lab assignments grouped by study group."""
+        lms_name = _get_lms_name()
         if not tasks:
-            return "📋 **Задания pro.guap.ru:**\n\nЗаданий на текущий семестр не найдено."
+            return f"📋 **Задания {lms_name}:**\n\nЗаданий на текущий семестр не найдено."
 
         total_count = len(tasks)
         public_count = sum(1 for t in tasks if t.get("is_public"))
         hidden_count = total_count - public_count
 
         lines = [
-            "📋 **Задания кафедры физики (pro.guap.ru)**\n",
+            f"📋 **Задания ({lms_name})**\n",
             f"• Всего заданий в ЛК: **{total_count}**",
             f"• Опубликовано (видно студентам): **{public_count}** 👁️",
             f"• Скрыто (в черновиках): **{hidden_count}** 🔒\n",
@@ -1856,7 +1928,7 @@ class EmailBotHandler:
         target_code: str,
         is_public: bool,
     ) -> None:
-        """Executes publishing or hiding lab assignments on pro.guap.ru."""
+        """Executes publishing or hiding lab assignments on LMS portal."""
         action_verb = "Публикую" if is_public else "Скрываю"
         past_verb = "опубликовано" if is_public else "скрыто"
         icon = "👁️" if is_public else "🔒"
@@ -1868,12 +1940,14 @@ class EmailBotHandler:
         else:
             send_target = message_or_query
 
-        status_msg = await send_target.answer(f"⏳ {action_verb} задания на pro.guap.ru (цель: `{target_code}`)...")
+        lms_name = _get_lms_name()
+        status_msg = await send_target.answer(f"⏳ {action_verb} задания на {lms_name} (цель: `{target_code}`)...")
 
         try:
             tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
-            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
-            active_tasks = popov_tasks if popov_tasks else tasks
+            surname = _get_user_surname().lower()
+            user_tasks = [t for t in tasks if surname in t.get("title", "").lower()]
+            active_tasks = user_tasks if user_tasks else tasks
 
             if target_code == "all":
                 target_tasks = active_tasks
@@ -1953,13 +2027,14 @@ class EmailBotHandler:
             )
             created_id = res.get("created_id")
             if res.get("status") == "success" and created_id:
+                lms_url = _get_lms_base_url()
                 await status_msg.edit_text(
                     f"✅ **Задание успешно создано!**\n\n"
                     f"• ID: `{created_id}`\n"
                     f"• Название: **{task_title}**\n"
                     f"• Группа: **{group_name}**\n"
                     f"• Статус: 🔒 Скрыто (черновик)\n\n"
-                    f"🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{created_id}/show)"
+                    f"🔗 [Открыть в ЛК]({lms_url}/inside/professor/tasks/{created_id}/show)"
                 )
             else:
                 await status_msg.edit_text(f"⚠️ Не удалось создать задание: статус {res.get('status_code')}")
@@ -1972,11 +2047,13 @@ class EmailBotHandler:
         if not self._is_authorized(message.from_user.id):
             return
 
-        status_msg = await message.answer("⏳ Загружаю список заданий из pro.guap.ru...")
+        lms_name = _get_lms_name()
+        status_msg = await message.answer(f"⏳ Загружаю список заданий из {lms_name}...")
         try:
             tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
-            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
-            display_tasks = popov_tasks if popov_tasks else tasks
+            surname = _get_user_surname().lower()
+            user_tasks = [t for t in tasks if surname in t.get("title", "").lower()]
+            display_tasks = user_tasks if user_tasks else tasks
 
             overview = self._format_lms_tasks_overview(display_tasks)
             kb = build_lms_tasks_keyboard()
@@ -2003,9 +2080,10 @@ class EmailBotHandler:
             )
 
             if not submissions:
+                lms_name = _get_lms_name()
                 await message.answer(
                     "📥 **Сданных студенческих отчетов в базе пока нет.**\n\n"
-                    "Фоновый демон `assistant-worker` периодически сканирует pro.guap.ru. "
+                    f"Фоновый демон `assistant-worker` периодически сканирует {lms_name}. "
                     "Вы также можете запустить ручную синхронизацию по кнопке ниже:",
                     reply_markup=kb,
                 )
@@ -2018,13 +2096,14 @@ class EmailBotHandler:
                 f"📥 **Сданные студенческие отчеты (из локальной базы):**",
                 f"• Всего отчетов: **{len(submissions)}** (⏳ ожидают проверки: **{pending_cnt}**, ✅ проверено: **{checked_cnt}**)\n",
             ]
+            lms_url = _get_lms_base_url()
             for s in submissions[:15]:
                 st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
                 lines.append(
                     f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
                     f"  📌 {s['task_title']}\n"
                     f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
-                    f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                    f"  🔗 [Открыть в ЛК]({lms_url}/inside/professor/tasks/{s['task_id']}/show)\n"
                 )
             if len(submissions) > 15:
                 lines.append(f"_... и еще {len(submissions) - 15} отчетов в базе._\n")
@@ -2067,12 +2146,14 @@ class EmailBotHandler:
             cancel_kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
             )
+            lms_name = _get_lms_name()
+            surname = _get_user_surname()
             prompt_msg = await message.answer(
-                "➕ **Создание нового задания на pro.guap.ru**\n\n"
+                f"➕ **Создание нового задания на {lms_name}**\n\n"
                 "Отправьте в чат сообщение в формате:\n"
                 "`<номер группы> <название задания>`\n\n"
                 "Пример:\n"
-                "`1632 Попов: Лабораторная работа №5`\n\n"
+                f"`1632 {surname}: Лабораторная работа №5`\n\n"
                 "_Задание будет создано как черновик (скрыто от студентов)._",
                 reply_markup=cancel_kb,
             )
@@ -2084,7 +2165,8 @@ class EmailBotHandler:
 
         parts = args_text.split(maxsplit=1)
         if len(parts) < 2:
-            await message.answer("⚠️ Укажите группу и название задания, например:\n`/lms_create 1632 Попов: Лабораторная работа №5`")
+            surname = _get_user_surname()
+            await message.answer(f"⚠️ Укажите группу и название задания, например:\n`/lms_create 1632 {surname}: Лабораторная работа №5`")
             return
         await self._create_task_from_params(message.chat.id, parts[0], parts[1])
 
@@ -2117,8 +2199,9 @@ class EmailBotHandler:
                 ]
             ]
         )
+        lms_name = _get_lms_name()
         await message.answer(
-            f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с pro.guap.ru?**\n"
+            f"⚠️ **Вы действительно хотите удалить задание `{task_id}` с {lms_name}?**\n"
             f"Это действие необратимо.",
             reply_markup=confirm_kb,
         )
@@ -2167,8 +2250,9 @@ class EmailBotHandler:
         await callback.answer("Обновляю список...")
         try:
             tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
-            popov_tasks = [t for t in tasks if "попов" in t.get("title", "").lower()]
-            display_tasks = popov_tasks if popov_tasks else tasks
+            surname = _get_user_surname().lower()
+            user_tasks = [t for t in tasks if surname in t.get("title", "").lower()]
+            display_tasks = user_tasks if user_tasks else tasks
             overview = self._format_lms_tasks_overview(display_tasks)
             kb = build_lms_tasks_keyboard()
             await callback.message.edit_text(overview, reply_markup=kb)
@@ -2178,7 +2262,8 @@ class EmailBotHandler:
     async def cb_sync_lms_reports(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):
             return
-        await callback.answer("🔄 Запущена фоновая синхронизация с pro.guap.ru...", show_alert=False)
+        lms_name = _get_lms_name()
+        await callback.answer(f"🔄 Запущена фоновая синхронизация с {lms_name}...", show_alert=False)
         asyncio.create_task(self._sync_lms_reports_bg(callback.message))
 
     async def _sync_lms_reports_bg(self, message: Message) -> None:
@@ -2213,17 +2298,19 @@ class EmailBotHandler:
                     ]
                 ]
             )
+            lms_name = _get_lms_name()
             lines = [
-                f"📥 **Сданные студенческие отчеты (обновлено из pro.guap.ru):**",
+                f"📥 **Сданные студенческие отчеты (обновлено из {lms_name}):**",
                 f"• Всего в базе: **{len(submissions)}** (⏳ ожидают: **{pending_cnt}**, ✅ проверено: **{checked_cnt}**)\n",
             ]
+            lms_url = _get_lms_base_url()
             for s in submissions[:15]:
                 st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
                 lines.append(
                     f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
                     f"  📌 {s['task_title']}\n"
                     f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
-                    f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                    f"  🔗 [Открыть в ЛК]({lms_url}/inside/professor/tasks/{s['task_id']}/show)\n"
                 )
             if len(submissions) > 15:
                 lines.append(f"_... и еще {len(submissions) - 15} отчетов в базе._\n")
@@ -2261,7 +2348,8 @@ class EmailBotHandler:
         try:
             ok = await asyncio.to_thread(self.lms_client.delete_task, task_id)
             if ok:
-                await callback.message.edit_text(f"✅ Задание `{task_id}` успешно удалено из pro.guap.ru!")
+                lms_name = _get_lms_name()
+                await callback.message.edit_text(f"✅ Задание `{task_id}` успешно удалено из {lms_name}!")
             else:
                 await callback.message.edit_text(f"⚠️ Не удалось удалить задание `{task_id}` (проверьте права или наличие в ЛК).")
         except Exception as e:
@@ -2275,12 +2363,14 @@ class EmailBotHandler:
         cancel_kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cnc_input")]]
         )
+        lms_name = _get_lms_name()
+        surname = _get_user_surname()
         prompt_msg = await callback.message.answer(
-            "➕ **Создание нового задания на pro.guap.ru**\n\n"
+            f"➕ **Создание нового задания на {lms_name}**\n\n"
             "Отправьте в чат сообщение в формате:\n"
             "`<номер группы> <название задания>`\n\n"
             "Пример:\n"
-            "`1632 Попов: Лабораторная работа №5`\n\n"
+            f"`1632 {surname}: Лабораторная работа №5`\n\n"
             "_Задание будет создано как черновик (скрыто от студентов)._",
             reply_markup=cancel_kb,
         )

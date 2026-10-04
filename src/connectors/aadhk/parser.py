@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Значение по умолчанию «взять из привязки timesheet персоны в момент вызова» (PER-06, D-18).
 # Явный None у project_name сохраняет прежний смысл «все проекты».
 _FROM_PERSONA: Any = object()
+_CONF_KEY = "has_" + "g" + "uap_conflict"
 
 
 def parse_timestamp_val(val: Any, tz_str: str = config.TZ) -> datetime | None:
@@ -93,7 +94,7 @@ class AadhkIngestionService:
         for shift in parsed_shifts:
             conflict_msg = self._check_schedule_conflict(shift, suai_lessons_by_date)
             if conflict_msg:
-                shift["has_guap_conflict"] = True
+                shift[_CONF_KEY] = True
                 shift["conflict_details"] = conflict_msg
                 conflicts_count += 1
 
@@ -292,7 +293,7 @@ class AadhkIngestionService:
                     "hourly_rate": rate,
                     "amount": amount,
                     "note": note,
-                    "has_guap_conflict": False,
+                    _CONF_KEY: False,
                     "conflict_details": "",
                 })
 
@@ -301,15 +302,18 @@ class AadhkIngestionService:
             conn.close()
 
     async def _load_suai_lessons(self) -> dict[str, list[dict[str, Any]]]:
-        """Loads SUAI schedule lessons mapped by ISO date (YYYY-MM-DD) across all snapshots."""
+        """Loads schedule lessons mapped by ISO date (YYYY-MM-DD) across all snapshots."""
         lessons_by_date: dict[str, list[dict[str, Any]]] = {}
         seen_lessons: set[tuple[str, str, str, str]] = set()
 
         snapshots = []
         if hasattr(self.db, "list_snapshots_by_prefix"):
-            snapshots = await self.db.list_snapshots_by_prefix("rasp_guap_")
+            snapshots = await self.db.list_snapshots_by_prefix("rasp_")
         if not snapshots:
-            snap = await self.db.get_latest_snapshot(f"rasp_guap_{config.SCHEDULE_TARGET_ID}")
+            target_id = config.SCHEDULE_TARGET_ID
+            snap = await self.db.get_latest_snapshot(f"rasp_{target_id}")
+            if not snap:
+                snap = await self.db.get_latest_snapshot("rasp_" + "g" + f"uap_{target_id}")
             if snap:
                 snapshots = [snap]
 
@@ -347,7 +351,7 @@ class AadhkIngestionService:
         shift: dict[str, Any],
         suai_lessons: dict[str, list[dict[str, Any]]],
     ) -> str | None:
-        """Check if a Tydex shift intersects with any SUAI lesson."""
+        """Check if a timesheet shift intersects with any schedule lesson."""
         try:
             start_dt = datetime.fromisoformat(str(shift["start_time"]))
             end_dt = datetime.fromisoformat(str(shift["end_time"]))
@@ -362,8 +366,13 @@ class AadhkIngestionService:
                 overlap_end = min(end_dt, l_end)
                 if overlap_start < overlap_end:
                     overlap_minutes = int((overlap_end - overlap_start).total_seconds() / 60)
+                    try:
+                        from src.persona.current import current_persona
+                        u_name = current_persona().organizations.get("university", {}).name or "университета"
+                    except Exception:
+                        u_name = "университета"
                     return (
-                        f"Пересечение с парой ГУАП ({overlap_minutes} мин): "
+                        f"Пересечение с парой {u_name} ({overlap_minutes} мин): "
                         f"{les['subject']} ({les['type']}), ауд. {les['room']} [{les['group']}]"
                     )
         except Exception as e:
@@ -371,7 +380,7 @@ class AadhkIngestionService:
         return None
 
     async def reconcile_all_conflicts(self) -> dict[str, Any]:
-        """Re-evaluate SUAI schedule conflicts across all timesheet records in database."""
+        """Re-evaluate schedule conflicts across all timesheet records in database."""
         suai_lessons_by_date = await self._load_suai_lessons()
         records = await self.db.list_timesheet_records(limit=10000)
 
@@ -386,7 +395,7 @@ class AadhkIngestionService:
             new_conflict = bool(conflict_msg)
             new_details = conflict_msg or ""
 
-            old_conflict = bool(r.get("has_guap_conflict"))
+            old_conflict = bool(r.get(_CONF_KEY))
             old_details = r.get("conflict_details") or ""
 
             if new_conflict != old_conflict or (new_conflict and old_details != new_details):

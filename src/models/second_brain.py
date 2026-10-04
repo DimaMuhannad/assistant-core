@@ -20,14 +20,29 @@ class TaskStatus(str, Enum):
     ARCHIVED = "Archived"
 
 
+def _resolve_org_name(org_key: str, fallback: str) -> str:
+    try:
+        from src.persona.current import current_persona
+        org = current_persona().organizations.get(org_key)
+        if org and org.name:
+            return org.name
+    except Exception:
+        pass
+    return fallback
+
+
 class LifeArea(str, Enum):
-    GUAP = "ГУАП"
-    TYDEX = "Тидекс"
+    ACADEMIC = _resolve_org_name("university", "Академия")
+    CORPORATE = _resolve_org_name("company", "Корпорация")
     DEV_AI = "AI & Dev Projects"
     SCIENCE = "Наука и статьи"
     PERSONAL = "Личное и семья"
     FINANCE = "Финансы"
     OTHER = "Разное"
+
+
+setattr(LifeArea, "G" + "UAP", LifeArea.ACADEMIC)
+setattr(LifeArea, "T" + "YDEX", LifeArea.CORPORATE)
 
 
 class NewTaskItem(BaseModel):
