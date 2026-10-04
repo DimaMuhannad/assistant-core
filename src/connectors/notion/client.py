@@ -284,3 +284,38 @@ class NotionAsyncClient:
                 logger.warning("Error creating journal entry in Notion: %s", e)
 
         return sync_report
+
+    async def log_project_activity(
+        self,
+        database_id: str,
+        project_page_id: str,
+        date_iso: str,
+        commit_count: int,
+        status: str,
+        summary: str,
+    ) -> dict[str, Any]:
+        """Создает запись в базе данных логов активности проектов Notion (NTN-01)."""
+        payload = {
+            "parent": {"database_id": database_id},
+            "properties": {
+                "Name": {"title": [{"text": {"content": f"Сводка {date_iso}"}}]},
+                "Project": {"relation": [{"id": project_page_id}]},
+                "Date": {"date": {"start": date_iso}},
+                "Commits": {"number": commit_count},
+                "Status": {"select": {"name": status}},
+            },
+            "children": [
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": summary[:2000]}}]
+                    },
+                }
+            ],
+        }
+        async with self._client() as client:
+            resp = await client.post("/pages", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
