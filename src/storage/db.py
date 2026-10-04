@@ -990,6 +990,9 @@ class Database:
             await conn.commit()
             return updated
 
+    # Backward-compatible alias for bot callback handlers
+    mark_email_replied = mark_email_as_answered
+
     async def create_email_draft(self, email_id: int, draft_text: str) -> int:
         """Save a new draft reply to the database."""
         now_iso = datetime.now(timezone.utc).isoformat()

@@ -232,6 +232,60 @@ async def test_cleanup_email_session(in_memory_db: Database):
 
 
 @pytest.mark.asyncio
+async def test_cb_close_email_success(in_memory_db: Database):
+    await in_memory_db.upsert_email_message(
+        message_id="msg-close-1@guap.ru",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Тестовый отправитель",
+        sender_email="test@guap.ru",
+        recipients_json='["scipopov@guap.ru"]',
+        subject="Вопрос",
+        date_sent=datetime.now(timezone.utc),
+        body_plain="Текст",
+        body_html=None,
+        snippet="Текст",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-close-1",
+        category="guap_student",
+        requires_action=True,
+    )
+
+    mock_bot = AsyncMock()
+    notifier = TelegramNotifier(bot_token="123456:FAKE", user_id="12345")
+    handler = EmailBotHandler(
+        db=in_memory_db,
+        reply_generator=ReplyGenerator(api_key=""),
+        email_sender=EmailSender(),
+        notifier=notifier,
+        bot=mock_bot,
+        allowed_user_id=12345,
+    )
+
+    mock_callback = AsyncMock()
+    mock_callback.from_user.id = 12345
+    mock_callback.data = "em:close:1"
+    mock_callback.message = AsyncMock()
+    mock_callback.message.chat.id = 12345
+    mock_callback.message.message_id = 9999
+
+    await handler.cb_close_email(mock_callback)
+
+    email_row = await in_memory_db.get_email_by_id(1)
+    assert email_row["is_answered"] == 1
+    assert email_row["requires_action"] == 0
+    mock_callback.answer.assert_awaited_once_with("✅ Письмо закрыто (ответ не требуется)", show_alert=True)
+    mock_callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+    # Verify alias on Database
+    assert hasattr(in_memory_db, "mark_email_replied")
+    assert in_memory_db.mark_email_replied == in_memory_db.mark_email_as_answered
+
+
+@pytest.mark.asyncio
 async def test_evening_digest_fallback():
     from datetime import date, time
     from src.brain.summarizer import GeminiSummarizer

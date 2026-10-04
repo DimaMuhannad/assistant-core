@@ -754,15 +754,19 @@ class EmailBotHandler:
             await callback.answer("Неверный ID.")
             return
 
-        await self.db.mark_email_replied(email_id)
-        await callback.answer("✅ Письмо закрыто (ответ не требуется)", show_alert=True)
         try:
+            await self.db.mark_email_as_answered(email_id)
+            await callback.answer("✅ Письмо закрыто (ответ не требуется)", show_alert=True)
             if callback.message:
-                await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        self.register_message(email_id, callback.message.message_id)
-        await self.cleanup_email_session(callback.message.chat.id, email_id)
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                self.register_message(email_id, callback.message.message_id)
+                await self.cleanup_email_session(callback.message.chat.id, email_id)
+        except Exception as e:
+            logger.error("Ошибка при закрытии письма id=%s: %s", email_id, e, exc_info=True)
+            await callback.answer("⚠️ Не удалось закрыть письмо. Попробуйте снова.", show_alert=True)
 
     async def cb_cancel_draft(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):
