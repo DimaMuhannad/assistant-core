@@ -34,6 +34,9 @@ from src.core.ports.connectors import (
 )
 from src.parser.provider import ScheduleParserSource
 from src.parser.schedule_parser import ScheduleParser
+from src.core.exceptions import MissingScopeError
+from src.composition import default_timesheet_service, default_lms_client
+from src.persona.current import current_persona, use_persona
 from src.sender.email_sender import EmailSender
 
 SRC = Path(__file__).resolve().parent.parent / "src"
@@ -276,3 +279,44 @@ def test_lms_provider_not_wired_into_production():
     assert files
     for path in files:
         assert "GuapLmsProvider" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_connectors_declare_required_scopes():
+    assert BaseTimesheetProvider.required_scopes == ("timesheet.read", "timesheet.write")
+    assert BaseScheduleProvider.required_scopes == ("schedule.read",)
+    assert BaseCalendarSink.required_scopes == ("calendar.read", "calendar.write")
+    assert BaseLMSProvider.required_scopes == ("lms.read", "lms.write")
+
+    assert AadhkTimesheetProvider.required_scopes == ("timesheet.read", "timesheet.write")
+    assert ScheduleParserSource.required_scopes == ("schedule.read",)
+    assert GoogleCalendarSink.required_scopes == ("calendar.read", "calendar.write")
+    assert GuapLmsProvider.required_scopes == ("lms.read", "lms.write")
+    assert GuapLmsClient.required_scopes == ("lms.read", "lms.write")
+
+
+def test_composition_missing_scope_error():
+    base = current_persona()
+
+    # Persona with incomplete scopes for timesheet
+    broken_binding = base.connectors.timesheet[0].model_copy(update={"scopes": ["timesheet.read"]})
+    broken_connectors = base.connectors.model_copy(update={"timesheet": [broken_binding]})
+    p_broken = base.model_copy(update={"connectors": broken_connectors})
+
+    with use_persona(p_broken):
+        with pytest.raises(MissingScopeError) as exc_info:
+            default_timesheet_service(MagicMock())
+        assert "timesheet" in str(exc_info.value)
+        assert "scopes" in str(exc_info.value)
+
+
+def test_composition_unbound_role_returns_none():
+    base = current_persona()
+
+    # Persona without timesheet or lms bindings
+    unbound_connectors = base.connectors.model_copy(update={"timesheet": [], "lms": []})
+    p_unbound = base.model_copy(update={"connectors": unbound_connectors})
+
+    with use_persona(p_unbound):
+        assert default_timesheet_service(MagicMock()) is None
+        assert default_lms_client() is None
+

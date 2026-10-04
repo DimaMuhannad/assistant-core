@@ -31,6 +31,7 @@ class BaseTimesheetProvider(BaseConnector, Protocol):
     """Порт источника табеля рабочего времени."""
 
     role: ClassVar[ConnectorRole] = ConnectorRole.TIMESHEET
+    required_scopes: ClassVar[tuple[str, ...]] = ("timesheet.read", "timesheet.write")
 
     async def ingest_backup_file(
         self,
@@ -74,6 +75,7 @@ class BaseScheduleProvider(BaseConnector, Protocol):
     """
 
     role: ClassVar[ConnectorRole] = ConnectorRole.SCHEDULE_SOURCE
+    required_scopes: ClassVar[tuple[str, ...]] = ("schedule.read",)
 
     async def fetch_schedule_raw(
         self,
@@ -107,6 +109,7 @@ class BaseCalendarSink(BaseConnector, Protocol):
     """
 
     role: ClassVar[ConnectorRole] = ConnectorRole.CALENDAR_SYNC
+    required_scopes: ClassVar[tuple[str, ...]] = ("calendar.read", "calendar.write")
 
     async def find_existing_event(self, calendar_id: str, lesson: Any) -> dict[str, Any] | None:
         """Найти уже созданное событие для занятия."""
@@ -140,6 +143,7 @@ class BaseLMSProvider(BaseConnector, Protocol):
     """
 
     role: ClassVar[ConnectorRole] = ConnectorRole.LMS
+    required_scopes: ClassVar[tuple[str, ...]] = ("lms.read", "lms.write")
     REQUIRES_CONFIRMATION: ClassVar[frozenset[str]] = frozenset({"submit_grade", "delete_task"})
 
     async def list_tasks(self, semester: int | str = ...) -> list[AcademicSubmission]:

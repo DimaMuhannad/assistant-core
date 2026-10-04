@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 class GuapLmsClient:
     """Client for interacting with GUAP instructor portal pro.guap.ru via Keycloak SSO."""
 
+    required_scopes = ("lms.read", "lms.write")
+
     def __init__(
         self,
         email: str | None = None,
