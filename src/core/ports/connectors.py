@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from src.core.domain.entities import AcademicSubmission, ConnectorRole
+from src.core.domain.entities import AcademicSubmission, ConnectorRole, GitCommit, Workspace
 
 
 @runtime_checkable
@@ -184,3 +184,29 @@ class BaseLMSProvider(BaseConnector, Protocol):
     async def submit_grade(self, submission_id: str, grade: Any) -> None:
         """Выставить оценку (требует подтверждения)."""
         ...
+
+
+@runtime_checkable
+class BaseGitSourceProvider(BaseConnector, Protocol):
+    """Порт источника данных Git (только чтение)."""
+
+    role: ClassVar[ConnectorRole] = ConnectorRole.GIT_SOURCE
+    required_scopes: ClassVar[tuple[str, ...]] = ("git.read",)
+
+    async def list_repositories(self) -> list[Workspace]:
+        """Список рабочих пространств с настроенным git."""
+        ...
+
+    async def fetch_remote(self, workspace: Workspace, timeout_sec: float = 30.0) -> bool:
+        """Неблокирующий git fetch с таймаутом."""
+        ...
+
+    async def get_commits_since(
+        self,
+        workspace: Workspace,
+        since: datetime | None = None,
+        max_commits: int = 100,
+    ) -> list[GitCommit]:
+        """Чтение коммитов из локального репозитория."""
+        ...
+

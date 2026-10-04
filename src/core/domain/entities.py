@@ -92,6 +92,36 @@ class Workspace:
     clearance: WorkspaceClearance
     path: str
     remote: str | None = None
+    ssh_alias: str | None = None
+    notion_project: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GitCommit:
+    """Неизменяемое представление коммита."""
+
+    hash: str
+    author: str
+    date: datetime
+    message: str
+    files_changed: int = 0
+    insertions: int = 0
+    deletions: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class GitProgressReport:
+    """Оценка хода работ по проекту."""
+
+    workspace_id: str
+    notion_project_id: str | None
+    period_start: datetime
+    period_end: datetime
+    commit_count: int
+    latest_commit_date: datetime | None
+    summary_text: str
+    is_stagnant: bool
+    clearance: WorkspaceClearance
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,3 +131,4 @@ class Persona:
     id: str
     name: str
     workspaces: tuple[Workspace, ...] = ()
+

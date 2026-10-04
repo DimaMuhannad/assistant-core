@@ -59,6 +59,9 @@ class WorkspaceConfig(BaseModel):
     clearance_label: str = ""
     color: str | None = None
     remote: str | None = None
+    ssh_alias: str | None = None
+    notion_project: str | None = None
+    git_host: str | None = None
     forbidden_remote_substrings: list[str] = Field(default_factory=list)
     forbidden_keywords: list[str] = Field(default_factory=list)
     remote_violation_message: str | None = None
@@ -342,6 +345,8 @@ class PersonaConfig(BaseModel):
                     clearance=WorkspaceClearance(ws.clearance),
                     path=ws.path,
                     remote=ws.remote,
+                    ssh_alias=ws.ssh_alias,
+                    notion_project=ws.notion_project,
                 )
                 for ws in self.workspaces
             ),
