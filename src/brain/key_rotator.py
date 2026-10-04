@@ -12,6 +12,7 @@ import asyncio
 import logging
 import re
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 from google import genai
@@ -40,7 +41,7 @@ class GeminiKeyRotator:
         if not self.keys and config.GEMINI_API_KEY:
             self.keys = [config.GEMINI_API_KEY.strip()]
 
-        self.env_path = env_path or (config.BASE_DIR / ".env")
+        self.env_path = env_path
         self.cooldowns: dict[str, float] = {}
         self._clients: dict[str, genai.Client] = {}
         self.active_index: int = 0
@@ -134,8 +135,6 @@ class GeminiKeyRotator:
             tmp_path.write_text(new_content, encoding="utf-8")
             tmp_path.replace(self.env_path)
 
-            # Update in-process config
-            config.GEMINI_API_KEY = active_key
             logger.info("Persisted active Gemini API key to %s", self.env_path.name)
             return True
         except Exception as e:
@@ -187,5 +186,42 @@ class GeminiKeyRotator:
         raise RuntimeError("All Gemini API keys in pool failed.")
 
 
-# Global singleton instance
-key_rotator = GeminiKeyRotator()
+# ContextVar and persona cache for multi-persona key isolation (ISO-01, D-01, D-04)
+_current_rotator: ContextVar[GeminiKeyRotator | None] = ContextVar("current_key_rotator", default=None)
+_rotator_cache: dict[str, GeminiKeyRotator] = {}
+
+
+def get_key_rotator(persona_id: str | None = None) -> GeminiKeyRotator:
+    """Get the active GeminiKeyRotator for current context or persona."""
+    scoped = _current_rotator.get()
+    if scoped is not None and persona_id is None:
+        return scoped
+
+    try:
+        from src.persona.current import current_persona
+
+        persona = current_persona()
+        p_id = persona_id or persona.id
+        keys = getattr(persona, "gemini_keys", None) or config.GEMINI_API_KEYS
+    except Exception:
+        p_id = persona_id or "default"
+        keys = config.GEMINI_API_KEYS
+
+    if p_id not in _rotator_cache:
+        _rotator_cache[p_id] = GeminiKeyRotator(keys=keys, env_path=None)
+
+    return _rotator_cache[p_id]
+
+
+class _KeyRotatorProxy:
+    """Dynamic proxy delegating all attribute accesses to the active GeminiKeyRotator."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_key_rotator(), name)
+
+    def __repr__(self) -> str:
+        return f"<_KeyRotatorProxy -> {get_key_rotator()!r}>"
+
+
+# Dynamic context-aware proxy (replaces static global singleton instance)
+key_rotator = _KeyRotatorProxy()

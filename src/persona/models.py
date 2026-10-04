@@ -260,6 +260,7 @@ class PersonaConfig(BaseModel):
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
     methodist: MethodistConfig
     prompts: dict[str, str] = Field(default_factory=dict)  # ключ -> путь шаблона .jinja2 (D-09)
+    gemini_keys: list[str] = Field(default_factory=list)
 
     _source_path: Path | None = PrivateAttr(default=None)
 
