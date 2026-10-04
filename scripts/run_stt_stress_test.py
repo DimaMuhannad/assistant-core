@@ -133,11 +133,22 @@ async def run_stress_test():
     # 2. Test DebriefParser semantic deconstruction on reflection
     logger.info("Testing semantic deconstruction with DebriefParser...")
     debrief_parser = DebriefParser()
+    try:
+        from src.persona.context import current_persona
+        p = current_persona()
+        comp_org = p.organizations.get("company")
+        company_name = comp_org.name if comp_org else "лабораторию"
+        univ_org = p.organizations.get("university")
+        univ_name = univ_org.name if univ_org else "университета"
+    except Exception:
+        company_name = "лабораторию"
+        univ_name = "университета"
+
     debrief_sample = (
         "Сегодня был продуктивный день. С утра провел две пары по волновой оптике у группы 2341, "
         "студенты хорошо сдали предварительные протоколы по интерферометру Майкельсона. "
-        "Потом заехал в Тидекс, закончили юстировку террагерцового спектрометра, переработка составила 1.5 часа. "
-        "Завтра нужно срочно подписать служебную записку в отделе кадров ГУАП и созвониться с Новиковой по эффективному контракту. "
+        f"Потом заехал в офис ({company_name}), закончили юстировку террагерцового спектрометра, переработка составила 1.5 часа. "
+        f"Завтра нужно срочно подписать служебную записку в отделе кадров ({univ_name}) и созвониться с коллегами по эффективному контракту. "
         "Дипломник Алексей обещал прислать доработанный расчетный раздел к вечеру четверга. "
         "В целом усталость средняя, настроение рабочее, приборная часть радует стабильностью."
     )
@@ -185,6 +196,9 @@ async def run_stress_test():
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Stress test harness for STT (VoiceProcessor) on Russian audio")
+    parser.parse_args()
     res = asyncio.run(run_stress_test())
     print("\n=== BENCHMARK COMPLETED SUCCESSFULLY ===")
     print(json.dumps(res, ensure_ascii=False, indent=2))

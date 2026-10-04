@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from src import config
+from src.persona.context import current_persona
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("provision_notion")
@@ -38,6 +39,19 @@ async def provision_second_brain(page_id_or_url: str, api_key: str | None = None
         "Content-Type": "application/json",
     }
 
+    try:
+        p = current_persona()
+        univ_org = p.organizations.get("university")
+        univ_name = univ_org.name if univ_org else "Academic"
+        comp_org = p.organizations.get("company")
+        comp_name = comp_org.name if comp_org else "Corporate"
+    except Exception:
+        univ_name = "Academic"
+        comp_name = "Corporate"
+
+    area_univ = f"🏛️ {univ_name}"
+    area_comp = f"🔬 {comp_name}"
+
     parent_page_id = clean_page_id(page_id_or_url)
     logger.info("Using Parent Page ID: %s", parent_page_id)
 
@@ -61,8 +75,8 @@ async def provision_second_brain(page_id_or_url: str, api_key: str | None = None
                 "Area": {
                     "select": {
                         "options": [
-                            {"name": "🏛️ ГУАП", "color": "blue"},
-                            {"name": "🔬 Тидекс", "color": "purple"},
+                            {"name": area_univ, "color": "blue"},
+                            {"name": area_comp, "color": "purple"},
                             {"name": "🤖 AI & Dev", "color": "green"},
                             {"name": "📚 Наука", "color": "orange"},
                             {"name": "🏠 Личное", "color": "pink"},
@@ -116,8 +130,8 @@ async def provision_second_brain(page_id_or_url: str, api_key: str | None = None
                 "Area": {
                     "select": {
                         "options": [
-                            {"name": "🏛️ ГУАП", "color": "blue"},
-                            {"name": "🔬 Тидекс", "color": "purple"},
+                            {"name": area_univ, "color": "blue"},
+                            {"name": area_comp, "color": "purple"},
                             {"name": "🤖 AI & Dev", "color": "green"},
                             {"name": "📚 Наука", "color": "orange"},
                             {"name": "🏠 Личное", "color": "pink"},
@@ -187,46 +201,46 @@ async def provision_second_brain(page_id_or_url: str, api_key: str | None = None
         # 6. Seed starter projects
         logger.info("Seeding starter projects into Notion...")
         starter_projects = [
-            {"name": "🏛️ Кафедра физики ГУАП (Осенний семестр 2026)", "area": "🏛️ ГУАП"},
-            {"name": "🔬 Оптические приборы и измерения (ООО Тидекс)", "area": "🔬 Тидекс"},
+            {"name": f"🏛️ Академический семестр ({univ_name})", "area": area_univ},
+            {"name": f"🔬 Проекты и измерения ({comp_name})", "area": area_comp},
             {"name": "🤖 AI Assistant & Antigravity Studio", "area": "🤖 AI & Dev"},
             {"name": "📚 Исследования и научные публикации", "area": "📚 Наука"},
         ]
         created_project_ids = {}
-        for p in starter_projects:
+        for p_item in starter_projects:
             p_resp = await client.post(
                 "/pages",
                 json={
                     "parent": {"database_id": projects_db["id"]},
                     "properties": {
-                        "Name": {"title": [{"text": {"content": p["name"]}}]},
-                        "Area": {"select": {"name": p["area"]}},
+                        "Name": {"title": [{"text": {"content": p_item["name"]}}]},
+                        "Area": {"select": {"name": p_item["area"]}},
                         "Status": {"status": {"name": "В работе"}},
                     },
                 },
             )
             if p_resp.status_code == 200:
-                created_project_ids[p["area"]] = p_resp.json()["id"]
+                created_project_ids[p_item["area"]] = p_resp.json()["id"]
 
         # 7. Seed starter tasks
         logger.info("Seeding starter tasks into Notion...")
         starter_tasks = [
             {
-                "title": "Подготовка к занятиям в среду: Гастелло 15, ауд. 31-04а и 32-03 (ФОНТ и Физика)",
+                "title": "Подготовка к занятиям в среду (ФОНТ и Физика)",
                 "priority": "P1",
-                "area": "🏛️ ГУАП",
+                "area": area_univ,
                 "due": "2026-09-30",
             },
             {
                 "title": "Проверка домашних заданий (Паспорт проекта) групп м631к и м531 к 03.10",
                 "priority": "P2",
-                "area": "🏛️ ГУАП",
+                "area": area_univ,
                 "due": "2026-10-03",
             },
             {
                 "title": "Провести онлайн-защиту лабораторных работ в Телемосте со Светланой Парфировой",
                 "priority": "P1",
-                "area": "🏛️ ГУАП",
+                "area": area_univ,
                 "due": "2026-10-02",
             },
         ]
@@ -283,11 +297,12 @@ def update_env_file(db_ids: dict[str, str], env_path: str = "/opt/assistant-core
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Provision Notion Second Brain databases")
     parser.add_argument("page_id", help="Notion Parent Page ID or full Page URL")
+    parser.add_argument("--env-file", default="/opt/assistant-core/.env", help="Path to .env file to update")
     args = parser.parse_args()
 
     loop = asyncio.get_event_loop()
     res = loop.run_until_complete(provision_second_brain(args.page_id))
-    update_env_file(res)
+    update_env_file(res, env_path=args.env_file)
     print("\nSUCCESS! Configured databases:")
     for k, v in res.items():
         print(f"  {k}: {v}")

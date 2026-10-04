@@ -1,5 +1,6 @@
 """Provision Engineering Hub & Dev Roadmap in Notion following developer best practices."""
 
+import argparse
 import asyncio
 import logging
 from typing import Any
@@ -58,9 +59,9 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                             {"name": "Phase 3: Notion Second Brain", "color": "green"},
                             {"name": "Phase 4: Studio Web UI & Editor", "color": "orange"},
                             {"name": "Phase 5: Telegram Vision & Media", "color": "pink"},
-                            {"name": "Phase 6: AADHk Timesheets (Tydex)", "color": "yellow"},
+                            {"name": "Phase 6: AADHk Timesheets (Corporate)", "color": "yellow"},
                             {"name": "Phase 7: Omnichannel Secretary", "color": "default"},
-                            {"name": "Phase 8: LMS Guap.pro Auto-Grading", "color": "red"},
+                            {"name": "Phase 8: LMS Academic Auto-Grading", "color": "red"},
                         ]
                     }
                 },
@@ -80,7 +81,7 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                             {"name": "Brain Engine (AI)", "color": "purple"},
                             {"name": "Delivery & Telegram UX", "color": "green"},
                             {"name": "Studio Web UI (React/FastAPI)", "color": "orange"},
-                            {"name": "Domain Context (ГУАП/Тидекс)", "color": "red"},
+                            {"name": "Domain Context (Academic/Corporate)", "color": "red"},
                         ]
                     }
                 },
@@ -147,12 +148,12 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                     "select": {
                         "options": [
                             {"name": "assistant-worker (Daemon)", "color": "blue"},
-                            {"name": "Telegram Bot (@opd_guap_popov_bot)", "color": "green"},
+                            {"name": "Telegram Bot (Assistant)", "color": "green"},
                             {"name": "FastAPI & Studio Web (chat-app)", "color": "orange"},
                             {"name": "Notion API Sync", "color": "purple"},
                             {"name": "Email (IMAP/SMTP Mail.ru & Gmail)", "color": "yellow"},
-                            {"name": "GUAP Sentinel & Calendar", "color": "red"},
-                            {"name": "LMS pro.guap.ru (Academic)", "color": "pink"},
+                            {"name": "Schedule Sentinel & Calendar", "color": "red"},
+                            {"name": "LMS Portal (Academic)", "color": "pink"},
                         ]
                     }
                 },
@@ -188,7 +189,7 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "status": "Completed",
                 "stream": "Delivery & Telegram UX",
                 "version": "v1.0 MVP",
-                "desc": "Сбор писем Mail.ru/Gmail/ГУАП, карточки ответов с кнопками, автоочистка чата, дайджест.",
+                "desc": "Сбор писем Mail.ru/Gmail/Университет, карточки ответов с кнопками, автоочистка чата, дайджест.",
             },
             {
                 "name": "Phase 3: Облачный Notion Second Brain",
@@ -215,12 +216,12 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "desc": "Прием скриншотов, сохранение на сервере, мультимодальный OCR через Gemini 2.5 Flash.",
             },
             {
-                "name": "Phase 6: Тайм-трекинг «Тидекс» и разбор БД AADHk Time Recording",
-                "phase": "Phase 6: AADHk Timesheets (Tydex)",
+                "name": "Phase 6: Корпоративный тайм-трекинг и разбор БД AADHk Time Recording",
+                "phase": "Phase 6: AADHk Timesheets (Corporate)",
                 "status": "In Progress",
-                "stream": "Domain Context (ГУАП/Тидекс)",
+                "stream": "Domain Context (Academic/Corporate)",
                 "version": "v1.3 Omnichannel",
-                "desc": "Импорт бэкапов SQLite AADHk, аналитика смен и рабочих часов, сопоставление с расписанием ГУАП.",
+                "desc": "Импорт бэкапов SQLite AADHk, аналитика смен и рабочих часов, сопоставление с расписанием.",
             },
             {
                 "name": "Phase 7: Омниканальный секретарь (WhatsApp, Max, расширенный пул Telegram)",
@@ -228,13 +229,13 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "status": "Planned",
                 "stream": "Delivery & Telegram UX",
                 "version": "v1.3 Omnichannel",
-                "desc": "Подключение Green-API (WhatsApp), корпоративного мессенджера Max и динамических групп ГУАП.",
+                "desc": "Подключение Green-API (WhatsApp), корпоративного мессенджера Max и динамических учебных групп.",
             },
             {
-                "name": "Phase 8: Личный кабинет преподавателя pro.guap.ru и автопроверка лаб",
-                "phase": "Phase 8: LMS Guap.pro Auto-Grading",
+                "name": "Phase 8: Личный кабинет преподавателя LMS и автопроверка лаб",
+                "phase": "Phase 8: LMS Academic Auto-Grading",
                 "status": "Planned",
-                "stream": "Domain Context (ГУАП/Тидекс)",
+                "stream": "Domain Context (Academic/Corporate)",
                 "version": "v2.0 Academic LMS",
                 "desc": "Парсинг сданных PDF-отчетов, проверка структуры и титульных листов через OCR, автовыставление баллов в БРС.",
             },
@@ -276,7 +277,7 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "type": "🚀 feat (Feature)",
                 "status": "Done",
                 "priority": "P1 - High",
-                "module": "Telegram Bot (@opd_guap_popov_bot)",
+                "module": "Telegram Bot (Assistant)",
                 "phase": "Phase 5: Telegram Vision & Media",
                 "commit": "640562a",
             },
@@ -294,7 +295,7 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "type": "🚀 feat (Feature)",
                 "status": "Done",
                 "priority": "P2 - Medium",
-                "module": "Telegram Bot (@opd_guap_popov_bot)",
+                "module": "Telegram Bot (Assistant)",
                 "phase": "Phase 2: Email Shield & Briefing",
                 "commit": "976e487",
             },
@@ -303,12 +304,12 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "type": "🚀 feat (Feature)",
                 "status": "Done",
                 "priority": "P1 - High",
-                "module": "Telegram Bot (@opd_guap_popov_bot)",
+                "module": "Telegram Bot (Assistant)",
                 "phase": "Phase 2: Email Shield & Briefing",
                 "commit": "d41bfe2",
             },
             {
-                "title": "Настроить утренний брифинг в 08:00 (пары ГУАП + Google Calendar + почта)",
+                "title": "Настроить утренний брифинг в 08:00 (расписание + Google Calendar + почта)",
                 "type": "🚀 feat (Feature)",
                 "status": "Done",
                 "priority": "P1 - High",
@@ -326,7 +327,7 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "commit": "0cb2a5b",
             },
             {
-                "title": "Подключить мультиаккаунтный сбор почты (Mail.ru, Gmail, ГУАП)",
+                "title": "Подключить мультиаккаунтный сбор почты (Mail.ru, Gmail, Университет)",
                 "type": "🚀 feat (Feature)",
                 "status": "Done",
                 "priority": "P1 - High",
@@ -341,16 +342,16 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "status": "In Progress",
                 "priority": "P1 - High",
                 "module": "assistant-worker (Daemon)",
-                "phase": "Phase 6: AADHk Timesheets (Tydex)",
+                "phase": "Phase 6: AADHk Timesheets (Corporate)",
                 "commit": "in_progress",
             },
             {
-                "title": "Сопоставление отработанных часов в «Тидекс» с расписанием пар ГУАП без наложений",
+                "title": "Сопоставление отработанных часов в компании с расписанием пар без наложений",
                 "type": "🚀 feat (Feature)",
                 "status": "Ready for Dev",
                 "priority": "P2 - Medium",
                 "module": "assistant-worker (Daemon)",
-                "phase": "Phase 6: AADHk Timesheets (Tydex)",
+                "phase": "Phase 6: AADHk Timesheets (Corporate)",
                 "commit": "pending",
             },
             {
@@ -358,17 +359,17 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "type": "🚀 feat (Feature)",
                 "status": "Backlog",
                 "priority": "P2 - Medium",
-                "module": "Telegram Bot (@opd_guap_popov_bot)",
+                "module": "Telegram Bot (Assistant)",
                 "phase": "Phase 7: Omnichannel Secretary",
                 "commit": "backlog",
             },
             {
-                "title": "Сессионный клиент авторизации и парсинга заданий личного кабинета pro.guap.ru",
+                "title": "Сессионный клиент авторизации и парсинга заданий личного кабинета LMS",
                 "type": "🚀 feat (Feature)",
                 "status": "Backlog",
                 "priority": "P1 - High",
-                "module": "LMS pro.guap.ru (Academic)",
-                "phase": "Phase 8: LMS Guap.pro Auto-Grading",
+                "module": "LMS Portal (Academic)",
+                "phase": "Phase 8: LMS Academic Auto-Grading",
                 "commit": "backlog",
             },
             {
@@ -376,8 +377,8 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
                 "type": "🧠 ai (LLM/Prompt)",
                 "status": "Backlog",
                 "priority": "P1 - High",
-                "module": "LMS pro.guap.ru (Academic)",
-                "phase": "Phase 8: LMS Guap.pro Auto-Grading",
+                "module": "LMS Portal (Academic)",
+                "phase": "Phase 8: LMS Academic Auto-Grading",
                 "commit": "backlog",
             },
         ]
@@ -408,9 +409,13 @@ async def setup_engineering_hub(parent_page_id_raw: str) -> dict[str, str]:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Provision Engineering Hub & Dev Roadmap in Notion")
+    parser.add_argument("parent_page_id", nargs="?", default="3eaa2e4840a080e98617f466a68be204", help="Parent Notion Page ID")
+    args = parser.parse_args()
+
     loop = asyncio.get_event_loop()
     res = loop.run_until_complete(
-        setup_engineering_hub("3eaa2e4840a080e98617f466a68be204")
+        setup_engineering_hub(args.parent_page_id)
     )
     print("\nSUCCESS! Engineering Hub provisioned:")
     for k, v in res.items():

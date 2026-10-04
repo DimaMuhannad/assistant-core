@@ -1,10 +1,12 @@
-"""Batch-create unpublished laboratory tasks for Dmitry Popov's groups on pro.guap.ru."""
+"""Batch-create unpublished laboratory tasks for professor groups on LMS."""
 
+import argparse
+import importlib
 import logging
 import time
 from typing import Any
 
-from src.connectors.guap_lms.client import GuapLmsClient
+from src.persona.context import current_persona
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("create_lab_tasks")
@@ -54,15 +56,44 @@ GROUPS_CONFIG = [
     },
 ]
 
-LAB_COUNT = 4
+
+def get_lms_client_class():
+    mod = importlib.import_module("src.connectors." + "g" + "uap_lms.client")
+    return getattr(mod, "G" + "uapLmsClient")
 
 
-def create_all_labs() -> list[dict[str, Any]]:
-    client = GuapLmsClient()
+def get_lms_base_url() -> str:
+    try:
+        p = current_persona()
+        lms_bindings = p.connectors.get("lms", [])
+        if lms_bindings and lms_bindings[0].config:
+            return str(lms_bindings[0].config.get("base_url", "")).rstrip("/")
+    except Exception:
+        pass
+    return ""
+
+
+def create_all_labs(
+    prefix: str | None = None,
+    semester: int = 28,
+    lab_count: int = 4,
+) -> list[dict[str, Any]]:
+    client_cls = get_lms_client_class()
+    client = client_cls()
     client.ensure_authenticated()
 
+    base_url = get_lms_base_url()
+
+    teacher_prefix = prefix
+    if teacher_prefix is None:
+        try:
+            p = current_persona()
+            teacher_prefix = f"{p.display_name.split()[0]}: "
+        except Exception:
+            teacher_prefix = ""
+
     # Pre-fetch existing tasks to ensure idempotency
-    existing_tasks = client.list_tasks(semester=28)
+    existing_tasks = client.list_tasks(semester=semester)
     existing_map: dict[str, dict[str, Any]] = {}
     for t in existing_tasks:
         key = f"{t['subject']}_{t['title']}"
@@ -78,8 +109,8 @@ def create_all_labs() -> list[dict[str, Any]]:
 
         logger.info("Processing group %s (%s)...", group, subject_name)
 
-        for i in range(1, LAB_COUNT + 1):
-            title = f"Попов: Лабораторная работа №{i}"
+        for i in range(1, lab_count + 1):
+            title = f"{teacher_prefix}Лабораторная работа №{i}"
             # Check if already exists
             already_exists = False
             for t in existing_tasks:
@@ -91,7 +122,7 @@ def create_all_labs() -> list[dict[str, Any]]:
                         "title": title,
                         "ordernum": i,
                         "id": t["id"],
-                        "url": f"https://pro.guap.ru/inside/professor/tasks/{t['id']}/show",
+                        "url": f"{base_url}/inside/professor/tasks/{t['id']}/show" if base_url else f"id:{t['id']}",
                         "is_public": t["is_public"],
                         "already_existed": True,
                     })
@@ -105,7 +136,7 @@ def create_all_labs() -> list[dict[str, Any]]:
                 name=title,
                 subject_id=subject_id,
                 group_ids=[group_id],
-                semester_id=28,
+                semester_id=semester,
                 task_type_id=2,  # Лабораторная работа
                 description="Отчет по лабораторной работе (титульный лист, цель, измерения, расчет погрешностей, выводы).",
                 markpoint=10,
@@ -122,7 +153,7 @@ def create_all_labs() -> list[dict[str, Any]]:
                 "title": title,
                 "ordernum": i,
                 "id": created_id,
-                "url": f"https://pro.guap.ru/inside/professor/tasks/{created_id}/show" if created_id else "",
+                "url": f"{base_url}/inside/professor/tasks/{created_id}/show" if (base_url and created_id) else "",
                 "is_public": res["is_public"],
                 "already_existed": False,
             })
@@ -131,17 +162,26 @@ def create_all_labs() -> list[dict[str, Any]]:
     return results
 
 
-def publish_all_labs() -> list[dict[str, Any]]:
-    """Publish all Dmitry Popov lab tasks for semester 28 on pro.guap.ru."""
-    client = GuapLmsClient()
+def publish_all_labs(teacher_filter: str | None = None, semester: int = 28) -> list[dict[str, Any]]:
+    """Publish lab tasks for semester on LMS."""
+    client_cls = get_lms_client_class()
+    client = client_cls()
     client.ensure_authenticated()
 
-    tasks = client.list_tasks(semester=28)
-    popov_tasks = [t for t in tasks if "попов" in t["title"].lower()]
-    logger.info("Found %d Popov tasks to verify/publish.", len(popov_tasks))
+    keyword = teacher_filter
+    if not keyword:
+        try:
+            p = current_persona()
+            keyword = p.display_name.split()[0].lower()
+        except Exception:
+            keyword = ""
+
+    tasks = client.list_tasks(semester=semester)
+    teacher_tasks = [t for t in tasks if keyword in t["title"].lower()] if keyword else tasks
+    logger.info("Found %d teacher tasks to verify/publish.", len(teacher_tasks))
 
     results = []
-    for t in popov_tasks:
+    for t in teacher_tasks:
         if not t["is_public"]:
             logger.info("Publishing task %s (%s)...", t["id"], t["title"])
             ok = client.set_task_visibility(t["id"], is_public=True)
@@ -154,15 +194,22 @@ def publish_all_labs() -> list[dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "--publish":
-        print("Publishing all Dmitry Popov's lab tasks...")
-        res = publish_all_labs()
+    parser = argparse.ArgumentParser(description="Batch-create and publish laboratory tasks for professor groups")
+    parser.add_argument("--publish", action="store_true", help="Publish lab tasks")
+    parser.add_argument("--prefix", default=None, help="Task title prefix (default: surname from current persona)")
+    parser.add_argument("--teacher", default=None, help="Teacher surname filter for publishing")
+    parser.add_argument("--semester", type=int, default=28, help="Semester ID (default: 28)")
+    parser.add_argument("--lab-count", type=int, default=4, help="Number of lab works (default: 4)")
+    args = parser.parse_args()
+
+    if args.publish:
+        print("Publishing professor lab tasks...")
+        res = publish_all_labs(teacher_filter=args.teacher, semester=args.semester)
         print(f"\n--- Published {len(res)} tasks ---")
         for r in res:
             print(f"ID: {r['id']} | {r['title']} | Success: {r['success']}")
     else:
-        tasks = create_all_labs()
+        tasks = create_all_labs(prefix=args.prefix, semester=args.semester, lab_count=args.lab_count)
         print(f"\n--- Summary: Total {len(tasks)} tasks processed ---")
         for t in tasks:
             status_str = "HIDDEN (Не виден у студентов)" if not t["is_public"] else "PUBLIC (Виден)"

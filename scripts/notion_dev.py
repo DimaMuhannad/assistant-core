@@ -116,12 +116,12 @@ PROJECTS_CACHE: dict[str, str] = {
     "ai": "3eaa2e48-40a0-8135-842c-e6147b608116",
     "assistant": "3eaa2e48-40a0-8135-842c-e6147b608116",
     "chat-app": "3eaa2e48-40a0-8135-842c-e6147b608116",
-    "tydex": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
-    "тидекс": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
-    "guap": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
-    "гуап": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
+    "corporate": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
+    "corp": "3eaa2e48-40a0-81e2-961b-e7eaea84444c",
+    "academic": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
+    "university": "3eaa2e48-40a0-8119-85fe-cb53a9172824",
     "science": "3eaa2e48-40a0-8178-82cb-f063652f8318",
-    "наука": "3eaa2e48-40a0-8178-82cb-f063652f8318",
+    "research": "3eaa2e48-40a0-8178-82cb-f063652f8318",
 }
 
 
@@ -152,7 +152,7 @@ async def find_project(client: httpx.AsyncClient, query: str) -> str | None:
 
 async def create_issue(
     title: str,
-    module: str = "LMS pro.guap.ru (Academic)",
+    module: str = "Core",
     priority: str = "P1 - High",
     issue_type: str = "🚀 feat (Feature)",
     status: str = "In Progress",
@@ -410,18 +410,18 @@ if __name__ == "__main__":
     # list
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--status", help="Filter by status (Backlog, Ready for Dev, In Progress, Done)")
-    p_list.add_argument("--project", help="Filter by project key or name (ai, tydex, guap, science)")
+    p_list.add_argument("--project", help="Filter by project key or name (ai, corporate, academic, science)")
     p_list.add_argument("--reverse", action="store_true", help="Sort in reverse chronological order (newest first)")
 
     # create
     p_create = subparsers.add_parser("create")
     p_create.add_argument("title", help="Issue title")
-    p_create.add_argument("--module", default="LMS pro.guap.ru (Academic)", help="Module name")
+    p_create.add_argument("--module", default="Core", help="Module name")
     p_create.add_argument("--priority", default="P1 - High", help="Priority")
     p_create.add_argument("--type", default="🚀 feat (Feature)", help="Type")
     p_create.add_argument("--status", default="In Progress", help="Initial status")
     p_create.add_argument("--milestone", default=None, help="Milestone name, phase number (e.g. 10 or 'Phase 10') or page ID")
-    p_create.add_argument("--project", default=None, help="Project name or key (e.g. 'ai', 'tydex', 'guap', 'science' or comma-separated)")
+    p_create.add_argument("--project", default=None, help="Project name or key (e.g. 'ai', 'corporate', 'academic', 'science' or comma-separated)")
 
     # start
     p_start = subparsers.add_parser("start")

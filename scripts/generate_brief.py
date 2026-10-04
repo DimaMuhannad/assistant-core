@@ -18,7 +18,7 @@ from src.notifier.telegram import TelegramNotifier
 from src.storage.db import Database
 
 
-async def run_brief(send_to_telegram: bool = True) -> str:
+async def run_brief(send_to_telegram: bool = True, source_id: str | None = None) -> str:
     db = Database(config.SQLITE_DB_PATH)
     await db.init_db()
 
@@ -26,8 +26,10 @@ async def run_brief(send_to_telegram: bool = True) -> str:
 
     # 1. Fetch today's lessons from latest schedule snapshot
     today_lessons = []
-    source_id = f"rasp_guap_{config.SCHEDULE_TARGET_ID}"
-    latest_snap = await db.get_latest_snapshot(source_id)
+    effective_source_id = source_id or getattr(config, "SCHEDULE_SOURCE_ID", None) or f"rasp_{config.SCHEDULE_TARGET_ID}"
+    latest_snap = await db.get_latest_snapshot(effective_source_id)
+    if not latest_snap:
+        latest_snap = await db.get_latest_snapshot()
     if latest_snap and latest_snap.get("raw_payload"):
         try:
             payload = SchedulePayload.model_validate_json(latest_snap["raw_payload"])
@@ -62,8 +64,13 @@ async def run_brief(send_to_telegram: bool = True) -> str:
 
 
 if __name__ == "__main__":
-    send = "--no-telegram" not in sys.argv
-    brief_text = asyncio.run(run_brief(send_to_telegram=send))
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate executive daily brief using Gemini API and send to Telegram.")
+    parser.add_argument("--source-id", default=None, help="Schedule source ID (optional)")
+    parser.add_argument("--no-telegram", action="store_true", help="Do not send brief to Telegram")
+    args = parser.parse_args()
+
+    brief_text = asyncio.run(run_brief(send_to_telegram=not args.no_telegram, source_id=args.source_id))
     print("\n" + "=" * 40)
     print(brief_text)
     print("=" * 40 + "\n")

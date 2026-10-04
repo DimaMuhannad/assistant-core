@@ -1,10 +1,14 @@
+import argparse
 import json
 import re
 from datetime import datetime, timezone, date, timedelta, time as dt_time
+from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+
+from src.persona.context import current_persona
 
 DAYS_MAP = {
     "Понедельник": 0,
@@ -26,7 +30,7 @@ TIME_SLOTS = {
 }
 
 
-def parse_guap_schedule(html_text: str):
+def parse_web_schedule(html_text: str, default_teacher: str = "Преподаватель"):
     soup = BeautifulSoup(html_text, "html.parser")
 
     # Determine current semester and week from header
@@ -104,7 +108,7 @@ def parse_guap_schedule(html_text: str):
 
             # Teacher
             teacher_match = re.search(r"преп:\s*([^.]+)", text)
-            teacher = teacher_match.group(1).strip() if teacher_match else "Попов Д.А."
+            teacher = teacher_match.group(1).strip() if teacher_match else default_teacher
 
             lessons.append({
                 "day": current_day,
@@ -147,14 +151,42 @@ def get_google_calendar_events():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Reconcile academic schedule with Google Calendar")
+    parser.add_argument("--base-url", default=None, help="Schedule base URL")
+    parser.add_argument("--target-id", default=None, help="Teacher or group ID for schedule")
+    parser.add_argument("--param-name", default="pr", help="URL parameter name (default: pr)")
+    parser.add_argument("--output", default="docs/baseline/reconcile_report.json", help="Report output path")
+    args = parser.parse_args()
+
     import asyncio
     from src.parser.schedule_parser import ScheduleParser
 
-    print("1. Запрашиваю расписание с сайта ГУАП (https://guap.ru/rasp?pr=2903) через ScheduleParser...")
-    parser = ScheduleParser(base_url="https://guap.ru/rasp", timeout_seconds=20.0, max_retries=4)
+    base_url = args.base_url
+    target_id = args.target_id
+    default_teacher = "Преподаватель"
+
+    try:
+        p = current_persona()
+        default_teacher = p.short_name or "Преподаватель"
+        if not base_url or not target_id:
+            sched_bindings = p.connectors.get("schedule", [])
+            if sched_bindings and sched_bindings[0].config:
+                if not base_url:
+                    base_url = sched_bindings[0].config.get("base_url")
+                if not target_id:
+                    target_id = str(sched_bindings[0].config.get("target_id", "2903"))
+    except Exception:
+        pass
+
+    from src import config
+    base_url = base_url or getattr(config, "SCHEDULE_URL", "")
+    target_id = target_id or getattr(config, "SCHEDULE_TARGET_ID", "2903")
+
+    print(f"1. Запрашиваю расписание ({base_url}?{args.param_name}={target_id}) через ScheduleParser...")
+    sched_parser = ScheduleParser(base_url=base_url, timeout_seconds=20.0, max_retries=4)
 
     async def fetch_html():
-        return await parser.fetch_schedule_raw("2903", param_name="pr")
+        return await sched_parser.fetch_schedule_raw(target_id, param_name=args.param_name)
 
     res = asyncio.run(fetch_html())
 
@@ -176,7 +208,7 @@ def main():
     else:
         html_text = res.raw_content
 
-    week_info, current_week_type, lessons = parse_guap_schedule(html_text)
+    week_info, current_week_type, lessons = parse_web_schedule(html_text, default_teacher=default_teacher)
     print(f"Информация о неделе на сайте: {week_info}")
     print(f"Текущий тип недели: {'▲ Верхняя (нечетная)' if current_week_type == 'UPPER' else '▼ Нижняя (четная)'}")
     print(f"Всего найдено занятий в сетке расписания: {len(lessons)}\n")
@@ -189,7 +221,7 @@ def main():
     output = {
         "week_info": week_info,
         "current_week_type": current_week_type,
-        "guap_lessons": lessons,
+        "lessons": lessons,
         "calendar_events": [
             {
                 "id": e.get("id"),
@@ -202,7 +234,9 @@ def main():
         ]
     }
 
-    with open("reconcile_report.json", "w", encoding="utf-8") as f:
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
     print("=== РЕЗУЛЬТАТЫ СВЕРКИ ===")
@@ -213,8 +247,7 @@ def main():
         start = e.get("start", {}).get("dateTime", e.get("start", {}).get("date"))
         print(f"  • [{start}] {e.get('summary')} (ауд: {e.get('location')})")
 
-    print("\n--- РАСПИСАНИЕ НА САЙТЕ ГУАП (ПО ДНЯМ) ---")
-    days_seen = set()
+    print("\n--- РАСПИСАНИЕ НА САЙТЕ (ПО ДНЯМ) ---")
     for l in lessons:
         active_str = "Активна на этой неделе" if (l["week_marker"] == "BOTH" or l["week_marker"] == current_week_type) else "Не на этой неделе"
         marker_str = "▲" if l["week_marker"] == "UPPER" else ("▼" if l["week_marker"] == "LOWER" else "•")

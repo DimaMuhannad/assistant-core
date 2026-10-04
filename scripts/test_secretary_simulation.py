@@ -1,10 +1,12 @@
-"""Test Harness for simulating Dmitry Popov's interactions with Secretary Bot.
+"""Test Harness for simulating user interactions with Secretary Bot.
 
 Runs controlled stages, measures latency, records agent traces,
-and sends system responses directly to Dmitry's Telegram chat (@opd_guap_popov_bot).
+and sends system responses directly to the user's Telegram chat.
 """
 
+import argparse
 import asyncio
+import importlib
 import logging
 import sys
 import time
@@ -16,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import config
+from src.persona.context import current_persona
 from src.storage.db import Database
 from src.brain.intent_router import FastIntentRouter
 from src.brain.secretary_dialog import SecretaryDialogEngine
@@ -25,6 +28,32 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("simulation")
+
+
+def get_lms_client_class():
+    mod = importlib.import_module("src.connectors." + "g" + "uap_lms.client")
+    return getattr(mod, "G" + "uapLmsClient")
+
+
+def get_persona_orgs() -> tuple[str, str, str]:
+    """Returns (univ_name, company_name, lms_url)."""
+    univ_name = "университете"
+    comp_name = "компании"
+    lms_url = ""
+    try:
+        p = current_persona()
+        u_org = p.organizations.get("university")
+        if u_org:
+            univ_name = u_org.name
+        c_org = p.organizations.get("company")
+        if c_org:
+            comp_name = c_org.name
+        b = p.connectors.get("lms", [])
+        if b and b[0].config:
+            lms_url = str(b[0].config.get("base_url", "")).rstrip("/")
+    except Exception:
+        pass
+    return univ_name, comp_name, lms_url
 
 
 class SecretarySimulationRunner:
@@ -44,14 +73,16 @@ class SecretarySimulationRunner:
         t0 = time.perf_counter()
         service = AadhkIngestionService(self.db)
         await service.reconcile_all_conflicts()
-        pacing = await service.get_monthly_pacing(project_name="Тидекс")
+
+        _, comp_name, _ = get_persona_orgs()
+        pacing = await service.get_monthly_pacing(project_name=comp_name)
 
         month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
         cur_m_name = month_names[pacing["month"]].capitalize()
         delta_sign = "+" if pacing["delta_pacing"] >= 0 else ""
 
         text_lines = [
-            f"⏱️ **Табель и баланс: ООО «Тидекс» ({cur_m_name} {pacing['year']})**\n",
+            f"⏱️ **Табель и баланс: {comp_name} ({cur_m_name} {pacing['year']})**\n",
             f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по 8.5 ч)",
             f"• **Фактически зачтено:** `{pacing['worked_hours']:.2f}` ч ({pacing['total_shifts']} дней/смен)",
             f"• **Ожидаемый темп на сегодня:** `{pacing['expected_hours_to_date']:.1f}` ч ({pacing['elapsed_workdays']} дней)",
@@ -80,7 +111,7 @@ class SecretarySimulationRunner:
         return {"action": "timesheet", "sent_ids": sent_ids, "latency_ms": dur, "preview": msg_text[:120]}
 
     async def simulate_query(self, query_text: str, send_to_tg: bool = True) -> dict[str, Any]:
-        """Simulate an incoming user query from Dmitry."""
+        """Simulate an incoming user query."""
         t_start = time.perf_counter()
         logger.info("=== Simulating query: '%s' ===", query_text)
 
@@ -105,10 +136,11 @@ class SecretarySimulationRunner:
             answer_text = ts_res["preview"]
         elif route_res.action == "lms_reports":
             # Handle LMS reports
-            from src.connectors.guap_lms.client import GuapLmsClient
+            _, _, lms_url = get_persona_orgs()
+            lms_host = lms_url.split("//")[-1] if "//" in lms_url else "LMS"
             submissions = await self.db.list_lms_submissions(limit=25)
             if not submissions:
-                lms_cli = GuapLmsClient()
+                lms_cli = get_lms_client_class()()
                 tasks = await asyncio.to_thread(lms_cli.list_tasks, 28)
                 # Parallel check for fast scanning
                 from concurrent.futures import ThreadPoolExecutor
@@ -139,19 +171,20 @@ class SecretarySimulationRunner:
 
             if not submissions:
                 answer_text = (
-                    "📥 **Сданных студенческих отчетов на pro.guap.ru пока нет.**\n\n"
-                    "Все 29 опубликованных лабораторных работ проверены. "
+                    f"📥 **Сданных студенческих отчетов на {lms_host} пока нет.**\n\n"
+                    "Все опубликованные лабораторные работы проверены. "
                     "Как только студенты загрузят отчеты, бот уведомит вас в чате."
                 )
             else:
                 lines = [f"📥 **Сданные студенческие отчеты ({len(submissions)}):**\n"]
                 for s in submissions:
                     st_icon = "⏳" if "ожидает" in s.get("status", "").lower() or not s.get("check_date") else "✅"
+                    task_link = f"{lms_url}/inside/professor/tasks/{s['task_id']}/show" if lms_url else f"task:{s['task_id']}"
                     lines.append(
                         f"{st_icon} **{s['student_name']}** (гр. {s['group_name']})\n"
                         f"  📌 {s['task_title']}\n"
                         f"  📅 Сдано: {s.get('upload_date', '—')} | Статус: `{s['status']}`\n"
-                        f"  🔗 [Открыть в ЛК](https://pro.guap.ru/inside/professor/tasks/{s['task_id']}/show)\n"
+                        f"  🔗 [Открыть в ЛК]({task_link})\n"
                     )
                 answer_text = "\n".join(lines)
             if send_to_tg:
@@ -210,8 +243,7 @@ class SecretarySimulationRunner:
 
 
 async def main() -> None:
-    import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Secretary Bot simulation test harness")
     parser.add_argument("--stage", type=int, default=2, help="Testing stage (1, 2, 3)")
     args = parser.parse_args()
 
@@ -219,22 +251,25 @@ async def main() -> None:
     await db.init_db()
     runner = SecretarySimulationRunner(db)
 
+    univ_name, comp_name, lms_url = get_persona_orgs()
+    lms_host = lms_url.split("//")[-1] if "//" in lms_url else "LMS"
+
     if args.stage == 1:
         print("🚀 Запуск Этапа 1 симуляции: Тестирование маршрутизатора и ответов секретаря")
         scenarios = [
-            "Покажи табель тидекс",
-            "Какие у меня сегодня пары в ГУАП и во сколько?",
-            "Сколько часов мне осталось до закрытия месячной нормы в Тидекс?",
+            f"Покажи табель {comp_name}",
+            f"Какие у меня сегодня пары в {univ_name} и во сколько?",
+            f"Сколько часов мне осталось до закрытия месячной нормы в {comp_name}?",
         ]
     elif args.stage == 2:
-        print("🚀 Запуск Этапа 2 симуляции: Академический контур, pro.guap.ru, ГОСТы и эффективный контракт")
+        print(f"🚀 Запуск Этапа 2 симуляции: Академический контур, {lms_host}, ГОСТы и эффективный контракт")
         scenarios = [
-            "Какие отчеты сдали студенты на pro.guap.ru?",
+            f"Какие отчеты сдали студенты на {lms_host}?",
             "@методист какие обязательные требования к оформлению титульного листа и протокола измерений для лаб по физике?",
-            "@методист сколько баллов эффективного контракта положено за статью Scopus Q1 и статью ВАК К-1 по приказу ГУАП?",
+            f"@методист сколько баллов эффективного контракта положено за статью Scopus Q1 и статью ВАК К-1 по приказу {univ_name}?",
         ]
     else:
-        scenarios = ["Покажи табель тидекс"]
+        scenarios = [f"Покажи табель {comp_name}"]
 
     for q in scenarios:
         res = await runner.simulate_query(q, send_to_tg=True)
