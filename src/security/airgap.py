@@ -10,9 +10,10 @@ from __future__ import annotations
 from dataclasses import is_dataclass, replace
 from typing import Any
 
-from src.core.domain.entities import WorkspaceClearance
+from src.core.domain.entities import GitCommit, WorkspaceClearance
 
 NDA_MASK_MARKER = "[NDA: тело и вложения скрыты Air-Gap]"
+NDA_GIT_MASK_MARKER = "[NDA: сообщение коммита скрыто Air-Gap]"
 
 
 def is_nda_email(email_data: dict[str, Any] | Any, persona: Any | None = None) -> bool:
@@ -150,3 +151,91 @@ def mask_nda_email_data(email_data: dict[str, Any] | Any) -> dict[str, Any] | An
         return replace(email_data, **fields)
 
     return email_data
+
+
+def is_nda_workspace(workspace: Any, persona: Any | None = None) -> bool:
+    """Определить, относится ли рабочее пространство к контуру restricted_nda (D-05)."""
+    if workspace is None:
+        return False
+
+    # Если передан clearance напрямую (строка или enum)
+    if workspace in ("restricted_nda", WorkspaceClearance.RESTRICTED_NDA):
+        return True
+
+    # Если передан объект Workspace или dict
+    clearance = (
+        workspace.get("clearance")
+        if isinstance(workspace, dict)
+        else getattr(workspace, "clearance", None)
+    )
+    if clearance in ("restricted_nda", WorkspaceClearance.RESTRICTED_NDA):
+        return True
+
+    # Если передан ID пространства (строка), ищем в персоне
+    ws_id = (
+        workspace.get("id")
+        if isinstance(workspace, dict)
+        else (getattr(workspace, "id", None) or (workspace if isinstance(workspace, str) else None))
+    )
+
+    try:
+        from src.persona.current import current_persona
+
+        p = persona or current_persona()
+    except Exception:
+        p = persona
+
+    if p and ws_id:
+        for ws in getattr(p, "workspaces", ()):
+            if getattr(ws, "id", None) == ws_id:
+                return getattr(ws, "clearance", None) in (
+                    "restricted_nda",
+                    WorkspaceClearance.RESTRICTED_NDA,
+                )
+
+    return False
+
+
+def sanitize_git_commits_for_llm(
+    workspace: Any,
+    commits: list[GitCommit],
+    persona: Any | None = None,
+) -> list[GitCommit]:
+    """Маскирование коммитов NDA-репозиториев перед передачей в контекст LLM (GIT-04)."""
+    if not is_nda_workspace(workspace, persona):
+        return commits
+
+    sanitized: list[GitCommit] = []
+    for c in commits:
+        sanitized.append(
+            GitCommit(
+                hash=c.hash,
+                author=c.author,
+                date=c.date,
+                message=NDA_GIT_MASK_MARKER,
+                files_changed=0,
+                insertions=0,
+                deletions=0,
+            )
+        )
+    return sanitized
+
+
+def sanitize_notion_payload_for_airgap(
+    workspace: Any,
+    payload: dict[str, Any],
+    persona: Any | None = None,
+) -> dict[str, Any]:
+    """Санитизация полезной нагрузки для Notion: для restricted_nda исключает детали коммитов и оставляет только агрегаты."""
+    if not is_nda_workspace(workspace, persona):
+        return payload
+
+    clean = dict(payload)
+    clean.pop("commits", None)
+    clean.pop("messages", None)
+    clean.pop("files", None)
+    clean.pop("branches", None)
+    commit_count = clean.get("commit_count", 0)
+    clean["summary"] = f"Проект находится под защитой Air-Gap (NDA). Зафиксировано {commit_count} коммитов."
+    return clean
+
