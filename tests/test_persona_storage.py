@@ -158,7 +158,14 @@ async def test_seed_writes_workspaces_in_order(db):
     expected_nda = next(ws for ws in persona.workspaces if ws.clearance == "restricted_nda")
     workspace_rows, binding_rows = persona_rows(persona)
     assert [row["position"] for row in workspace_rows] == [0, 1, 2, 3]
-    assert [row["role"] for row in binding_rows] == ["schedule_source", "calendar_sync", "timesheet", "lms"]
+    assert [row["role"] for row in binding_rows] == [
+        "schedule_source",
+        "calendar_sync",
+        "timesheet",
+        "lms",
+        "git_source",
+        "notion",
+    ]
 
     await seed_persona(db, persona)
     rows = await db.list_persona_workspaces(persona.id)
@@ -197,7 +204,14 @@ async def test_multiple_bindings_per_role_are_stored(db):
     assert [r["position"] for r in rows] == [0, 1]
     assert {r["id"] for r in rows} == {f"{extra.id}/lms/main", f"{extra.id}/lms/second"}
     all_rows = await db.list_connector_bindings(extra.id)
-    assert {r["role"] for r in all_rows} == {"schedule_source", "calendar_sync", "timesheet", "lms"}
+    assert {r["role"] for r in all_rows} == {
+        "schedule_source",
+        "calendar_sync",
+        "timesheet",
+        "lms",
+        "git_source",
+        "notion",
+    }
 
 
 async def test_config_json_keeps_env_placeholders(db, monkeypatch):

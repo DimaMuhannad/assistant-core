@@ -22,7 +22,7 @@ from assistant_shared.hitl import (
     register_action_handler,
 )
 from src import config
-from src.connectors.notion.client import NotionAsyncClient
+from src.core.ports.clients import NotionClientLike
 from src.core.domain.entities import (
     GitCommit,
     GitProgressReport,
@@ -45,7 +45,7 @@ class GitProgressEvaluator:
     def __init__(
         self,
         git_provider: BaseGitSourceProvider,
-        notion_client: NotionAsyncClient,
+        notion_client: NotionClientLike,
         confirmation_store: ConfirmationStore,
         persona: Any | None = None,
         default_activity_db_id: str | None = None,

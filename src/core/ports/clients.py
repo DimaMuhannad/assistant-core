@@ -66,3 +66,22 @@ class DriveClientLike(Protocol):
     def is_configured(self) -> bool: ...
 
     async def sync_aadhk_from_drive(self, db: Any) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class NotionClientLike(Protocol):
+    """Клиент базы данных Notion."""
+
+    @property
+    def is_configured(self) -> bool: ...
+
+    async def log_project_activity(
+        self,
+        database_id: str,
+        project_page_id: str,
+        date_iso: str,
+        commit_count: int,
+        status: str,
+        summary: str,
+    ) -> dict[str, Any]: ...
+
