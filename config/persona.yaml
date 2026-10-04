@@ -19,6 +19,8 @@ persona:
       clearance: public
       clearance_label: "🌐 Public / Open Source"
       color: blue
+      remote: "https://github.com/DimaMuhannad/chat-app.git"
+      notion_project: "notion-proj-chat-app"
     - id: assistant-core
       label: "⚙️ Assistant Core Daemon"
       path: /opt/assistant-core
@@ -26,6 +28,8 @@ persona:
       clearance: public
       clearance_label: "🌐 Public / Academic"
       color: green
+      remote: "https://github.com/DimaMuhannad/assistant-core.git"
+      notion_project: "notion-proj-assistant-core"
     - id: tydex-optics
       label: "🔬 Оптические приборы и измерения (ООО «Тидекс»)"
       path: /opt/work-tydex
@@ -33,6 +37,9 @@ persona:
       clearance: restricted_nda
       clearance_label: "🔴 Restricted NDA / Air-gap"
       color: red
+      remote: "git@tydex-vps:tydex/optics-firmware.git"
+      ssh_alias: "tydex-vps"
+      notion_project: "notion-proj-tydex-optics"
       forbidden_remote_substrings: ["github.com/DimaMuhannad"]
       forbidden_keywords: ["tydex_internal_secret", "golay_calibration_key", "thz_proprietary_firmware"]
       remote_violation_message: "CRITICAL: Проект Тидекс скомпрометирован: remote указывает на личный публичный аккаунт!"
@@ -43,6 +50,8 @@ persona:
       clearance: internal
       clearance_label: "🟡 Internal Academic"
       color: yellow
+      remote: "https://github.com/DimaMuhannad/guap-physics.git"
+      notion_project: "notion-proj-guap-physics"
   name_forms:
     nominative: Попов Дмитрий Александрович
     genitive: Попова Дмитрия Александровича
@@ -136,8 +145,17 @@ persona:
       - lms.write
       config:
         base_url: https://pro.guap.ru
-    git_source: []
-    notion: []
+    git_source:
+    - id: main
+      provider: ssh_git
+      scopes:
+      - git.read
+    notion:
+    - id: main
+      provider: notion_async
+      scopes:
+      - notion.read
+      - notion.write
   methodist:
     raw_dir: /opt/assistant-core/data/methodist/raw
     kb_dir: /opt/assistant-core/data/methodist/knowledge_base
@@ -295,3 +313,4 @@ persona:
     debrief: prompts/debrief_default.jinja2
     morning_brief: prompts/morning_brief_default.jinja2
     evening_digest: prompts/evening_digest_default.jinja2
+    git_progress: prompts/git_progress_default.jinja2

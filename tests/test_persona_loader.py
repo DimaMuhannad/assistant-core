@@ -245,8 +245,12 @@ def test_default_persona_data_is_complete():
     assert [a.value for a in persona.task_areas if not a.show_in_filter] == ["Финансы"]
     assert persona.default_area in {a.value for a in persona.task_areas}
     assert len(persona.ui.texts) == 7
-    assert len(persona.methodist.file_catalog) == 7
-    assert persona.connectors.git_source == [] and persona.connectors.notion == []
+    assert len(persona.connectors.git_source) == 1
+    assert persona.connectors.git_source[0].provider == "ssh_git"
+    assert persona.connectors.git_source[0].scopes == ["git.read"]
+    assert len(persona.connectors.notion) == 1
+    assert persona.connectors.notion[0].provider == "notion_async"
+    assert persona.connectors.notion[0].scopes == ["notion.read", "notion.write"]
     assert persona.connectors.timesheet[0].config["daily_norm_hours"] == 8.5
     assert persona.telegram.authorized_user_ids == ["${TELEGRAM_USER_ID}"]
     assert persona.to_domain().workspaces[2].clearance.value == "restricted_nda"

@@ -57,6 +57,8 @@ SYNTHETIC_PERSONA: dict = {
             "clearance": "public",
             "account": "synthetic-account",
             "remote": "https://git.synthetic.example/synthetic/public.git",
+            "ssh_alias": None,
+            "notion_project": "notion-proj-synthetic-public",
             "forbidden_remote_substrings": [],
             "forbidden_keywords": [],
         },
@@ -67,6 +69,8 @@ SYNTHETIC_PERSONA: dict = {
             "clearance": "internal",
             "account": "synthetic-account",
             "remote": "https://git.synthetic.example/synthetic/internal.git",
+            "ssh_alias": None,
+            "notion_project": "notion-proj-synthetic-internal",
             "forbidden_remote_substrings": [],
             "forbidden_keywords": [],
         },
@@ -77,6 +81,8 @@ SYNTHETIC_PERSONA: dict = {
             "clearance": "restricted_nda",
             "account": "synthetic-corp-account",
             "remote": "https://git.synthetic.example/synthetic-corp/nda.git",
+            "ssh_alias": "synthetic-ssh-alias",
+            "notion_project": "notion-proj-synthetic-nda",
             "forbidden_remote_substrings": ["git.synthetic.example/forbidden"],
             "forbidden_keywords": ["synthetic_marker_alpha", "synthetic_marker_beta"],
         },
@@ -129,6 +135,8 @@ def synthetic_to_config(d: dict, prompts: dict[str, str] | None = None) -> dict:
             "clearance_label": clearance_label,
             "color": color,
             "remote": ws["remote"],
+            "ssh_alias": ws.get("ssh_alias"),
+            "notion_project": ws.get("notion_project"),
             "forbidden_remote_substrings": list(ws["forbidden_remote_substrings"]),
             "forbidden_keywords": list(ws["forbidden_keywords"]),
         }
@@ -208,7 +216,13 @@ def synthetic_to_config(d: dict, prompts: dict[str, str] | None = None) -> dict:
                         "config": {"base_url": d["lms"]["base_url"]},
                     }
                 ],
-                "git_source": [],
+                "git_source": [
+                    {
+                        "id": "main",
+                        "provider": "ssh_git",
+                        "scopes": ["git.read"],
+                    }
+                ],
                 "notion": [],
             },
             "methodist": {

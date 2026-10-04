@@ -11,7 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
-from src.core.ports.connectors import BaseScheduleProvider, BaseTimesheetProvider
+from src.core.ports.connectors import (
+    BaseGitSourceProvider,
+    BaseScheduleProvider,
+    BaseTimesheetProvider,
+)
 
 
 def schedule_site_url() -> str:
@@ -88,3 +92,23 @@ def default_drive_client() -> DriveClientLike:
     from src.connectors.gdrive.client import GoogleDriveClient
 
     return GoogleDriveClient()
+
+
+def default_git_source_provider() -> BaseGitSourceProvider | None:
+    """Собрать провайдера Git-источников по умолчанию (SshGitProvider)."""
+    from src.core.exceptions import MissingScopeError
+    from src.persona.bindings import binding, has_binding
+
+    if not has_binding("git_source"):
+        return None
+
+    from src.connectors.git.provider import SshGitProvider
+
+    bound = binding("git_source")
+    req = set(SshGitProvider.required_scopes)
+    actual = set(bound.scopes)
+    if not req.issubset(actual):
+        raise MissingScopeError(f"Коннектор git_source требует scopes {req}, у персоны только {actual}")
+
+    return SshGitProvider()
+
