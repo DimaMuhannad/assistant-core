@@ -14,6 +14,15 @@ from aiogram.types import (
 )
 from aiogram.filters import Command
 
+from assistant_shared.hitl import (
+    ConfirmationChannel,
+    ConfirmationStatus,
+    ConfirmationStore,
+    PendingConfirmation,
+    register_action_handler,
+    resume_action,
+)
+
 from src.storage.db import Database
 from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
@@ -91,6 +100,39 @@ class EmailBotHandler:
         self.session_messages: dict[int, set[int]] = {}
 
         self._register_handlers()
+        self._register_hitl_action_handlers()
+
+    def _get_confirmation_store(self) -> ConfirmationStore:
+        db_path = self.db.db_path
+        if isinstance(db_path, str):
+            for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+                if db_path.startswith(prefix):
+                    db_path = db_path[len(prefix):]
+                    break
+        return ConfirmationStore(db_path)
+
+    def _register_hitl_action_handlers(self) -> None:
+        """Регистрирует обработчики HITL деструктивных действий для вызова через resume_action."""
+        async def _handle_del_proj(conf: PendingConfirmation):
+            target = conf.target_id or conf.payload.get("project_id")
+            return await self.db.delete_project(int(target))
+
+        async def _handle_del_doc(conf: PendingConfirmation):
+            target = conf.target_id or conf.payload.get("doc_id")
+            return await self.db.delete_document(int(target))
+
+        async def _handle_del_task(conf: PendingConfirmation):
+            target = conf.target_id or conf.payload.get("task_id")
+            return await self.db.delete_task(int(target))
+
+        async def _handle_del_rem(conf: PendingConfirmation):
+            target = conf.target_id or conf.payload.get("reminder_id")
+            return await self.db.delete_reminder(int(target))
+
+        register_action_handler("delete_project", _handle_del_proj)
+        register_action_handler("delete_document", _handle_del_doc)
+        register_action_handler("delete_task", _handle_del_task)
+        register_action_handler("delete_reminder", _handle_del_rem)
 
     def _timesheet(self) -> BaseTimesheetProvider:
         """Сервис табеля: внедрённый или собранный по умолчанию на каждый вызов."""
@@ -101,7 +143,7 @@ class EmailBotHandler:
     def _is_authorized(self, user_id: int) -> bool:
         if self.allowed_user_id is None:
             return True
-        return user_id == self.allowed_user_id
+        return str(user_id) == str(self.allowed_user_id)
 
     def register_message(self, email_id: int, message_id: int) -> None:
         """Register a Telegram message ID to be cleaned up when email interaction completes."""
@@ -187,6 +229,10 @@ class EmailBotHandler:
         self.router.callback_query(F.data == "dlg:confirm_clear")(self.cb_dlg_confirm_clear)
         self.router.callback_query(F.data == "dlg:cancel_clear")(self.cb_dlg_cancel_clear)
         self.router.callback_query(F.data == "dlg:undo_clear")(self.cb_dlg_undo_clear)
+
+        # Callbacks for Web HITL confirmations
+        self.router.callback_query(F.data.startswith("hitl:confirm:"))(self.cb_hitl_confirm)
+        self.router.callback_query(F.data.startswith("hitl:reject:"))(self.cb_hitl_reject)
 
         # Callbacks for Live HUD Ticker
         self.router.callback_query(F.data.startswith("tk:sc:"))(self.cb_ticker_switch_screen)
@@ -1286,6 +1332,21 @@ class EmailBotHandler:
             await callback.answer("⛔ Доступ запрещен", show_alert=True)
             return
 
+        # Фиксация в общем примитиве ConfirmationStore (HIT-02, D-04, D-06)
+        try:
+            store = self._get_confirmation_store()
+            conf = await store.create_confirmation(
+                persona_id="popov-da-default",
+                action_type="clear_dialog",
+                target_id=str(callback.from_user.id),
+                payload={"user_id": callback.from_user.id},
+                channel=ConfirmationChannel.TELEGRAM,
+                ttl_minutes=10,
+            )
+            await store.confirm_action(conf.id, confirmed_by=str(callback.from_user.id))
+        except Exception:
+            logger.warning("Не удалось зафиксировать clear_dialog в ConfirmationStore", exc_info=True)
+
         archived = await self.db.clear_dialog_history(callback.from_user.id)
         text = (
             f"🧹 **Память диалога успешно очищена.**\n"
@@ -1308,8 +1369,186 @@ class EmailBotHandler:
             await callback.answer("⛔ Доступ запрещен", show_alert=True)
             return
 
+        try:
+            store = self._get_confirmation_store()
+            conf = await store.create_confirmation(
+                persona_id="popov-da-default",
+                action_type="clear_dialog",
+                target_id=str(callback.from_user.id),
+                payload={"user_id": callback.from_user.id},
+                channel=ConfirmationChannel.TELEGRAM,
+                ttl_minutes=10,
+            )
+            await store.reject_action(conf.id, rejected_by=str(callback.from_user.id))
+        except Exception:
+            logger.warning("Не удалось зафиксировать reject clear_dialog в ConfirmationStore", exc_info=True)
+
         await callback.message.edit_text("❌ **Очистка памяти отменена.** Контекст текущего диалога сохранен в полном объеме.")
         await callback.answer("Отменено")
+
+    async def send_web_hitl_card(
+        self,
+        confirmation_id: str,
+        chat_id: int | str | None = None,
+    ) -> Message | None:
+        """Отправляет карточку подтверждения для Web-действия владельцу в Telegram (D-01)."""
+        target_chat_id = chat_id or self.allowed_user_id
+        if not target_chat_id:
+            logger.warning("Не указан chat_id для отправки HITL карточки")
+            return None
+
+        store = self._get_confirmation_store()
+        conf = await store.get_confirmation(confirmation_id)
+        if not conf:
+            logger.error("Запрос подтверждения %s не найден", confirmation_id)
+            return None
+
+        entity_names = {
+            "delete_task": "Задача",
+            "delete_project": "Проект",
+            "delete_document": "Документ",
+            "delete_reminder": "Напоминание",
+        }
+        entity_label = entity_names.get(conf.action_type, conf.action_type)
+        title = (
+            conf.payload.get("title")
+            or conf.payload.get("name")
+            or conf.payload.get("what")
+            or f"#{conf.target_id}"
+        )
+
+        text = (
+            "⚠️ **Запрос на удаление из Web-интерфейса**\n\n"
+            f"**Сущность:** {entity_label}\n"
+            f"**Название:** «{title}»\n"
+            f"**ID:** #{conf.target_id or conf.id}\n\n"
+            "Подтверждаете удаление?"
+        )
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🗑 Да, удалить",
+                        callback_data=f"hitl:confirm:{conf.id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ Отклонить",
+                        callback_data=f"hitl:reject:{conf.id}",
+                    ),
+                ]
+            ]
+        )
+
+        if self.notifier:
+            return await self.notifier.send_message(text, chat_id=int(target_chat_id), reply_markup=kb)
+        elif self.bot:
+            return await self.bot.send_message(chat_id=int(target_chat_id), text=text, reply_markup=kb)
+        return None
+
+    async def cb_hitl_confirm(self, callback: CallbackQuery) -> None:
+        """Обрабатывает нажатие '🗑 Да, удалить' для Web-действия (D-01, HIT-02)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        conf_id = callback.data.split(":", 2)[2]
+        store = self._get_confirmation_store()
+
+        conf = await store.get_confirmation(conf_id)
+        if not conf:
+            await callback.answer("Запрос не найден", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("❌ **Запрос не найден или удален.**")
+            return
+
+        if conf.status == ConfirmationStatus.EXPIRED or conf.is_expired():
+            await callback.answer("Срок действия запроса истек", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("⏳ **Срок действия запроса истек.** Данные не были удалены.")
+            return
+
+        if conf.status != ConfirmationStatus.PENDING:
+            await callback.answer(f"Запрос уже обработан ({conf.status.value})", show_alert=True)
+            return
+
+        try:
+            await resume_action(conf_id, store, confirmed_by=str(callback.from_user.id))
+            entity_names = {
+                "delete_task": "Задача",
+                "delete_project": "Проект",
+                "delete_document": "Документ",
+                "delete_reminder": "Напоминание",
+            }
+            entity_label = entity_names.get(conf.action_type, "Элемент")
+            title = (
+                conf.payload.get("title")
+                or conf.payload.get("name")
+                or conf.payload.get("what")
+                or f"#{conf.target_id}"
+            )
+
+            user_display = getattr(callback.from_user, "first_name", None) or str(callback.from_user.id)
+            text = (
+                f"🗑 **{entity_label} успешно удален(а).**\n\n"
+                f"«{title}» (#{conf.target_id})\n"
+                f"Действие подтверждено пользователем {user_display}."
+            )
+            if callback.message:
+                await callback.message.edit_text(text)
+            await callback.answer("Удалено")
+        except Exception as e:
+            logger.exception("Ошибка при выполнении подтвержденного действия %s", conf_id)
+            await callback.answer(f"Ошибка при выполнении: {e}", show_alert=True)
+
+    async def cb_hitl_reject(self, callback: CallbackQuery) -> None:
+        """Обрабатывает нажатие '❌ Отклонить' для Web-действия (D-01, HIT-02)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        conf_id = callback.data.split(":", 2)[2]
+        store = self._get_confirmation_store()
+
+        conf = await store.get_confirmation(conf_id)
+        if not conf:
+            await callback.answer("Запрос не найден", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("❌ **Запрос не найден или удален.**")
+            return
+
+        if conf.status == ConfirmationStatus.EXPIRED or conf.is_expired():
+            await callback.answer("Срок действия запроса истек", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("⏳ **Срок действия запроса истек.**")
+            return
+
+        if conf.status != ConfirmationStatus.PENDING:
+            await callback.answer(f"Запрос уже обработан ({conf.status.value})", show_alert=True)
+            return
+
+        await store.reject_action(conf_id, rejected_by=str(callback.from_user.id))
+        entity_names = {
+            "delete_task": "Задача",
+            "delete_project": "Проект",
+            "delete_document": "Документ",
+            "delete_reminder": "Напоминание",
+        }
+        entity_label = entity_names.get(conf.action_type, "Элемент")
+        title = (
+            conf.payload.get("title")
+            or conf.payload.get("name")
+            or conf.payload.get("what")
+            or f"#{conf.target_id}"
+        )
+
+        text = (
+            f"❌ **Удаление отклонено.**\n\n"
+            f"{entity_label} «{title}» (#{conf.target_id}) сохранена в базе данных."
+        )
+        if callback.message:
+            await callback.message.edit_text(text)
+        await callback.answer("Отклонено")
 
     async def cb_dlg_undo_clear(self, callback: CallbackQuery) -> None:
         if not self._is_authorized(callback.from_user.id):
