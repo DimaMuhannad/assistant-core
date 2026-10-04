@@ -38,6 +38,7 @@ from src.composition import (
 from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.persona.bindings import format_hours, timesheet_settings
+from src.persona.current import current_persona
 from src.notifier.live_ticker import LiveTickerService
 from src.notifier.telegram import (
     TelegramNotifier,
@@ -1336,7 +1337,7 @@ class EmailBotHandler:
         try:
             store = self._get_confirmation_store()
             conf = await store.create_confirmation(
-                persona_id="popov-da-default",
+                persona_id=current_persona().id,
                 action_type="clear_dialog",
                 target_id=str(callback.from_user.id),
                 payload={"user_id": callback.from_user.id},
@@ -1372,7 +1373,7 @@ class EmailBotHandler:
         try:
             store = self._get_confirmation_store()
             conf = await store.create_confirmation(
-                persona_id="popov-da-default",
+                persona_id=current_persona().id,
                 action_type="clear_dialog",
                 target_id=str(callback.from_user.id),
                 payload={"user_id": callback.from_user.id},
