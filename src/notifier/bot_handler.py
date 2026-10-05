@@ -233,7 +233,8 @@ class EmailBotHandler:
                 return {"status": "active", "event_id": event_id}
             except Exception as e:
                 logger.warning("Ошибка при создании события в Google Calendar: %s", e)
-                return {"status": "pending_sync", "error": str(e)}
+                sync_id = await self.db.save_pending_calendar_sync(payload)
+                return {"status": "pending_sync", "error": str(e), "sync_id": sync_id}
 
         async def _handle_create_reminder(conf: PendingConfirmation):
             payload = conf.payload or {}
@@ -367,6 +368,7 @@ class EmailBotHandler:
         # Callbacks for Action HITL confirmations (Phase 8, Plan 08-02)
         self.router.callback_query(F.data.startswith("act:cal:conf:"))(self.cb_act_calendar_confirm)
         self.router.callback_query(F.data.startswith("act:cal:rej:"))(self.cb_act_calendar_reject)
+        self.router.callback_query(F.data.startswith("act:cal:retry:"))(self.cb_act_calendar_retry)
         self.router.callback_query(F.data.startswith("act:rem:conf:"))(self.cb_act_reminder_confirm)
         self.router.callback_query(F.data.startswith("act:rem:rej:"))(self.cb_act_reminder_reject)
         self.router.callback_query(F.data.startswith("act:drf:conf:"))(self.cb_act_draft_confirm)
@@ -1061,6 +1063,9 @@ class EmailBotHandler:
             elif route_res.action == "methodist":
                 clean_q = re.sub(r"^@?методист[:,]?\s*", "", user_msg, flags=re.IGNORECASE).strip()
                 await self._handle_methodist_query(message, clean_q or user_msg)
+                return
+            elif route_res.action in ("calendar_schedule", "create_reminder", "draft_reply"):
+                await self._handle_secretary_dialog(message, user_msg, intent=route_res.action)
                 return
             else:
                 # Conversational dialogue with Secretary Assistant
@@ -1783,6 +1788,28 @@ class EmailBotHandler:
             try:
                 res = await resume_action(conf_id, store, confirmed_by=str(callback.from_user.id))
                 if conf.action_type == "create_calendar_event":
+                    if isinstance(res, dict) and res.get("status") == "pending_sync":
+                        sync_id = res.get("sync_id")
+                        if not sync_id:
+                            sync_id = await self.db.save_pending_calendar_sync(conf.payload)
+                        retry_kb = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(
+                                        text="🔄 Повторить синхронизацию",
+                                        callback_data=f"act:cal:retry:{sync_id}",
+                                    )
+                                ]
+                            ]
+                        )
+                        status_text = (
+                            "⚠️ Google Calendar временно недоступен. Событие сохранено локально (`pending_sync`)."
+                        )
+                        if callback.message:
+                            await callback.message.edit_text(status_text, reply_markup=retry_kb)
+                        await callback.answer("Сохранено локально (pending_sync)")
+                        return
+
                     title = conf.payload.get("title", "Событие")
                     d = conf.payload.get("date", "")
                     st = conf.payload.get("start_time", "")
@@ -1814,6 +1841,25 @@ class EmailBotHandler:
                 await callback.answer("Подтверждено")
             except Exception as e:
                 logger.exception("Ошибка при выполнении подтвержденного действия %s: %s", conf_id, e)
+                if conf.action_type == "create_calendar_event":
+                    sync_id = await self.db.save_pending_calendar_sync(conf.payload)
+                    retry_kb = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="🔄 Повторить синхронизацию",
+                                    callback_data=f"act:cal:retry:{sync_id}",
+                                )
+                            ]
+                        ]
+                    )
+                    status_text = (
+                        "⚠️ Google Calendar временно недоступен. Событие сохранено локально (`pending_sync`)."
+                    )
+                    if callback.message:
+                        await callback.message.edit_text(status_text, reply_markup=retry_kb)
+                    await callback.answer("Сохранено локально (pending_sync)")
+                    return
                 await callback.answer(f"Ошибка при выполнении: {e}", show_alert=True)
         else:
             await store.reject_action(conf_id, rejected_by=str(callback.from_user.id))
@@ -1838,6 +1884,59 @@ class EmailBotHandler:
         """Отклонение создания события в Google Calendar."""
         await self._handle_hitl_action_callback(callback, is_confirm=False)
 
+    async def cb_act_calendar_retry(self, callback: CallbackQuery) -> None:
+        """Повторная попытка синхронизации события с Google Calendar при сетевом сбое (D-04)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        parts = callback.data.split(":")
+        if len(parts) < 4:
+            await callback.answer("Неверный формат запроса", show_alert=True)
+            return
+
+        try:
+            sync_id = int(parts[3])
+        except ValueError:
+            await callback.answer("Неверный ID синхронизации", show_alert=True)
+            return
+
+        record = await self.db.get_pending_calendar_sync(sync_id)
+        if not record:
+            await callback.answer("Запись не найдена", show_alert=True)
+            return
+
+        try:
+            event_id = None
+            if getattr(self, "calendar_client", None):
+                cal_id = getattr(self.calendar_client, "calendar_id", None) or "primary"
+                if hasattr(self.calendar_client, "create_event_from_dict"):
+                    event_id = await self.calendar_client.create_event_from_dict(cal_id, record)
+                else:
+                    from datetime import date as dt_date, time as dt_time
+                    from src.models.schedule import Lesson
+                    raw_start = str(record.get("event_start", ""))
+                    d_part = raw_start.split("T")[0]
+                    t_part = raw_start.split("T")[1] if "T" in raw_start else "00:00"
+                    st_parts = [int(p) for p in t_part.split(":")[:2]]
+                    lesson = Lesson(
+                        subject=record.get("summary", "Событие"),
+                        date=dt_date.fromisoformat(d_part),
+                        start_time=dt_time(st_parts[0], st_parts[1]),
+                        end_time=dt_time(st_parts[0] + 1, st_parts[1]),
+                    )
+                    event_id = await self.calendar_client.create_event(cal_id, lesson)
+            else:
+                event_id = f"evt_retried_{sync_id}"
+
+            await self.db.update_calendar_sync_status(sync_id, google_event_id=event_id, status="active")
+            if callback.message:
+                await callback.message.edit_text("✅ Синхронизировано с Google Calendar", reply_markup=None)
+            await callback.answer("Синхронизировано!")
+        except Exception as e:
+            logger.warning("Повторная попытка синхронизации sync_id=%s не удалась: %s", sync_id, e)
+            await callback.answer(f"Синхронизация не удалась: {e}", show_alert=True)
+
     async def cb_act_reminder_confirm(self, callback: CallbackQuery) -> None:
         """Подтверждение создания напоминания."""
         await self._handle_hitl_action_callback(callback, is_confirm=True)
@@ -1854,7 +1953,7 @@ class EmailBotHandler:
         """Отклонение создания черновика ответа."""
         await self._handle_hitl_action_callback(callback, is_confirm=False)
 
-    async def _handle_secretary_dialog(self, message: Message, text: str) -> None:
+    async def _handle_secretary_dialog(self, message: Message, text: str, intent: str | None = None) -> None:
         """Handle conversational queries to Dmitry Popov's personal secretary."""
         try:
             await self.bot.send_chat_action(chat_id=message.chat.id, action="typing")
@@ -1866,6 +1965,7 @@ class EmailBotHandler:
             message_text=text,
             return_files=True,
             return_proposal=True,
+            intent=intent,
         )
 
         proposal = None

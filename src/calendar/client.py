@@ -180,6 +180,61 @@ class GoogleCalendarClient:
             logger.error("Failed to create Google Calendar event '%s': %s", summary, e)
             raise
 
+    async def create_event_from_dict(self, calendar_id: str, event_data: dict[str, Any]) -> str:
+        """Create an event in Google Calendar from a raw dictionary (e.g. from ActionProposal or SQLite)."""
+        summary = str(event_data.get("title") or event_data.get("summary") or "Событие")
+        location = str(event_data.get("location") or "")
+        description = str(event_data.get("description") or "")
+
+        raw_start = event_data.get("event_start") or event_data.get("start")
+        raw_end = event_data.get("event_end") or event_data.get("end")
+
+        if raw_start and raw_end:
+            start_iso = raw_start.isoformat() if isinstance(raw_start, datetime) else str(raw_start)
+            end_iso = raw_end.isoformat() if isinstance(raw_end, datetime) else str(raw_end)
+        else:
+            raw_date = event_data.get("date", "")
+            d_str = raw_date.isoformat() if hasattr(raw_date, "isoformat") else str(raw_date)
+            st_str = str(event_data.get("start_time", "09:00"))
+            et_str = str(event_data.get("end_time", "10:00"))
+
+            d_part = d_str.split("T")[0] if "T" in d_str else d_str
+            start_iso = f"{d_part}T{st_str}" if len(st_str.split(":")) >= 2 else f"{d_part}T09:00:00"
+            end_iso = f"{d_part}T{et_str}" if len(et_str.split(":")) >= 2 else f"{d_part}T10:00:00"
+
+        if len(start_iso.split(":")[-1]) == 2 and start_iso.count(":") == 1:
+            start_iso = f"{start_iso}:00"
+        if len(end_iso.split(":")[-1]) == 2 and end_iso.count(":") == 1:
+            end_iso = f"{end_iso}:00"
+
+        event_body = {
+            "summary": summary,
+            "location": location,
+            "description": description,
+            "start": {
+                "dateTime": start_iso,
+                "timeZone": self.timezone_str,
+            },
+            "end": {
+                "dateTime": end_iso,
+                "timeZone": self.timezone_str,
+            },
+        }
+
+        if self.dry_run or self.service is None:
+            mock_id = f"mock_{uuid.uuid4().hex[:16]}"
+            logger.info("[DRY-RUN] Created Google Calendar event from dict '%s' (%s - %s) -> id: %s", summary, start_iso, end_iso, mock_id)
+            return mock_id
+
+        try:
+            created = self.service.events().insert(calendarId=calendar_id, body=event_body).execute()
+            google_id = created.get("id")
+            logger.info("Created Google Calendar event from dict '%s' -> %s", summary, google_id)
+            return google_id
+        except Exception as e:
+            logger.error("Failed to create Google Calendar event from dict '%s': %s", summary, e)
+            raise
+
     async def patch_event(self, calendar_id: str, google_event_id: str, lesson: Lesson) -> bool:
         """Patch an existing Google Calendar event with updated details (e.g. room change)."""
         summary = self.format_summary(lesson)

@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -301,6 +302,87 @@ class Database:
             )
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+    async def save_pending_calendar_sync(self, event_data: dict[str, Any]) -> int:
+        """Save a pending calendar event to calendar_sync_records with pending_sync status."""
+        source_event_id = event_data.get("source_event_id") or f"pending_{uuid.uuid4().hex[:12]}"
+        google_event_id = event_data.get("google_event_id") or f"pending_{uuid.uuid4().hex[:12]}"
+        calendar_id = event_data.get("calendar_id") or "primary"
+        summary = str(event_data.get("title") or event_data.get("summary") or "Событие")
+
+        raw_start = event_data.get("event_start") or event_data.get("start")
+        raw_end = event_data.get("event_end") or event_data.get("end")
+
+        if raw_start and raw_end:
+            start_str = raw_start.isoformat() if isinstance(raw_start, datetime) else str(raw_start)
+            end_str = raw_end.isoformat() if isinstance(raw_end, datetime) else str(raw_end)
+        else:
+            raw_date = event_data.get("date", "")
+            d_str = raw_date.isoformat() if hasattr(raw_date, "isoformat") else str(raw_date)
+            st_str = str(event_data.get("start_time", "09:00"))
+            et_str = str(event_data.get("end_time", "10:00"))
+            d_part = d_str.split("T")[0] if "T" in d_str else d_str
+            start_str = f"{d_part}T{st_str}" if len(st_str.split(":")) >= 2 else f"{d_part}T09:00:00"
+            end_str = f"{d_part}T{et_str}" if len(et_str.split(":")) >= 2 else f"{d_part}T10:00:00"
+            if len(start_str.split(":")[-1]) == 2 and start_str.count(":") == 1:
+                start_str = f"{start_str}:00"
+            if len(end_str.split(":")[-1]) == 2 and end_str.count(":") == 1:
+                end_str = f"{end_str}:00"
+
+        status = "pending_sync"
+
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO calendar_sync_records
+                    (source_event_id, google_event_id, calendar_id, event_start, event_end, summary, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_event_id) DO UPDATE SET
+                    google_event_id = excluded.google_event_id,
+                    event_start = excluded.event_start,
+                    event_end = excluded.event_end,
+                    summary = excluded.summary,
+                    status = excluded.status,
+                    last_synced_at = CURRENT_TIMESTAMP;
+                """,
+                (source_event_id, google_event_id, calendar_id, start_str, end_str, summary, status),
+            )
+            await conn.commit()
+            last_id = cursor.lastrowid
+            if not last_id or last_id == 0:
+                cursor2 = await conn.execute(
+                    "SELECT id FROM calendar_sync_records WHERE source_event_id = ?;",
+                    (source_event_id,),
+                )
+                row = await cursor2.fetchone()
+                last_id = row["id"] if row else 0
+            return int(last_id)
+
+    async def get_pending_calendar_sync(self, sync_id: int) -> dict[str, Any] | None:
+        """Fetch a pending calendar sync record by its primary key ID."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM calendar_sync_records WHERE id = ?;
+                """,
+                (sync_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_calendar_sync_status(self, sync_id: int, google_event_id: str, status: str = "active") -> bool:
+        """Update the synchronization status and Google event ID for a record."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE calendar_sync_records
+                SET google_event_id = ?, status = ?, last_synced_at = CURRENT_TIMESTAMP
+                WHERE id = ?;
+                """,
+                (google_event_id, status, sync_id),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
 
     async def get_content_snapshot_by_hash(self, source_id: str, content_hash: str) -> dict[str, Any] | None:
         """Check if a specific content hash already exists for this source."""

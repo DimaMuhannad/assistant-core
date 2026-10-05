@@ -597,6 +597,7 @@ class SecretaryDialogEngine:
         message_text: str,
         return_files: bool = False,
         return_proposal: bool = False,
+        intent: str | None = None,
     ) -> Any:
         """Process arbitrary user message with multi-turn memory, system grounding, and tool calling."""
         cleaned_text = message_text.strip()
@@ -664,13 +665,14 @@ class SecretaryDialogEngine:
 
         # 3. Assemble complete prompt
         gen_name = current_persona().name_forms.get("genitive_first_patronymic", "ПОЛЬЗОВАТЕЛЯ").upper()
+        intent_hint = f"\n[Распознанный интент системы: {intent}]" if intent else ""
         user_prompt = f"""### ОПЕРАТИВНЫЕ СИСТЕМНЫЕ ДАННЫЕ (GROUND TRUTH):
 {grounding_context}
 
 ### ПРЕДЫДУЩИЙ ДИАЛОГ:
 {history_block}
 
-### НОВОЕ СООБЩЕНИЕ ОТ {gen_name}:
+### НОВОЕ СООБЩЕНИЕ ОТ {gen_name}:{intent_hint}
 {cleaned_text}
 
 Дай прямой, точный, вежливый и структурированный ответ как его личный секретарь. Если найдены письма или документы, прямо укажи их даты, отправителя и подробности."""

@@ -16,15 +16,15 @@
     },
     "intent_router": {
       "file": "intent_router.txt",
-      "chars": 3269,
-      "bytes": 5440,
-      "sha256": "504db3e53efe8a2d6aab509c1339da04fe2eaf1724f4ac02661d15d2db0ac03d",
+      "chars": 4070,
+      "bytes": 6746,
+      "sha256": "f6a8acfc7aaf34c03639ef6275648cef8bcb0e55a14ef50e74686c57857555cc",
       "ends_with_newline": true,
       "source": "src/brain/intent_router.py:28",
       "capture": "system_instruction",
       "inputs": {
         "user_id": 999,
-        "message_text": "напомни про отчет"
+        "message_text": "какие планы по гранту?"
       }
     },
     "methodist": {

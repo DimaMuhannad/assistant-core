@@ -36,6 +36,9 @@ VALID_ACTIONS = {
     "clear_dialog",
     "ticker",
     "secretary",
+    "calendar_schedule",
+    "create_reminder",
+    "draft_reply",
 }
 
 
@@ -180,6 +183,46 @@ class FastIntentRouter:
                 action="lms_reports",
                 confidence=1.0,
                 reason="Детерминированный шорткат отчетов LMS",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        cal_phrases = ("запиши в календарь", "добавь в календарь", "запланируй встречу")
+        if any(p in lower for p in cal_phrases):
+            res = IntentResult(
+                action="calendar_schedule",
+                confidence=1.0,
+                reason="Детерминированный шорткат календаря",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        rem_phrases = ("поставь дедлайн", "создай напоминание", "добавь напоминание", "напомни мне")
+        is_reminder = any(p in lower for p in rem_phrases) or (
+            "напомни" in lower
+            and not any(q in lower for q in ("сколько", "расписани", "пар", "какие", "какой", "какая", "когда", "?"))
+        )
+        if is_reminder:
+            res = IntentResult(
+                action="create_reminder",
+                confidence=1.0,
+                reason="Детерминированный шорткат напоминания",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        draft_phrases = ("ответь на письмо", "черновик ответа", "подготовь ответ")
+        if any(p in lower for p in draft_phrases):
+            res = IntentResult(
+                action="draft_reply",
+                confidence=1.0,
+                reason="Детерминированный шорткат черновика ответа",
                 model="fast-rule",
                 latency_ms=0.0,
             )
