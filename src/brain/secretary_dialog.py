@@ -792,7 +792,7 @@ class SecretaryDialogEngine:
                                 model_content = resp.candidates[0].content
                             else:
                                 model_content = types.Content(role="model", parts=[types.Part(function_call=first_call)])
-                            tool_content = types.Content(role="tool", parts=[fn_part])
+                            tool_content = types.Content(role="user", parts=[fn_part])
                             follow_up_contents = [user_content, model_content, tool_content]
 
                             async def _make_followup_call(client: genai.Client) -> Any:
