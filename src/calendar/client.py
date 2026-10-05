@@ -87,6 +87,8 @@ class GoogleCalendarClient:
         short_type = LESSON_TYPE_SHORT.get(lesson.lesson_type, "Занятие")
         if lesson.group:
             return f"[{lesson.group}] {short_subj} ({short_type})"
+        if lesson.lesson_type == LessonType.UNKNOWN:
+            return subj_clean
         return f"{short_subj} ({short_type})"
 
     @classmethod

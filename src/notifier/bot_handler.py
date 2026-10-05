@@ -226,10 +226,13 @@ class EmailBotHandler:
 
                 event_id = None
                 if getattr(self, "calendar_client", None):
-                    cal_id = getattr(self.calendar_client, "calendar_id", None) or "primary"
+                    from src import config
+                    cal_id = getattr(self.calendar_client, "calendar_id", None) or getattr(config, "GOOGLE_CALENDAR_ID", "primary")
                     event_id = await self.calendar_client.create_event(cal_id, lesson)
                 else:
-                    event_id = f"evt_{lesson.deterministic_hash[:16]}"
+                    logger.warning("calendar_client не подключен к EmailBotHandler, событие сохраняется в pending_sync")
+                    sync_id = await self.db.save_pending_calendar_sync(payload)
+                    return {"status": "pending_sync", "error": "calendar_client not configured", "sync_id": sync_id}
                 return {"status": "active", "event_id": event_id}
             except Exception as e:
                 logger.warning("Ошибка при создании события в Google Calendar: %s", e)
@@ -1909,7 +1912,8 @@ class EmailBotHandler:
         try:
             event_id = None
             if getattr(self, "calendar_client", None):
-                cal_id = getattr(self.calendar_client, "calendar_id", None) or "primary"
+                from src import config
+                cal_id = getattr(self.calendar_client, "calendar_id", None) or getattr(config, "GOOGLE_CALENDAR_ID", "primary")
                 if hasattr(self.calendar_client, "create_event_from_dict"):
                     event_id = await self.calendar_client.create_event_from_dict(cal_id, record)
                 else:

@@ -593,6 +593,13 @@ async def main() -> None:
     email_sender = EmailSender()
     summarizer = GeminiSummarizer()
     lms_client = default_lms_client()
+    calendar_client = GoogleCalendarClient(
+        credentials_file=config.GOOGLE_CREDENTIALS_FILE,
+        token_file=config.GOOGLE_TOKEN_FILE,
+        timezone_str=config.TZ,
+    )
+    calendar_client.calendar_id = config.GOOGLE_CALENDAR_ID
+
     bot_handler = EmailBotHandler(
         db=db,
         reply_generator=reply_generator,
@@ -602,6 +609,7 @@ async def main() -> None:
         allowed_user_id=config.TELEGRAM_USER_ID,
         summarizer=summarizer,
         lms_client=lms_client,
+        calendar_client=calendar_client,
     )
     dp.include_router(bot_handler.router)
     await bot_handler.setup_bot_commands()
@@ -609,11 +617,6 @@ async def main() -> None:
     schedule_parser = ScheduleParser(
         base_url=schedule_site_url(),
         timeout_seconds=30.0,
-    )
-    calendar_client = GoogleCalendarClient(
-        credentials_file=config.GOOGLE_CREDENTIALS_FILE,
-        token_file=config.GOOGLE_TOKEN_FILE,
-        timezone_str=config.TZ,
     )
     telegram_collector = TelegramCollector(db=db)
     email_collector = EmailCollector(db=db)
