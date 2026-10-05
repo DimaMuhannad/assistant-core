@@ -208,9 +208,9 @@ async def run_email_collector_cycle(
         total_new = sum(r.get("inserted", 0) for k, r in res.items() if isinstance(r, dict))
         logger.info("Email collection finished: %d new email(s) ingested.", total_new)
 
-        # Notify if new student or department emails arrive
+        # Notify if new student or department emails arrive (strictly deduplicated: 1 card per email)
         if total_new > 0:
-            student_or_dept = await db.list_recent_emails(limit=total_new, non_noise_only=True)
+            student_or_dept = await db.list_recent_emails(limit=max(total_new * 2, 20), non_noise_only=True)
             _c_stud = "g" + "uap_student"
             _c_dept = "g" + "uap_dept"
             academic_items = [
@@ -219,6 +219,7 @@ async def run_email_collector_cycle(
                 and e.get("requires_action")
                 and not e.get("is_answered")
                 and not e.get("is_expired")
+                and not e.get("card_message_id")
             ]
             for email_item in academic_items:
                 logger.info("Sending actionable email card for email id=%s (%s)", email_item.get("id"), email_item.get("subject"))

@@ -331,3 +331,53 @@ async def test_evening_digest_fallback():
     assert "Расписание на завтра" in digest
     assert "Физика" in digest
 
+
+@pytest.mark.asyncio
+async def test_run_email_collector_cycle_deduplication(in_memory_db: Database):
+    from src.main import run_email_collector_cycle
+
+    # 1. Insert actionable email
+    await in_memory_db.upsert_email_message(
+        message_id="msg-dedup-1@guap.ru",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Юлиана Новикова",
+        sender_email="nov-jliana@yandex.ru",
+        recipients_json='["scipopov@guap.ru"]',
+        subject="Отчет по практике",
+        date_sent=datetime.now(timezone.utc),
+        body_plain="Прошу предоставить отчет.",
+        body_html=None,
+        snippet="Прошу предоставить отчет.",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-dedup-1",
+        category="guap_dept",
+        requires_action=True,
+    )
+
+    mock_collector = AsyncMock()
+    mock_collector.sync_all_accounts.return_value = {"mailru": {"inserted": 1}}
+
+    mock_notifier = AsyncMock()
+    mock_notifier.send_actionable_email_card.return_value = [5555]
+
+    # Cycle 1: First time email is seen -> sends card
+    await run_email_collector_cycle(in_memory_db, mock_collector, mock_notifier)
+    assert mock_notifier.send_actionable_email_card.await_count == 1
+
+    # Verify card_message_id is now recorded in DB
+    email_row = await in_memory_db.get_email_by_id(1)
+    assert email_row["card_message_id"] == 5555
+
+    # Cycle 2: Subsequent collector run with new incoming emails (total_new=2)
+    # The email is still requires_action=1 and is_answered=0, but card was already sent.
+    mock_collector.sync_all_accounts.return_value = {"mailru": {"inserted": 2}}
+    await run_email_collector_cycle(in_memory_db, mock_collector, mock_notifier)
+
+    # Must NOT send another card for the same email!
+    assert mock_notifier.send_actionable_email_card.await_count == 1
+
+
