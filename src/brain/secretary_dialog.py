@@ -760,11 +760,13 @@ class SecretaryDialogEngine:
                             query_arg = str(first_call.args.get("query", "") or "")
                             sender_arg = str(first_call.args.get("sender", "") or "")
                             limit_arg = int(first_call.args.get("limit", 5) or 5)
-                            search_q = f"{query_arg} {sender_arg}".strip() if sender_arg else query_arg
 
-                            emails = await self.db.search_emails(search_q, limit=limit_arg)
-                            if not emails and sender_arg:
-                                emails = await self.db.search_emails(sender_arg, limit=limit_arg)
+                            emails = await self.db.search_emails(
+                                query=query_arg,
+                                sender=sender_arg if sender_arg else None,
+                                limit=limit_arg,
+                                exclude_noise=True,
+                            )
 
                             cleaned_emails = []
                             for em in emails:

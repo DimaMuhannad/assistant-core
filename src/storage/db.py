@@ -935,12 +935,15 @@ class Database:
 
     async def search_emails(
         self,
-        query: str,
+        query: str = "",
+        sender: str | None = None,
         limit: int = 10,
+        exclude_noise: bool = True,
     ) -> list[dict[str, Any]]:
-        """Search email messages across subject, body, and sender using keyword stemming."""
-        cleaned = query.strip()
-        if not cleaned:
+        """Search email messages across subject, body, and sender using keyword stemming and sender filtering."""
+        cleaned_q = (query or "").strip()
+        cleaned_s = (sender or "").strip()
+        if not cleaned_q and not cleaned_s:
             return []
 
         STOPWORDS = {
@@ -961,44 +964,118 @@ class Database:
                     return w_lower[:-len(end)]
             return w_lower
 
-        words = [w.strip(".,?!:;\"'()[]{}«»").lower() for w in cleaned.split()]
-        filtered_words = [w for w in words if len(w) > 2 and w not in STOPWORDS]
-        active_words = filtered_words if filtered_words else [w for w in words if len(w) > 2]
-        if not active_words:
-            active_words = [cleaned.lower()]
+        noise_sql = " AND (category IS NULL OR category != 'noise')" if exclude_noise else ""
 
-        tokens = [stem_token(w) for w in active_words]
+        # Extract sender tokens if sender is provided
+        sender_tokens: list[str] = []
+        if cleaned_s:
+            s_words = [w.strip(".,?!:;\"'()[]{}«»").lower() for w in cleaned_s.split()]
+            sender_tokens = [stem_token(w) for w in s_words if len(w) > 2 and w not in STOPWORDS]
 
-        where_clauses = []
-        score_exprs = []
-        params_where: list[Any] = []
-        params_score: list[Any] = []
-
-        for t in tokens[:6]:
-            p = f"%{t}%"
-            where_clauses.append("(LOWER(subject) LIKE ? OR LOWER(body_plain) LIKE ? OR LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ?)")
-            params_where.extend([p, p, p, p])
-            score_exprs.append("(CASE WHEN LOWER(subject) LIKE ? THEN 5 ELSE 0 END + CASE WHEN LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ? THEN 3 ELSE 0 END + CASE WHEN LOWER(body_plain) LIKE ? THEN 1 ELSE 0 END)")
-            params_score.extend([p, p, p, p])
-
-        where_sql = " OR ".join(where_clauses)
-        score_sql = " + ".join(score_exprs) if score_exprs else "1"
-        all_params = params_score + params_where + [limit]
+        # Extract query tokens
+        q_words = [w.strip(".,?!:;\"'()[]{}«»").lower() for w in cleaned_q.split()]
+        filtered_q = [w for w in q_words if len(w) > 2 and w not in STOPWORDS]
+        q_tokens = [stem_token(w) for w in filtered_q]
 
         async with self.connection() as conn:
-            cursor = await conn.execute(
-                f"""
+            # Case 1: Sender filter specified
+            if sender_tokens:
+                s_clauses = ["(LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ?)" for _ in sender_tokens]
+                s_sql = " OR ".join(s_clauses)
+                s_params: list[Any] = []
+                for t in sender_tokens:
+                    p = f"%{t}%"
+                    s_params.extend([p, p])
+
+                rows: list[aiosqlite.Row] = []
+                # First try matching both sender and query tokens
+                if q_tokens:
+                    score_exprs = []
+                    score_params: list[Any] = []
+                    where_q_clauses = []
+                    where_q_params: list[Any] = []
+                    for t in q_tokens[:6]:
+                        p = f"%{t}%"
+                        score_exprs.append("(CASE WHEN LOWER(subject) LIKE ? THEN 5 ELSE 0 END + CASE WHEN LOWER(body_plain) LIKE ? THEN 2 ELSE 0 END)")
+                        score_params.extend([p, p])
+                        where_q_clauses.append("(LOWER(subject) LIKE ? OR LOWER(body_plain) LIKE ?)")
+                        where_q_params.extend([p, p])
+
+                    sql = f"""
+                        SELECT id, message_id, account_id, sender_name, sender_email,
+                               subject, date_sent, body_plain, snippet, category, requires_action,
+                               ({" + ".join(score_exprs)}) AS relevance_score
+                        FROM email_messages
+                        WHERE ({s_sql}) AND ({" OR ".join(where_q_clauses)}) {noise_sql}
+                        ORDER BY relevance_score DESC, date_sent DESC
+                        LIMIT ?;
+                    """
+                    cursor = await conn.execute(sql, tuple(score_params + s_params + where_q_params + [limit]))
+                    rows = await cursor.fetchall()
+
+                # If query yielded no matches (e.g. abstract term like 'дедлайн' not in email body) or no query tokens:
+                # Retrieve the latest actual emails from this sender
+                if not rows:
+                    sql_recent = f"""
+                        SELECT id, message_id, account_id, sender_name, sender_email,
+                               subject, date_sent, body_plain, snippet, category, requires_action,
+                               1 AS relevance_score
+                        FROM email_messages
+                        WHERE ({s_sql}) {noise_sql}
+                        ORDER BY date_sent DESC
+                        LIMIT ?;
+                    """
+                    cursor = await conn.execute(sql_recent, tuple(s_params + [limit]))
+                    rows = await cursor.fetchall()
+
+                return [dict(r) for r in rows]
+
+            # Case 2: Only query tokens (no sender filter)
+            if not q_tokens:
+                q_tokens = [cleaned_q.lower()]
+
+            where_clauses = []
+            score_exprs = []
+            params_where: list[Any] = []
+            params_score: list[Any] = []
+
+            for t in q_tokens[:6]:
+                p = f"%{t}%"
+                where_clauses.append("(LOWER(subject) LIKE ? OR LOWER(body_plain) LIKE ? OR LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ?)")
+                params_where.extend([p, p, p, p])
+                score_exprs.append("(CASE WHEN LOWER(subject) LIKE ? THEN 5 ELSE 0 END + CASE WHEN LOWER(sender_name) LIKE ? OR LOWER(sender_email) LIKE ? THEN 3 ELSE 0 END + CASE WHEN LOWER(body_plain) LIKE ? THEN 1 ELSE 0 END)")
+                params_score.extend([p, p, p, p])
+
+            where_sql = " OR ".join(where_clauses)
+            score_sql = " + ".join(score_exprs) if score_exprs else "1"
+            all_params = params_score + params_where + [limit]
+
+            sql = f"""
                 SELECT id, message_id, account_id, sender_name, sender_email,
                        subject, date_sent, body_plain, snippet, category, requires_action,
                        ({score_sql}) AS relevance_score
                 FROM email_messages
-                WHERE {where_sql}
+                WHERE ({where_sql}) {noise_sql}
                 ORDER BY relevance_score DESC, date_sent DESC
                 LIMIT ?;
-                """,
-                tuple(all_params),
-            )
+            """
+            cursor = await conn.execute(sql, tuple(all_params))
             rows = await cursor.fetchall()
+
+            # If no results and noise was excluded, try without noise filter as a fallback
+            if not rows and exclude_noise:
+                sql_fallback = f"""
+                    SELECT id, message_id, account_id, sender_name, sender_email,
+                           subject, date_sent, body_plain, snippet, category, requires_action,
+                           ({score_sql}) AS relevance_score
+                    FROM email_messages
+                    WHERE ({where_sql})
+                    ORDER BY relevance_score DESC, date_sent DESC
+                    LIMIT ?;
+                """
+                cursor = await conn.execute(sql_fallback, tuple(all_params))
+                rows = await cursor.fetchall()
+
             return [dict(r) for r in rows]
 
     async def get_email_by_id(self, email_id: int) -> dict[str, Any] | None:
