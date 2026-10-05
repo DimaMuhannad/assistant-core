@@ -36,6 +36,7 @@ from src.composition import default_timesheet_service
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.models.schedule import SchedulePayload, Lesson
 from src.security.airgap import is_nda_email, mask_nda_email_data, NDA_MASK_MARKER
+from src.brain.tools_schema import SECRETARY_TOOLS, ActionProposal
 
 logger = logging.getLogger(__name__)
 
@@ -595,17 +596,22 @@ class SecretaryDialogEngine:
         user_id: int,
         message_text: str,
         return_files: bool = False,
+        return_proposal: bool = False,
     ) -> Any:
-        """Process arbitrary user message with multi-turn memory and system grounding."""
+        """Process arbitrary user message with multi-turn memory, system grounding, and tool calling."""
         cleaned_text = message_text.strip()
         if not cleaned_text:
             msg = "Я готов ответить на любой ваш вопрос. Напишите, что вас интересует!"
+            if return_proposal:
+                return (msg, [], None) if return_files else (msg, None)
             return (msg, []) if return_files else msg
 
         # Handle explicit reset command
         if cleaned_text.lower() in ("/clear", "/reset", "очисти диалог", "забудь контекст", "сброс"):
             await self.db.clear_dialog_history(user_id)
             msg = "🧹 **Контекст диалога успешно очищен.** Я готов к новым вопросам!"
+            if return_proposal:
+                return (msg, [], None) if return_files else (msg, None)
             return (msg, []) if return_files else msg
 
         # Handle memory list command
@@ -613,6 +619,8 @@ class SecretaryDialogEngine:
             facts = await self.db.get_active_memory_facts(limit=30)
             if not facts:
                 msg = "🧠 База долгосрочной памяти пуста."
+                if return_proposal:
+                    return (msg, [], None) if return_files else (msg, None)
                 return (msg, []) if return_files else msg
             lines = ["🧠 **База долгосрочной памяти секретаря (активные записи):**\n"]
             for i, f in enumerate(facts, 1):
@@ -620,16 +628,22 @@ class SecretaryDialogEngine:
                 cat_tag = f"[{f['category']}]" if f.get("category") else ""
                 lines.append(f"{i}. `{cat_tag}` ({pol}, обращений: {f['access_count']})\n   {f['fact_text']}")
             msg = "\n".join(lines)
+            if return_proposal:
+                return (msg, [], None) if return_files else (msg, None)
             return (msg, []) if return_files else msg
 
         # Handle weekly memory review response
         review_res = await self._handle_memory_review_command(cleaned_text)
         if review_res:
+            if return_proposal:
+                return (review_res, [], None) if return_files else (review_res, None)
             return (review_res, []) if return_files else review_res
 
         # Handle manual fact addition
         fact_add_res = await self._handle_manual_fact_addition(cleaned_text)
         if fact_add_res:
+            if return_proposal:
+                return (fact_add_res, [], None) if return_files else (fact_add_res, None)
             return (fact_add_res, []) if return_files else fact_add_res
 
         now_local = datetime.now(ZoneInfo(config.TZ))
@@ -661,7 +675,8 @@ class SecretaryDialogEngine:
 
 Дай прямой, точный, вежливый и структурированный ответ как его личный секретарь. Если найдены письма или документы, прямо укажи их даты, отправителя и подробности."""
 
-        # 4. Generate response via Gemini with multi-model fallback
+        # 4. Generate response via Gemini with multi-model fallback and tool calling
+        proposal: ActionProposal | None = None
         if not self.is_configured:
             answer_text = (
                 "⚠️ Сервис генерации временно работает в автономном режиме (без ключа API).\n\n"
@@ -684,11 +699,38 @@ class SecretaryDialogEngine:
             answer_text = ""
             system_instruction = render_prompt("secretary")
 
+            def _build_action_proposal(call: Any, base_text: str = "") -> tuple[ActionProposal, str]:
+                act_proposal = ActionProposal(
+                    action_type=call.name,
+                    params=dict(call.args or {}),
+                    proposal_text=base_text,
+                )
+                text = base_text.strip() if base_text else ""
+                if not text:
+                    if call.name == "create_calendar_event":
+                        t = act_proposal.params.get("title", "Встреча")
+                        d = act_proposal.params.get("date", "")
+                        st = act_proposal.params.get("start_time", "")
+                        et = act_proposal.params.get("end_time", "")
+                        text = f"Я подготовил карточку для внесения в календарь: «{t}» ({d} {st}–{et}). Пожалуйста, подтвердите действие кнопкой ниже."
+                    elif call.name == "create_reminder":
+                        r_txt = act_proposal.params.get("text", "Напоминание")
+                        due = act_proposal.params.get("due_date", "")
+                        text = f"Я подготовил карточку напоминания: «{r_txt}» (срок: {due}). Пожалуйста, подтвердите действие кнопкой ниже."
+                    elif call.name == "draft_email_reply":
+                        eid = act_proposal.params.get("email_id", "")
+                        text = f"Я подготовил проект ответа на письмо ID {eid}. Пожалуйста, подтвердите действие кнопкой ниже."
+                    else:
+                        text = f"Я подготовил действие {call.name}. Пожалуйста, подтвердите его выполнение."
+                act_proposal.proposal_text = text
+                return act_proposal, text
+
             for attempt, mod in enumerate(unique_models):
                 try:
                     cfg_kwargs: dict[str, Any] = {
                         "system_instruction": system_instruction,
                         "temperature": 0.3,
+                        "tools": SECRETARY_TOOLS,
                     }
                     if "3.8" in mod or "3.7" in mod or "2.5" in mod:
                         cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="LOW")
@@ -707,8 +749,78 @@ class SecretaryDialogEngine:
                         resp = await _make_dialog_call(self._client)
                     else:
                         resp = await key_rotator.execute_with_failover(_make_dialog_call)
-                    answer_text = (resp.text or "").strip()
-                    if answer_text:
+
+                    calls = getattr(resp, "function_calls", None) or []
+                    if calls:
+                        first_call = calls[0]
+                        if first_call.name == "search_emails":
+                            # Step 1: Execute search in database
+                            query_arg = str(first_call.args.get("query", "") or "")
+                            sender_arg = str(first_call.args.get("sender", "") or "")
+                            limit_arg = int(first_call.args.get("limit", 5) or 5)
+                            search_q = f"{query_arg} {sender_arg}".strip() if sender_arg else query_arg
+
+                            emails = await self.db.search_emails(search_q, limit=limit_arg)
+                            if not emails and sender_arg:
+                                emails = await self.db.search_emails(sender_arg, limit=limit_arg)
+
+                            cleaned_emails = []
+                            for em in emails:
+                                if is_nda_email(em):
+                                    em = mask_nda_email_data(em)
+                                    body_snip = NDA_MASK_MARKER
+                                else:
+                                    body_snip = (em.get("body_plain") or em.get("snippet") or "")[:500].strip()
+                                cleaned_emails.append({
+                                    "id": em.get("id"),
+                                    "sender": em.get("sender_name") or em.get("sender_email"),
+                                    "sender_email": em.get("sender_email"),
+                                    "subject": em.get("subject", ""),
+                                    "date_sent": str(em.get("date_sent", "")),
+                                    "content": body_snip,
+                                })
+
+                            fn_part = types.Part.from_function_response(
+                                name="search_emails",
+                                response={"emails": cleaned_emails, "count": len(cleaned_emails)},
+                            )
+
+                            user_content = types.Content(role="user", parts=[types.Part.from_text(text=user_prompt)])
+                            if hasattr(resp, "candidates") and resp.candidates and getattr(resp.candidates[0], "content", None):
+                                model_content = resp.candidates[0].content
+                            else:
+                                model_content = types.Content(role="model", parts=[types.Part(function_call=first_call)])
+                            tool_content = types.Content(role="tool", parts=[fn_part])
+                            follow_up_contents = [user_content, model_content, tool_content]
+
+                            async def _make_followup_call(client: genai.Client) -> Any:
+                                return await asyncio.wait_for(
+                                    client.aio.models.generate_content(
+                                        model=mod,
+                                        contents=follow_up_contents,
+                                        config=types.GenerateContentConfig(**cfg_kwargs),
+                                    ),
+                                    timeout=6.0,
+                                )
+
+                            if self._client is not None:
+                                resp2 = await _make_followup_call(self._client)
+                            else:
+                                resp2 = await key_rotator.execute_with_failover(_make_followup_call)
+
+                            calls2 = getattr(resp2, "function_calls", None) or []
+                            if calls2 and calls2[0].name in ("create_calendar_event", "create_reminder", "draft_email_reply"):
+                                proposal, answer_text = _build_action_proposal(calls2[0], resp2.text or "")
+                            else:
+                                answer_text = (resp2.text or "").strip()
+                        elif first_call.name in ("create_calendar_event", "create_reminder", "draft_email_reply"):
+                            proposal, answer_text = _build_action_proposal(first_call, resp.text or "")
+                        else:
+                            answer_text = (resp.text or "").strip()
+                    else:
+                        answer_text = (resp.text or "").strip()
+
+                    if answer_text or proposal:
                         logger.info("Successfully generated secretary dialog answer via %s (attempt %d)", mod, attempt + 1)
                         break
                 except Exception as e:
@@ -728,6 +840,11 @@ class SecretaryDialogEngine:
             await self.db.save_dialog_message(user_id=user_id, role="model", content=answer_text)
         except Exception as se:
             logger.debug("Could not save dialog turn to DB: %s", se)
+
+        if return_proposal:
+            if return_files:
+                return answer_text, matched_files, proposal
+            return answer_text, proposal
 
         if return_files:
             return answer_text, matched_files

@@ -3,9 +3,9 @@
   "prompts": {
     "secretary": {
       "file": "secretary.txt",
-      "chars": 2718,
-      "bytes": 4715,
-      "sha256": "1d02fd49bdc291f18184e43c32a08dd34f57501ec06c40a6c50fc870bc8648dd",
+      "chars": 3792,
+      "bytes": 6668,
+      "sha256": "b4c56a85969d7e942abea2463c7d5176e836b5684165654b7b6eef2f8136ad9e",
       "ends_with_newline": true,
       "source": "src/brain/secretary_dialog.py:37",
       "capture": "system_instruction",
