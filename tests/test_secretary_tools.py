@@ -222,7 +222,7 @@ async def test_two_step_search_emails_flow():
     assert len(step2_contents) == 3
 
     tool_content = step2_contents[2]
-    assert tool_content.role == "tool"
+    assert tool_content.role == "user"
     assert len(tool_content.parts) == 1
     fn_resp = tool_content.parts[0].function_response
     assert fn_resp.name == "search_emails"
