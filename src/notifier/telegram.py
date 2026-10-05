@@ -108,6 +108,105 @@ def build_lms_pub_hide_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_hitl_action_keyboard(conf_id: str, action_type: str) -> InlineKeyboardMarkup:
+    """Builds interactive inline keyboard for HITL action confirmation / rejection (D-01, ACT-03)."""
+    if action_type == "create_calendar_event":
+        btn_confirm = InlineKeyboardButton(
+            text="📅 Записать в Google Calendar",
+            callback_data=f"act:cal:conf:{conf_id}",
+        )
+        btn_reject = InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=f"act:cal:rej:{conf_id}",
+        )
+    elif action_type == "create_reminder":
+        btn_confirm = InlineKeyboardButton(
+            text="⏰ Создать напоминание",
+            callback_data=f"act:rem:conf:{conf_id}",
+        )
+        btn_reject = InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=f"act:rem:rej:{conf_id}",
+        )
+    elif action_type == "draft_email_reply":
+        btn_confirm = InlineKeyboardButton(
+            text="📝 Сохранить черновик",
+            callback_data=f"act:drf:conf:{conf_id}",
+        )
+        btn_reject = InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=f"act:drf:rej:{conf_id}",
+        )
+    else:
+        btn_confirm = InlineKeyboardButton(
+            text="✅ Подтвердить",
+            callback_data=f"act:gen:conf:{conf_id}",
+        )
+        btn_reject = InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=f"act:gen:rej:{conf_id}",
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=[[btn_confirm, btn_reject]])
+
+
+def format_hitl_proposal_card(action_type: str, params: dict[str, Any]) -> str:
+    """Formats interactive HITL proposal card for Telegram in Russian with project styling (D-01)."""
+    lines: list[str] = []
+
+    if action_type == "create_calendar_event":
+        lines.append("📅 **Подтверждение записи в Google Calendar**\n")
+        title = params.get("title", "Встреча")
+        lines.append(f"• **Событие:** {title}")
+        date_str = params.get("date", "")
+        if date_str:
+            lines.append(f"• **Дата:** `{date_str}`")
+        start_time = params.get("start_time", "")
+        end_time = params.get("end_time", "")
+        if start_time or end_time:
+            time_span = f"`{start_time}` — `{end_time}`" if (start_time and end_time) else f"`{start_time or end_time}`"
+            lines.append(f"• **Время:** {time_span} (Europe/Moscow)")
+        loc = params.get("location")
+        if loc:
+            lines.append(f"• **Аудитория / Локация:** {loc}")
+        desc = params.get("description")
+        if desc:
+            lines.append(f"• **Описание:** {desc}")
+
+    elif action_type == "create_reminder":
+        lines.append("⏰ **Подтверждение создания напоминания**\n")
+        what = params.get("text") or params.get("what", "Напоминание")
+        lines.append(f"• **Суть:** {what}")
+        due_date = params.get("due_date") or params.get("check_date")
+        if due_date:
+            lines.append(f"• **Срок / Дедлайн:** `{due_date}`")
+        cat = params.get("category")
+        if cat:
+            lines.append(f"• **Категория:** `{cat}`")
+        target = params.get("target") or params.get("person")
+        if target:
+            lines.append(f"• **Контекст / Персона:** {target}")
+
+    elif action_type == "draft_email_reply":
+        lines.append("📝 **Подтверждение сохранения черновика ответа**\n")
+        email_id = params.get("email_id", "")
+        if email_id:
+            lines.append(f"• **ID письма:** `#{email_id}`")
+        reply_text = params.get("reply_text") or params.get("draft_text", "")
+        if reply_text:
+            lines.append("• **Текст ответа:**")
+            quoted = "\n".join(f"> {line}" for line in reply_text.strip().splitlines())
+            lines.append(quoted)
+
+    else:
+        lines.append(f"⚡ **Подтверждение действия `{action_type}`**\n")
+        for k, v in params.items():
+            lines.append(f"• **{k}:** {v}")
+
+    lines.append("\nПодтверждаете данное действие?")
+    return "\n".join(lines).strip()
+
+
 def format_and_split_for_telegram(raw_markdown: str) -> list[tuple[str, list[MessageEntity]]]:
     """Cleans markdown and converts to native Telegram entities without escape artifacts."""
     # 1. Clean local IDE file links: [file.py](file:///path/to/file.py) -> `file.py`

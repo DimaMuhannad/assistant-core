@@ -44,9 +44,11 @@ from src.notifier.telegram import (
     TelegramNotifier,
     build_email_action_keyboard,
     build_draft_action_keyboard,
+    build_hitl_action_keyboard,
     build_lms_tasks_keyboard,
     build_lms_pub_hide_keyboard,
     format_and_split_for_telegram,
+    format_hitl_proposal_card,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,8 +125,10 @@ class EmailBotHandler:
         lms_client: LmsClientLike | None = None,
         timesheet_service: BaseTimesheetProvider | None = None,
         drive_client_factory: Callable[[], DriveClientLike] | None = None,
+        calendar_client: Any | None = None,
     ):
         self.db = db
+        self.calendar_client = calendar_client
         self.reply_generator = reply_generator or ReplyGenerator()
         self.email_sender = email_sender or default_email_sender()
         self.notifier = notifier
@@ -190,6 +194,75 @@ class EmailBotHandler:
         register_action_handler("delete_document", _handle_del_doc)
         register_action_handler("delete_task", _handle_del_task)
         register_action_handler("delete_reminder", _handle_del_rem)
+
+        async def _handle_create_calendar_event(conf: PendingConfirmation):
+            payload = conf.payload or {}
+            from datetime import date as dt_date, time as dt_time
+            from src.models.schedule import Lesson
+            try:
+                raw_d = payload.get("date", "")
+                if isinstance(raw_d, str):
+                    d = dt_date.fromisoformat(raw_d)
+                else:
+                    d = raw_d
+
+                raw_st = payload.get("start_time", "00:00")
+                st_parts = [int(p) for p in str(raw_st).split(":")[:2]]
+                st = dt_time(st_parts[0], st_parts[1])
+
+                raw_et = payload.get("end_time", "01:00")
+                et_parts = [int(p) for p in str(raw_et).split(":")[:2]]
+                et = dt_time(et_parts[0], et_parts[1])
+
+                lesson = Lesson(
+                    subject=payload.get("title", "Встреча"),
+                    date=d,
+                    start_time=st,
+                    end_time=et,
+                    room=payload.get("location") or "Не указана",
+                    group=payload.get("group"),
+                    teacher=payload.get("teacher"),
+                )
+
+                event_id = None
+                if getattr(self, "calendar_client", None):
+                    cal_id = getattr(self.calendar_client, "calendar_id", None) or "primary"
+                    event_id = await self.calendar_client.create_event(cal_id, lesson)
+                else:
+                    event_id = f"evt_{lesson.deterministic_hash[:16]}"
+                return {"status": "active", "event_id": event_id}
+            except Exception as e:
+                logger.warning("Ошибка при создании события в Google Calendar: %s", e)
+                return {"status": "pending_sync", "error": str(e)}
+
+        async def _handle_create_reminder(conf: PendingConfirmation):
+            payload = conf.payload or {}
+            what = payload.get("text") or payload.get("what", "")
+            check_date = payload.get("due_date") or payload.get("check_date")
+            person = payload.get("target") or payload.get("person")
+            cat = payload.get("category")
+            context = payload.get("context") or (f"Категория: {cat}" if cat else None)
+            rem_id = await self.db.create_reminder(
+                what=what,
+                check_date=check_date,
+                person=person,
+                context=context,
+            )
+            return {"status": "active", "reminder_id": rem_id}
+
+        async def _handle_draft_email_reply(conf: PendingConfirmation):
+            payload = conf.payload or {}
+            email_id = int(payload.get("email_id", 0))
+            draft_text = payload.get("reply_text") or payload.get("draft_text", "")
+            draft_id = await self.db.create_email_draft(
+                email_id=email_id,
+                draft_text=draft_text,
+            )
+            return {"status": "active", "draft_id": draft_id}
+
+        register_action_handler("create_calendar_event", _handle_create_calendar_event)
+        register_action_handler("create_reminder", _handle_create_reminder)
+        register_action_handler("draft_email_reply", _handle_draft_email_reply)
 
     def _timesheet(self) -> BaseTimesheetProvider:
         """Сервис табеля: внедрённый или собранный по умолчанию на каждый вызов."""
@@ -290,6 +363,14 @@ class EmailBotHandler:
         # Callbacks for Web HITL confirmations
         self.router.callback_query(F.data.startswith("hitl:confirm:"))(self.cb_hitl_confirm)
         self.router.callback_query(F.data.startswith("hitl:reject:"))(self.cb_hitl_reject)
+
+        # Callbacks for Action HITL confirmations (Phase 8, Plan 08-02)
+        self.router.callback_query(F.data.startswith("act:cal:conf:"))(self.cb_act_calendar_confirm)
+        self.router.callback_query(F.data.startswith("act:cal:rej:"))(self.cb_act_calendar_reject)
+        self.router.callback_query(F.data.startswith("act:rem:conf:"))(self.cb_act_reminder_confirm)
+        self.router.callback_query(F.data.startswith("act:rem:rej:"))(self.cb_act_reminder_reject)
+        self.router.callback_query(F.data.startswith("act:drf:conf:"))(self.cb_act_draft_confirm)
+        self.router.callback_query(F.data.startswith("act:drf:rej:"))(self.cb_act_draft_reject)
 
         # Callbacks for Live HUD Ticker
         self.router.callback_query(F.data.startswith("tk:sc:"))(self.cb_ticker_switch_screen)
@@ -1657,6 +1738,122 @@ class EmailBotHandler:
         else:
             await message.answer(text)
 
+    async def _handle_hitl_action_callback(self, callback: CallbackQuery, is_confirm: bool) -> None:
+        """Общий обработчик подтверждения и отмены HITL-действий (календарь, напоминания, черновики)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        parts = callback.data.split(":", 3)
+        if len(parts) < 4:
+            await callback.answer("Неверный формат запроса", show_alert=True)
+            return
+        conf_id = parts[3]
+
+        store = self._get_confirmation_store()
+        conf = await store.get_confirmation(conf_id)
+        if not conf:
+            await callback.answer("Запрос уже обработан или истек", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            return
+
+        if conf.status == ConfirmationStatus.EXPIRED or conf.is_expired():
+            await callback.answer("Запрос уже обработан или истек", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_text("⏳ **Срок действия запроса истек.** Действие не выполнено.", reply_markup=None)
+                except Exception:
+                    pass
+            return
+
+        if conf.status != ConfirmationStatus.PENDING:
+            await callback.answer("Запрос уже обработан или истек", show_alert=True)
+            if callback.message:
+                try:
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            return
+
+        if is_confirm:
+            try:
+                res = await resume_action(conf_id, store, confirmed_by=str(callback.from_user.id))
+                if conf.action_type == "create_calendar_event":
+                    title = conf.payload.get("title", "Событие")
+                    d = conf.payload.get("date", "")
+                    st = conf.payload.get("start_time", "")
+                    et = conf.payload.get("end_time", "")
+                    status_text = (
+                        "✅ **Событие добавлено в Google Calendar**\n\n"
+                        f"• **Событие:** {title}\n"
+                        f"• **Дата и время:** `{d}` `{st}`–`{et}`"
+                    )
+                elif conf.action_type == "create_reminder":
+                    what = conf.payload.get("text") or conf.payload.get("what", "Напоминание")
+                    due = conf.payload.get("due_date") or conf.payload.get("check_date", "")
+                    status_text = (
+                        "✅ **Напоминание успешно создано**\n\n"
+                        f"• **Суть:** {what}\n"
+                        f"• **Срок:** `{due}`"
+                    )
+                elif conf.action_type == "draft_email_reply":
+                    eid = conf.payload.get("email_id", "")
+                    status_text = (
+                        "✅ **Черновик ответа сохранен**\n\n"
+                        f"• **ID письма:** `#{eid}`"
+                    )
+                else:
+                    status_text = f"✅ **Действие `{conf.action_type}` успешно выполнено**"
+
+                if callback.message:
+                    await callback.message.edit_text(status_text, reply_markup=None)
+                await callback.answer("Подтверждено")
+            except Exception as e:
+                logger.exception("Ошибка при выполнении подтвержденного действия %s: %s", conf_id, e)
+                await callback.answer(f"Ошибка при выполнении: {e}", show_alert=True)
+        else:
+            await store.reject_action(conf_id, rejected_by=str(callback.from_user.id))
+            if conf.action_type == "create_calendar_event":
+                status_text = "❌ **Создание события отменено**"
+            elif conf.action_type == "create_reminder":
+                status_text = "❌ **Создание напоминания отменено**"
+            elif conf.action_type == "draft_email_reply":
+                status_text = "❌ **Создание черновика отменено**"
+            else:
+                status_text = "❌ **Действие отменено**"
+
+            if callback.message:
+                await callback.message.edit_text(status_text, reply_markup=None)
+            await callback.answer("Отменено")
+
+    async def cb_act_calendar_confirm(self, callback: CallbackQuery) -> None:
+        """Подтверждение создания события в Google Calendar."""
+        await self._handle_hitl_action_callback(callback, is_confirm=True)
+
+    async def cb_act_calendar_reject(self, callback: CallbackQuery) -> None:
+        """Отклонение создания события в Google Calendar."""
+        await self._handle_hitl_action_callback(callback, is_confirm=False)
+
+    async def cb_act_reminder_confirm(self, callback: CallbackQuery) -> None:
+        """Подтверждение создания напоминания."""
+        await self._handle_hitl_action_callback(callback, is_confirm=True)
+
+    async def cb_act_reminder_reject(self, callback: CallbackQuery) -> None:
+        """Отклонение создания напоминания."""
+        await self._handle_hitl_action_callback(callback, is_confirm=False)
+
+    async def cb_act_draft_confirm(self, callback: CallbackQuery) -> None:
+        """Подтверждение создания черновика ответа."""
+        await self._handle_hitl_action_callback(callback, is_confirm=True)
+
+    async def cb_act_draft_reject(self, callback: CallbackQuery) -> None:
+        """Отклонение создания черновика ответа."""
+        await self._handle_hitl_action_callback(callback, is_confirm=False)
+
     async def _handle_secretary_dialog(self, message: Message, text: str) -> None:
         """Handle conversational queries to Dmitry Popov's personal secretary."""
         try:
@@ -1664,18 +1861,53 @@ class EmailBotHandler:
         except Exception:
             pass
 
-        answer, matched_files = await self.dialog_engine.answer_user_message(
+        res = await self.dialog_engine.answer_user_message(
             user_id=message.from_user.id,
             message_text=text,
             return_files=True,
+            return_proposal=True,
         )
+
+        proposal = None
+        matched_files = []
+        if isinstance(res, tuple):
+            if len(res) == 3:
+                answer, matched_files, proposal = res
+            elif len(res) == 2:
+                answer, matched_files = res
+            else:
+                answer = res[0]
+        else:
+            answer = str(res)
 
         # Double safety: Always send response back to user's private chat
         target_chat = self.allowed_user_id or message.chat.id
-        if self.notifier:
-            await self.notifier.send_message(answer, chat_id=target_chat)
+
+        if proposal is not None:
+            store = self._get_confirmation_store()
+            conf = await store.create_confirmation(
+                persona_id="popov",
+                action_type=proposal.action_type,
+                payload=proposal.params,
+                channel=ConfirmationChannel.TELEGRAM,
+                ttl_minutes=15,
+            )
+            card_text = format_hitl_proposal_card(proposal.action_type, proposal.params)
+            kb = build_hitl_action_keyboard(conf.id, proposal.action_type)
+            msg_text = f"{answer}\n\n{card_text}".strip()
+            if self.notifier:
+                await self.notifier.send_message(msg_text, reply_markup=kb, chat_id=target_chat)
+            elif self.bot:
+                await self.bot.send_message(chat_id=int(target_chat), text=msg_text, reply_markup=kb)
+            else:
+                await message.answer(msg_text, reply_markup=kb)
         else:
-            await message.answer(answer)
+            if self.notifier:
+                await self.notifier.send_message(answer, chat_id=target_chat)
+            elif self.bot:
+                await self.bot.send_message(chat_id=int(target_chat), text=answer)
+            else:
+                await message.answer(answer)
 
         # Proactively send files if user asked for templates, forms, or documents
         lower_t = text.lower()
