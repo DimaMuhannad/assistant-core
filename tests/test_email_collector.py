@@ -234,12 +234,14 @@ def test_determine_message_classification_self_forwards_and_notes():
     assert c1["requires_action"] is False
 
     # 2. Forwarded student email in INBOX/ToMyself from user's email -> guap_student
+    future_dl_day = (now + timedelta(days=5)).strftime("%d.%m")
     c2 = collector.determine_message_classification(
         sender_email="scipopov@mail.ru",
         subject="Fwd: Вопрос от старосты гр. 2815 по лабораторным работам",
-        snippet="Студенты просят продлить дедлайн до 05.10",
+        snippet=f"Студенты просят продлить дедлайн до {future_dl_day}",
         folder_or_labels="INBOX/ToMyself",
         date_sent=now,
+        now=now,
     )
     assert c2["category"] == "guap_student"
     assert c2["is_noise"] is False

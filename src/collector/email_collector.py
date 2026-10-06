@@ -308,6 +308,7 @@ class EmailCollector:
         date_sent: datetime,
         has_answered_flag: bool = False,
         raw_msg: Any | None = None,
+        now: datetime | None = None,
     ) -> dict[str, Any]:
         """Classify message taking into account folder/labels and whether sender is user.
         Prevents self-forwards and notes in INBOX from being falsely marked as 'outgoing'.
@@ -348,7 +349,7 @@ class EmailCollector:
                 category = "personal"
 
         deadline = extract_deadline(f"{subject} {snippet}")
-        relevance_score, is_expired = calculate_relevance(date_sent, deadline)
+        relevance_score, is_expired = calculate_relevance(date_sent, deadline, now=now)
         is_ack = is_acknowledgment_or_closure(subject, snippet)
         is_answered = has_answered_flag or is_ack
         requires_action = (category in (_CAT_STUDENT, _CAT_DEPT)) and not is_noise and not is_answered and not is_expired
