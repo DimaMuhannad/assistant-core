@@ -151,11 +151,11 @@ class EmailBotHandler:
         self.dialog_engine = SecretaryDialogEngine(db=self.db, timesheet_service=self.timesheet_service)
         self.secretary_dialog = self.dialog_engine
         self.voice_processor = VoiceProcessor()
-        self.intent_router = FastIntentRouter(db=self.db)
-        self.ticker_service = LiveTickerService(db=self.db, timesheet_service=self.timesheet_service)
         from src.notifier.commands import CommandRegistry
         from src.persona.current import current_persona
         self.command_registry = CommandRegistry(db=self.db, persona_getter=current_persona)
+        self.intent_router = FastIntentRouter(db=self.db, command_registry=self.command_registry)
+        self.ticker_service = LiveTickerService(db=self.db, timesheet_service=self.timesheet_service)
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
@@ -389,6 +389,7 @@ class EmailBotHandler:
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
         self.router.message(Command("undo_clear"))(self.handle_cmd_undo_clear)
         self.router.message(Command("audit", "router"))(self.handle_cmd_router_audit)
+        self.router.message(Command("menu"))(self.handle_cmd_menu)
         self.router.message(F.text)(self.handle_user_text)
 
         # Voice messages (audio transcription and conversational secretary)
@@ -663,6 +664,39 @@ class EmailBotHandler:
             )
         except Exception as e:
             logger.error("Failed to register bot commands: %s", e)
+
+    async def handle_cmd_menu(self, message: Message) -> None:
+        """Display dynamic bot commands menu status and custom aliases."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        persona = self.command_registry.persona_getter()
+        catalog = self.command_registry._build_default_catalog(persona)
+        settings = await self.db.get_command_settings()
+        custom_aliases = await self.db.get_custom_aliases()
+
+        lines = ["📋 **Меню и статус команд бота:**\n"]
+        for spec in catalog:
+            override = settings.get(spec.name, {})
+            is_active = override.get("is_enabled", spec.is_enabled)
+            icon = "🟢" if is_active else "⚪"
+            status_text = "" if is_active else " _(отключена)_"
+            lines.append(f"{icon} **/{spec.name}** — {spec.description}{status_text}")
+
+        lines.append("\n🏷️ **Персональные псевдонимы:**")
+        if custom_aliases:
+            for al, canon in sorted(custom_aliases.items()):
+                lines.append(f"• `/{al}` ➔ `/{canon}`")
+        else:
+            lines.append("• _нет активных алиасов_")
+
+        lines.append(
+            "\n💡 _Управление в диалоге:_\n"
+            "• `скрой команды lms` / `верни lms`\n"
+            "• `алиас лабы как lms`\n"
+            "• `удали алиас лабы`"
+        )
+        await message.answer("\n".join(lines))
 
     async def handle_cmd_cancel(self, message: Message) -> None:
         """Cancel active draft edit/write prompt or ongoing interaction."""
@@ -1027,6 +1061,81 @@ class EmailBotHandler:
                 await self._execute_visibility_change(message, target_code, is_public=False)
                 return
 
+            # Conversational Bot Menu & Alias Management
+            cmd_aliases_map = {
+                "lms": "lms",
+                "лабы": "lms",
+                "табель": "timesheet",
+                "часы": "timesheet",
+                "почту": "emails",
+                "почта": "emails",
+                "расписание": "today",
+                "пары": "today",
+                "методист": "methodist",
+                "методиста": "methodist",
+            }
+
+            m_hide_cmd = re.match(
+                r"^скрой\s+(?:команды\s+|команду\s+)?(lms|лабы|табель|часы|почт[уа]|расписание|пары|методист[а]?)(?:\s+(?:из\s+меню|на\s+каникулы|в\s+меню))?$",
+                user_msg,
+                re.IGNORECASE,
+            )
+            if m_hide_cmd:
+                target_key = m_hide_cmd.group(1).lower()
+                canonical = cmd_aliases_map.get(target_key, target_key)
+                await self.db.set_command_setting(canonical, is_enabled=False)
+                await self.setup_bot_commands()
+                await message.answer(f"🙈 Команда **/{canonical}** скрыта из меню Telegram.")
+                return
+
+            m_show_cmd = re.match(
+                r"^(?:покажи\s+(?:команды\s+|команду\s+)|верни\s+(?:команды\s+|команду\s+)?)(lms|лабы|табель|часы|почт[уа]|расписание|пары|методист[а]?)(?:\s+(?:в\s+меню|на\s+каникулы))?$",
+                user_msg,
+                re.IGNORECASE,
+            )
+            if m_show_cmd:
+                target_key = m_show_cmd.group(1).lower()
+                canonical = cmd_aliases_map.get(target_key, target_key)
+                await self.db.set_command_setting(canonical, is_enabled=True)
+                await self.setup_bot_commands()
+                await message.answer(f"👁️ Команда **/{canonical}** возвращена в меню Telegram.")
+                return
+
+            m_alias = re.match(r"^(?:называй|алиас|псевдоним)\s+/?([a-z0-9_а-яё]+)\s+(?:как|=)\s+/?([a-z0-9_а-яё]+)", user_msg, re.IGNORECASE)
+            if m_alias:
+                alias_name = m_alias.group(1).lower().lstrip("/")
+                target_raw = m_alias.group(2).lower().lstrip("/")
+                canonical = cmd_aliases_map.get(target_raw)
+                if not canonical and self.command_registry:
+                    canonical = await self.command_registry.resolve_command_or_alias(target_raw)
+                if not canonical and target_raw in ("ticker", "timesheet", "today", "lms", "emails", "methodist", "evening", "undo_clear", "help"):
+                    canonical = target_raw
+
+                protected = {"cancel", "cansel", "reset", "clear", "undo_clear"}
+                if alias_name in protected:
+                    await message.answer(f"⚠️ Нельзя переопределять системное действие **/{alias_name}** в целях безопасности.")
+                    return
+
+                if canonical:
+                    await self.db.set_custom_alias(alias_name, canonical)
+                    await self.setup_bot_commands()
+                    await message.answer(f"🏷️ Псевдоним **/{alias_name}** привязан к команде **/{canonical}**.")
+                    return
+                else:
+                    await message.answer(f"⚠️ Неизвестная команда **/{target_raw}**. Укажите существующую команду (например, timesheet, today, lms, emails).")
+                    return
+
+            m_del_alias = re.match(r"^удали\s+алиас\s+/?([a-z0-9_а-яё]+)", user_msg, re.IGNORECASE)
+            if m_del_alias:
+                alias_name = m_del_alias.group(1).lower().lstrip("/")
+                removed = await self.db.remove_custom_alias(alias_name)
+                await self.setup_bot_commands()
+                if removed:
+                    await message.answer(f"🗑️ Псевдоним **/{alias_name}** удален.")
+                else:
+                    await message.answer(f"ℹ️ Псевдоним **/{alias_name}** не найден.")
+                return
+
             # 2. Fast LLM Intent Routing (Gemini 3.8 Flash low effort, stateless)
             route_res = await self.intent_router.route(user_id=user_id, message_text=user_msg)
             logger.info(
@@ -1038,7 +1147,22 @@ class EmailBotHandler:
             )
 
             # 3. Dispatch to standard action presets or full secretary dialog
-            if route_res.action == "timesheet":
+            if route_res.action in ("today", "schedule"):
+                await self.handle_cmd_today(message)
+                return
+            elif route_res.action in ("lms", "lms_tasks"):
+                await self.handle_cmd_lms_tasks(message)
+                return
+            elif route_res.action in ("undo_clear", "undo"):
+                await self.handle_cmd_undo_clear(message)
+                return
+            elif route_res.action in ("help", "start"):
+                await self.handle_cmd_help(message)
+                return
+            elif route_res.action == "menu":
+                await self.handle_cmd_menu(message)
+                return
+            elif route_res.action == "timesheet":
                 await self.handle_cmd_timesheet(message)
                 return
             elif route_res.action in ("evening", "digest"):
@@ -1046,9 +1170,6 @@ class EmailBotHandler:
                 return
             elif route_res.action == "emails":
                 await self.handle_cmd_emails(message)
-                return
-            elif route_res.action == "lms_tasks":
-                await self.handle_cmd_lms_tasks(message)
                 return
             elif route_res.action == "lms_reports":
                 await self.handle_cmd_lms_reports(message)

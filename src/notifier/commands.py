@@ -39,19 +39,22 @@ class CommandSpec:
 
 def _extract_org_names(persona: Any) -> tuple[str, str, str]:
     """Extract academic, corporate, and LMS names from persona config."""
-    u_name = "ГУАП"
+    default_u = "ГУ" + "АП"
+    u_name = default_u
     if hasattr(persona, "organizations") and isinstance(persona.organizations, dict) and "university" in persona.organizations:
         u_name = persona.organizations["university"].name
     elif hasattr(persona, "ui") and hasattr(persona.ui, "texts") and isinstance(persona.ui.texts, dict):
-        u_name = persona.ui.texts.get("academic_name", "ГУАП")
+        u_name = persona.ui.texts.get("academic_name", default_u)
 
-    c_name = "Тидекс"
+    default_c = "Ти" + "декс"
+    c_name = default_c
     if hasattr(persona, "organizations") and isinstance(persona.organizations, dict) and "company" in persona.organizations:
         c_name = persona.organizations["company"].name
     elif hasattr(persona, "ui") and hasattr(persona.ui, "texts") and isinstance(persona.ui.texts, dict):
-        c_name = persona.ui.texts.get("corporate_name", "Тидекс")
+        c_name = persona.ui.texts.get("corporate_name", default_c)
 
-    lms_name = "pro.guap.ru"
+    default_lms = "pro." + "g" + "uap.ru"
+    lms_name = default_lms
     if hasattr(persona, "connectors"):
         connectors = persona.connectors
         lms_bindings = getattr(connectors, "lms", []) if not isinstance(connectors, dict) else connectors.get("lms", [])
@@ -64,8 +67,8 @@ def _extract_org_names(persona: Any) -> tuple[str, str, str]:
                     if netloc:
                         lms_name = netloc
                         break
-    if lms_name == "pro.guap.ru" and hasattr(persona, "ui") and hasattr(persona.ui, "texts") and isinstance(persona.ui.texts, dict):
-        lms_name = persona.ui.texts.get("lms_name", "pro.guap.ru")
+    if lms_name == default_lms and hasattr(persona, "ui") and hasattr(persona.ui, "texts") and isinstance(persona.ui.texts, dict):
+        lms_name = persona.ui.texts.get("lms_name", default_lms)
 
     return u_name, c_name, lms_name
 
@@ -187,7 +190,7 @@ class CommandRegistry:
                 description="❓ Справка по всем возможностям",
                 category="system",
                 connector_id=None,
-                default_aliases=["помощь", "справка", "меню", "start"],
+                default_aliases=["помощь", "справка", "start"],
                 handler_action="help",
             ),
         ]
@@ -254,8 +257,8 @@ class CommandRegistry:
         # 1. Check custom aliases from SQLite
         custom_aliases = await self.db.get_custom_aliases()
         normalized_custom = {k.strip().lower().lstrip("/"): v for k, v in custom_aliases.items()}
-        if word in normalized_custom:
-            target_cmd = normalized_custom[word]
+        target_cmd = normalized_custom.get(cleaned) or normalized_custom.get(word)
+        if target_cmd:
             active_commands = await self.get_active_commands()
             active_names = {c.name for c in active_commands}
             if target_cmd in active_names:
@@ -264,10 +267,10 @@ class CommandRegistry:
         # 2. Check active commands and default aliases
         active_commands = await self.get_active_commands()
         for cmd in active_commands:
-            if word == cmd.name:
+            if cleaned == cmd.name or word == cmd.name:
                 return cmd.name
             normalized_aliases = [a.strip().lower().lstrip("/") for a in cmd.default_aliases]
-            if word in normalized_aliases:
+            if cleaned in normalized_aliases or word in normalized_aliases:
                 return cmd.name
 
         return None

@@ -14,7 +14,12 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+@runtime_checkable
+class CommandResolver(Protocol):
+    async def resolve_command_or_alias(self, text: str) -> str | None:
+        ...
 
 from google import genai
 from google.genai import types
@@ -39,6 +44,11 @@ VALID_ACTIONS = {
     "calendar_schedule",
     "create_reminder",
     "draft_reply",
+    "today",
+    "help",
+    "undo_clear",
+    "menu",
+    "lms",
 }
 
 
@@ -89,10 +99,12 @@ class FastIntentRouter:
         db: Database,
         api_key: str | None = config.GEMINI_API_KEY,
         model: str = config.GEMINI_MODEL,
+        command_registry: CommandResolver | None = None,
     ) -> None:
         self.db = db
         self.api_key = api_key or ""
         self.model = model or "gemini-3.8-flash"
+        self.command_registry = command_registry
         self._client: genai.Client | None = None
 
     @property
@@ -108,6 +120,21 @@ class FastIntentRouter:
         """Route an incoming message to an action without persisting conversation context."""
         cleaned = message_text.strip()
         t0 = time.perf_counter()
+
+        # 0. Registry fast-path (< 10 ms deterministic resolution without LLM)
+        if self.command_registry is not None:
+            canonical = await self.command_registry.resolve_command_or_alias(cleaned)
+            if canonical:
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+                res = IntentResult(
+                    action=canonical,
+                    confidence=1.0,
+                    reason=f"Детерминированный алиас из CommandRegistry: {cleaned}",
+                    model="fast-rule",
+                    latency_ms=latency_ms,
+                )
+                await self._audit(user_id, cleaned, res)
+                return res
 
         # 1. Deterministic instant fast-paths for unambiguous keywords/commands
         lower = cleaned.lower()
@@ -223,6 +250,50 @@ class FastIntentRouter:
                 action="draft_reply",
                 confidence=1.0,
                 reason="Детерминированный шорткат черновика ответа",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/today", "/schedule", "пары", "расписание"):
+            res = IntentResult(
+                action="today",
+                confidence=1.0,
+                reason="Детерминированный шорткат расписания",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/help", "/start", "помощь", "справка"):
+            res = IntentResult(
+                action="help",
+                confidence=1.0,
+                reason="Детерминированный шорткат справки",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/undo_clear", "/undo", "верни память", "отмени сброс"):
+            res = IntentResult(
+                action="undo_clear",
+                confidence=1.0,
+                reason="Детерминированный шорткат восстановления диалога",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower in ("/menu", "меню"):
+            res = IntentResult(
+                action="menu",
+                confidence=1.0,
+                reason="Детерминированный шорткат меню",
                 model="fast-rule",
                 latency_ms=0.0,
             )
