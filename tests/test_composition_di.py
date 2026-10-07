@@ -227,26 +227,20 @@ def make_document_bot():
 
 
 async def test_cmd_timesheet_characterization(in_memory_db):
-    """Известный дефект до Фазы 2: неопределённое имя в f-строке заголовка табеля.
-
-    Команда /timesheet падает с NameError после расчёта, ещё до отправки ответа.
-    Фаза 2 поведение не меняет. Решение владельца 2026-10-02: не чинить в
-    Фазе 2; исправление выносится отдельной задачей в backlog, а этот тест
-    при исправлении переписывают в той же задаче.
-    """
+    """Проверка работы команды /timesheet: успешное формирование и отправка табеля."""
     calls: list = []
     handler = make_handler(in_memory_db)
     msg = make_message()
 
     with patch(TARGET, make_fake_aadhk(calls)):
-        with pytest.raises(NameError, match="cur_m_name"):
-            await handler.handle_cmd_timesheet(msg)
+        await handler.handle_cmd_timesheet(msg)
 
     assert method_calls(calls) == [
         ("reconcile_all_conflicts", (), {}),
         ("get_monthly_pacing", (), {"project_name": "Тидекс"}),
     ]
-    msg.answer.assert_not_called()
+    msg.answer.assert_called_once()
+    assert "Табель и баланс" in msg.answer.call_args[0][0]
 
 
 async def test_cmd_timesheet_unauthorized_does_nothing(in_memory_db):

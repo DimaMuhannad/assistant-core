@@ -565,10 +565,7 @@ class EmailBotHandler:
             )
 
         if edited and stored:
-            try:
-                await message.delete()
-            except Exception:
-                pass
+            await message.answer(full_text, reply_markup=markup)
             return
 
         # If edit failed or ticker not yet stored, send a new one
@@ -1439,30 +1436,43 @@ class EmailBotHandler:
         pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
 
         month_names = ["", "январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+        cur_m_idx = pacing.get("month", 0)
+        cur_m_name = month_names[cur_m_idx] if 1 <= cur_m_idx <= 12 else ""
         morning_delta = pacing.get("morning_delta", 0.0)
         morning_sign = "+" if morning_delta > 0 else ""
         rel_date = pacing.get("latest_date_formatted", "сегодня")
 
         c_name = _get_comp_name()
         c_full = c_name if c_name.startswith("ООО") else f"ООО «{c_name}»"
+        exp_hours = pacing.get("expected_hours_to_date", 0.0)
+        elapsed_days = pacing.get("elapsed_workdays", 0)
+        tot_amount = pacing.get("total_amount", 0.0)
+        m_norm = pacing.get("monthly_norm_hours", 0.0)
+        tot_workdays = pacing.get("total_workdays", 0)
+        worked_h = pacing.get("worked_hours", 0.0)
+        tot_shifts = pacing.get("total_shifts", 0)
+
         text_lines = [
-            f"⏱️ **Табель и баланс: {c_full} ({cur_m_name} {pacing['year']})**\n",
+            f"⏱️ **Табель и баланс: {c_full} ({cur_m_name} {pacing.get('year', '')})**\n",
             f"• **Дельта нормы (утро):** `{morning_sign}{morning_delta:.2f}` ч (актуально на {rel_date})",
-            f"• **Месячная норма:** `{pacing['monthly_norm_hours']:.1f}` ч ({pacing['total_workdays']} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)",
-            f"• **Фактически зачтено:** `{pacing['worked_hours']:.2f}` ч ({pacing['total_shifts']} смен)",
-            f"• **Ожидаемый темп на утро:** `{pacing['expected_hours_to_date']:.1f}` ч ({pacing['elapsed_workdays']} раб. дней)",
-            f"• **Начислено за месяц:** `{pacing['total_amount']:,.2f}` ₽\n",
+            f"• **Месячная норма:** `{m_norm:.1f}` ч ({tot_workdays} раб. дней по {format_hours(timesheet_settings().daily_norm_hours)} ч)",
+            f"• **Фактически зачтено:** `{worked_h:.2f}` ч ({tot_shifts} смен)",
+            f"• **Ожидаемый темп на утро:** `{exp_hours:.1f}` ч ({elapsed_days} раб. дней)",
+            f"• **Начислено за месяц:** `{tot_amount:,.2f}` ₽\n",
         ]
 
-        if pacing["remaining_workdays"] > 0:
-            text_lines.append(f"🎯 **План на остаток месяца ({pacing['remaining_workdays']} раб. дн.):**")
-            text_lines.append(f"• Осталось закрыть: `{pacing['remaining_hours_to_norm']:.2f}` ч")
-            text_lines.append(f"• Необходимый темп: `{pacing['required_daily_pacing']:.2f}` ч/день\n")
+        rem_days = pacing.get("remaining_workdays", 0)
+        rem_hours = pacing.get("remaining_hours_to_norm", 0.0)
+        req_pace = pacing.get("required_daily_pacing", 0.0)
+        if rem_days > 0:
+            text_lines.append(f"🎯 **План на остаток месяца ({rem_days} раб. дн.):**")
+            text_lines.append(f"• Осталось закрыть: `{rem_hours:.2f}` ч")
+            text_lines.append(f"• Необходимый темп: `{req_pace:.2f}` ч/день\n")
         else:
-            if pacing["remaining_hours_to_norm"] == 0:
+            if rem_hours == 0:
                 text_lines.append("🎉 **Месячная норма полностью выполнена без недоработок!**\n")
             else:
-                text_lines.append(f"⚠️ **Недоработка за месяц:** `{pacing['remaining_hours_to_norm']:.2f}` ч\n")
+                text_lines.append(f"⚠️ **Недоработка за месяц:** `{rem_hours:.2f}` ч\n")
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1470,7 +1480,7 @@ class EmailBotHandler:
             ]
         )
         msg_text = "\n".join(text_lines)
-        if self.notifier:
+        if self.notifier and self.notifier.is_configured:
             await self.notifier.send_message(msg_text, chat_id=message.chat.id, reply_markup=kb)
         else:
             await message.answer(msg_text, reply_markup=kb)
