@@ -643,21 +643,32 @@ class EmailBotHandler:
         )
         await callback.answer("⚡ Данные табло обновлены!")
 
-    async def setup_bot_commands(self) -> None:
+    async def setup_bot_commands(self, chat_id: int | None = None) -> None:
         """Register Telegram Bot commands menu."""
         if not self.bot:
             logger.warning("Cannot setup bot commands: bot instance is None")
             return
-        from aiogram.types import BotCommandScopeDefault
+        from aiogram.types import BotCommandScopeDefault, BotCommandScopeChat
         try:
             active_specs = await self.command_registry.get_active_commands()
             commands = await self.command_registry.get_telegram_commands()
             await self.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            target_chats = set()
+            if chat_id:
+                target_chats.add(chat_id)
+            if self.allowed_user_id:
+                target_chats.add(self.allowed_user_id)
+            for cid in target_chats:
+                try:
+                    await self.bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=cid))
+                except Exception as ce:
+                    logger.warning("Failed to set commands for chat %s: %s", cid, ce)
             categories = {spec.category for spec in active_specs}
             logger.info(
-                "Successfully registered %d Telegram bot menu commands across categories: %s",
+                "Successfully registered %d Telegram bot menu commands across categories: %s (chats: %s)",
                 len(commands),
                 ", ".join(sorted(categories)),
+                list(target_chats),
             )
         except Exception as e:
             logger.error("Failed to register bot commands: %s", e)
@@ -1081,7 +1092,7 @@ class EmailBotHandler:
                 target_key = m_hide_cmd.group(1).lower()
                 canonical = cmd_aliases_map.get(target_key, target_key)
                 await self.db.set_command_setting(canonical, is_enabled=False)
-                await self.setup_bot_commands()
+                await self.setup_bot_commands(chat_id=message.chat.id)
                 await message.answer(f"🙈 Команда **/{canonical}** скрыта из меню Telegram.")
                 return
 
@@ -1094,7 +1105,7 @@ class EmailBotHandler:
                 target_key = m_show_cmd.group(1).lower()
                 canonical = cmd_aliases_map.get(target_key, target_key)
                 await self.db.set_command_setting(canonical, is_enabled=True)
-                await self.setup_bot_commands()
+                await self.setup_bot_commands(chat_id=message.chat.id)
                 await message.answer(f"👁️ Команда **/{canonical}** возвращена в меню Telegram.")
                 return
 
@@ -1115,7 +1126,7 @@ class EmailBotHandler:
 
                 if canonical:
                     await self.db.set_custom_alias(alias_name, canonical)
-                    await self.setup_bot_commands()
+                    await self.setup_bot_commands(chat_id=message.chat.id)
                     await message.answer(f"🏷️ Псевдоним **/{alias_name}** привязан к команде **/{canonical}**.")
                     return
                 else:
@@ -1126,7 +1137,7 @@ class EmailBotHandler:
             if m_del_alias:
                 alias_name = m_del_alias.group(1).lower().lstrip("/")
                 removed = await self.db.remove_custom_alias(alias_name)
-                await self.setup_bot_commands()
+                await self.setup_bot_commands(chat_id=message.chat.id)
                 if removed:
                     await message.answer(f"🗑️ Псевдоним **/{alias_name}** удален.")
                 else:
