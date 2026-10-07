@@ -153,6 +153,9 @@ class EmailBotHandler:
         self.voice_processor = VoiceProcessor()
         self.intent_router = FastIntentRouter(db=self.db)
         self.ticker_service = LiveTickerService(db=self.db, timesheet_service=self.timesheet_service)
+        from src.notifier.commands import CommandRegistry
+        from src.persona.current import current_persona
+        self.command_registry = CommandRegistry(db=self.db, persona_getter=current_persona)
 
         self.router = Router()
         # In-memory FSM state: user_id -> {"action": "edit"|"write", "draft_id": int, "email_id": int, ...}
@@ -647,24 +650,17 @@ class EmailBotHandler:
         if not self.bot:
             logger.warning("Cannot setup bot commands: bot instance is None")
             return
-        from aiogram.types import BotCommand, BotCommandScopeDefault
-        u_name = _get_univ_name()
-        c_name = _get_comp_name()
-        lms_name = _get_lms_name()
-        commands = [
-            BotCommand(command="ticker", description="⚡ Живое табло в закрепе (HUD)"),
-            BotCommand(command="timesheet", description=f"⏱️ Часы и норма {c_name}"),
-            BotCommand(command="today", description=f"📅 Расписание пар {u_name}"),
-            BotCommand(command="lms", description=f"🎓 Отчеты и задания {lms_name}"),
-            BotCommand(command="emails", description="📬 Входящая почта и черновики"),
-            BotCommand(command="methodist", description="📚 Вопрос методисту кафедры"),
-            BotCommand(command="evening", description="🌙 Вечерний дайджест"),
-            BotCommand(command="undo_clear", description="↩️ Восстановить память диалога"),
-            BotCommand(command="help", description="❓ Справка по всем возможностям"),
-        ]
+        from aiogram.types import BotCommandScopeDefault
         try:
+            active_specs = await self.command_registry.get_active_commands()
+            commands = await self.command_registry.get_telegram_commands()
             await self.bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-            logger.info("Successfully registered %d Telegram bot menu commands", len(commands))
+            categories = {spec.category for spec in active_specs}
+            logger.info(
+                "Successfully registered %d Telegram bot menu commands across categories: %s",
+                len(commands),
+                ", ".join(sorted(categories)),
+            )
         except Exception as e:
             logger.error("Failed to register bot commands: %s", e)
 

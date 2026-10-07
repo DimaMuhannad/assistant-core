@@ -21,6 +21,11 @@ class Database:
     """Async SQLite storage implementing ROADMAP.md specifications."""
 
     def __init__(self, db_path: str = "./data/assistant.db"):
+        if isinstance(db_path, str):
+            for prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+                if db_path.startswith(prefix):
+                    db_path = db_path[len(prefix):]
+                    break
         self.db_path = db_path
         self._shared_conn: aiosqlite.Connection | None = None
 
@@ -49,13 +54,55 @@ class Database:
 
     async def init_db(self) -> None:
         """Create all tables and run migrations via assistant_shared.db.migrator."""
-        async with self.connection() as conn:
-            if self.db_path == ":memory:":
+        if self.db_path == ":memory:":
+            async with self.connection() as conn:
                 raw_conn = getattr(conn, "_conn", getattr(conn, "_connection", conn))
                 run_migrations(raw_conn)
-            else:
-                run_migrations(self.db_path)
-            await self._seed_initial_data_if_empty(conn)
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bot_command_settings (
+                        command_name TEXT PRIMARY KEY,
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        custom_description TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bot_custom_aliases (
+                        alias TEXT PRIMARY KEY,
+                        canonical_command TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                await conn.commit()
+                await self._seed_initial_data_if_empty(conn)
+        else:
+            run_migrations(self.db_path)
+            async with self.connection() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bot_command_settings (
+                        command_name TEXT PRIMARY KEY,
+                        is_enabled INTEGER NOT NULL DEFAULT 1,
+                        custom_description TEXT,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bot_custom_aliases (
+                        alias TEXT PRIMARY KEY,
+                        canonical_command TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                await conn.commit()
+                await self._seed_initial_data_if_empty(conn)
 
     async def upsert_persona(
         self,
@@ -2840,5 +2887,77 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def get_command_settings(self) -> dict[str, dict[str, Any]]:
+        """Get all custom command settings (is_enabled, custom_description)."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT command_name, is_enabled, custom_description, updated_at FROM bot_command_settings;"
+            )
+            rows = await cursor.fetchall()
+            return {
+                r["command_name"]: {
+                    "is_enabled": bool(r["is_enabled"]),
+                    "custom_description": r["custom_description"],
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            }
+
+    async def set_command_setting(
+        self,
+        command_name: str,
+        is_enabled: bool,
+        custom_description: str | None = None,
+    ) -> None:
+        """Enable/disable bot command or update its custom description."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_command_settings (command_name, is_enabled, custom_description, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(command_name) DO UPDATE SET
+                    is_enabled = excluded.is_enabled,
+                    custom_description = excluded.custom_description,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (command_name, 1 if is_enabled else 0, custom_description),
+            )
+            await conn.commit()
+
+    async def get_custom_aliases(self) -> dict[str, str]:
+        """Get mapping of custom aliases to canonical command names."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT alias, canonical_command FROM bot_custom_aliases;"
+            )
+            rows = await cursor.fetchall()
+            return {r["alias"]: r["canonical_command"] for r in rows}
+
+    async def set_custom_alias(self, alias: str, canonical_command: str) -> None:
+        """Set or update custom alias for a canonical command."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_custom_aliases (alias, canonical_command, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(alias) DO UPDATE SET
+                    canonical_command = excluded.canonical_command,
+                    created_at = CURRENT_TIMESTAMP;
+                """,
+                (alias, canonical_command),
+            )
+            await conn.commit()
+
+    async def remove_custom_alias(self, alias: str) -> bool:
+        """Remove a custom alias. Returns True if deleted, False if not found."""
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM bot_custom_aliases WHERE alias = ?;",
+                (alias,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
 
 
