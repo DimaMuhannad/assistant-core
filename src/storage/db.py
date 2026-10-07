@@ -77,6 +77,17 @@ class Database:
                     );
                     """
                 )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS dialog_feedback_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        message_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        feedback_type TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
                 await conn.commit()
                 await self._seed_initial_data_if_empty(conn)
         else:
@@ -97,6 +108,17 @@ class Database:
                     CREATE TABLE IF NOT EXISTS bot_custom_aliases (
                         alias TEXT PRIMARY KEY,
                         canonical_command TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS dialog_feedback_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        message_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        feedback_type TEXT NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                     """
@@ -2958,6 +2980,38 @@ class Database:
             )
             await conn.commit()
             return cursor.rowcount > 0
+
+    async def log_dialog_feedback(
+        self, message_id: int, user_id: int, feedback_type: str
+    ) -> None:
+        """Log user feedback (up/down) for secretary dialog response."""
+        async with self.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO dialog_feedback_log (message_id, user_id, feedback_type, created_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP);
+                """,
+                (message_id, user_id, feedback_type),
+            )
+            await conn.commit()
+
+    async def get_dialog_feedback(
+        self, message_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get dialog feedback entries optionally filtered by message_id."""
+        async with self.connection() as conn:
+            if message_id is not None:
+                cursor = await conn.execute(
+                    "SELECT id, message_id, user_id, feedback_type, created_at FROM dialog_feedback_log WHERE message_id = ? ORDER BY id DESC;",
+                    (message_id,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT id, message_id, user_id, feedback_type, created_at FROM dialog_feedback_log ORDER BY id DESC;"
+                )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
 
 
 

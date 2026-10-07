@@ -102,3 +102,298 @@ async def test_menu_command_rendering(tmp_path):
         assert custom_aliases.get("карточки") == "timesheet"
     finally:
         await db.close()
+
+
+# =========================================================================
+# Phase 9 Plan 09-04: UX Ergonomics Audit, Edge Caching, and Telemetry (UXQ-04)
+# =========================================================================
+
+def _make_mock_message(user_id: int = 12345, chat_id: int = 12345, text: str = "/today") -> MagicMock:
+    from aiogram.types import Message, User, Chat
+    msg = MagicMock(spec=Message)
+    msg.message_id = 999
+    msg.text = text
+    user = MagicMock(spec=User)
+    user.id = user_id
+    msg.from_user = user
+    chat = MagicMock(spec=Chat)
+    chat.id = chat_id
+    msg.chat = chat
+    msg.answer = AsyncMock()
+    bot = MagicMock()
+    bot.edit_message_reply_markup = AsyncMock()
+    msg.bot = bot
+    return msg
+
+
+def _make_mock_callback(
+    user_id: int = 12345,
+    chat_id: int = 12345,
+    message_id: int = 888,
+    data: str = "fb:up:888",
+) -> MagicMock:
+    from aiogram.types import CallbackQuery, User, Chat, Message
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = data
+    user = MagicMock(spec=User)
+    user.id = user_id
+    cb.from_user = user
+    msg = MagicMock(spec=Message)
+    msg.message_id = message_id
+    chat = MagicMock(spec=Chat)
+    chat.id = chat_id
+    msg.chat = chat
+    msg.edit_reply_markup = AsyncMock()
+    cb.message = msg
+    cb.answer = AsyncMock()
+    return cb
+
+
+@pytest.mark.asyncio
+async def test_edge_caching_latency_sub_250ms(tmp_path):
+    """Test that repeated /today and /timesheet requests are served from edge cache in < 250 ms (UXQ-04)."""
+    import time
+    from src.notifier.bot_handler import EmailBotHandler
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        user_id = 12345
+        mock_notifier = MagicMock()
+        mock_notifier.is_configured = True
+        mock_notifier.send_message = AsyncMock(return_value=[1001])
+
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=user_id,
+            notifier=mock_notifier,
+        )
+
+        # 1. Warm up /today
+        today_msg = _make_mock_message(user_id=user_id, text="/today")
+        await handler.handle_cmd_today(today_msg)
+
+        # Second call must be served from cache with sub-250ms latency (actually < 50ms)
+        t0 = time.perf_counter()
+        await handler.handle_cmd_today(today_msg)
+        elapsed_today_ms = (time.perf_counter() - t0) * 1000
+
+        assert elapsed_today_ms < 250.0, f"/today cached latency too high: {elapsed_today_ms:.2f} ms"
+
+        # 2. Warm up /timesheet
+        ts_msg = _make_mock_message(user_id=user_id, text="/timesheet")
+        mock_ts_service = MagicMock()
+        mock_ts_service.reconcile_all_conflicts = AsyncMock()
+        mock_ts_service.get_monthly_pacing = AsyncMock(
+            return_value={
+                "month": 10,
+                "year": 2026,
+                "morning_delta": 2.5,
+                "expected_hours_to_date": 40.0,
+                "elapsed_workdays": 5,
+                "total_amount": 50000.0,
+                "monthly_norm_hours": 160.0,
+                "total_workdays": 20,
+                "worked_hours": 42.5,
+                "total_shifts": 6,
+                "remaining_workdays": 15,
+                "remaining_hours_to_norm": 117.5,
+                "required_daily_pacing": 7.83,
+            }
+        )
+        handler.timesheet_service = mock_ts_service
+
+        await handler.handle_cmd_timesheet(ts_msg)
+
+        # Second call to /timesheet must be served from cache
+        t1 = time.perf_counter()
+        await handler.handle_cmd_timesheet(ts_msg)
+        elapsed_ts_ms = (time.perf_counter() - t1) * 1000
+
+        assert elapsed_ts_ms < 250.0, f"/timesheet cached latency too high: {elapsed_ts_ms:.2f} ms"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_edge_cache_invalidation(tmp_path):
+    """Test invalidation of edge cache by prefix and completely (UXQ-04)."""
+    import time
+    from src.notifier.bot_handler import EmailBotHandler
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=12345,
+        )
+
+        handler._edge_cache["today:2026-10-07"] = (time.time() + 900, "Today schedule text")
+        handler._edge_cache["timesheet:2026-10-07"] = (time.time() + 1800, "Timesheet text")
+
+        # Invalidate timesheet only
+        handler.clear_edge_cache("timesheet")
+        assert "timesheet:2026-10-07" not in handler._edge_cache
+        assert "today:2026-10-07" in handler._edge_cache
+
+        # Invalidate all
+        handler.clear_edge_cache()
+        assert len(handler._edge_cache) == 0
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_dialog_feedback_db_logging(tmp_path):
+    """Test storing dialog feedback telemetry into dialog_feedback_log in SQLite (UXQ-04)."""
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        await db.log_dialog_feedback(message_id=777, user_id=12345, feedback_type="up")
+        await db.log_dialog_feedback(message_id=778, user_id=12345, feedback_type="down")
+
+        feedbacks = await db.get_dialog_feedback(message_id=777)
+        assert len(feedbacks) == 1
+        assert feedbacks[0]["message_id"] == 777
+        assert feedbacks[0]["user_id"] == 12345
+        assert feedbacks[0]["feedback_type"] == "up"
+
+        feedbacks_down = await db.get_dialog_feedback(message_id=778)
+        assert len(feedbacks_down) == 1
+        assert feedbacks_down[0]["feedback_type"] == "down"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_build_dialog_feedback_keyboard_and_callbacks(tmp_path):
+    """Test generating feedback keyboard and handling fb:up / fb:down callbacks with deduplication."""
+    from src.notifier.telegram import build_dialog_feedback_keyboard
+    from src.notifier.bot_handler import EmailBotHandler
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        # 1. Keyboard structure
+        kb = build_dialog_feedback_keyboard(msg_id=505)
+        assert len(kb.inline_keyboard) == 1
+        buttons = kb.inline_keyboard[0]
+        assert len(buttons) == 2
+        assert "👍" in buttons[0].text
+        assert buttons[0].callback_data == "fb:up:505"
+        assert "👎" in buttons[1].text
+        assert buttons[1].callback_data == "fb:down:505"
+
+        # 2. Callback handling
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=12345,
+        )
+
+        cb_up = _make_mock_callback(user_id=12345, message_id=505, data="fb:up:505")
+        await handler.cb_dialog_feedback(cb_up)
+
+        # Toast answer called
+        cb_up.answer.assert_called_with("Спасибо за обратную связь!")
+        # Message markup updated to thank you note
+        cb_up.message.edit_reply_markup.assert_called_once()
+        called_kb = cb_up.message.edit_reply_markup.call_args.kwargs["reply_markup"]
+        assert "Спасибо за отзыв! 👍" in called_kb.inline_keyboard[0][0].text
+
+        # Verify DB record
+        logs = await db.get_dialog_feedback(505)
+        assert len(logs) == 1
+        assert logs[0]["feedback_type"] == "up"
+
+        # 3. Deduplication: second click by the same user on the same message
+        cb_up_repeat = _make_mock_callback(user_id=12345, message_id=505, data="fb:up:505")
+        await handler.cb_dialog_feedback(cb_up_repeat)
+        cb_up_repeat.answer.assert_called_with("Вы уже оставили отзыв на этот ответ.")
+        # No second row inserted into DB
+        logs_after = await db.get_dialog_feedback(505)
+        assert len(logs_after) == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_connector_health_alert_and_check(tmp_path):
+    """Test proactive connector diagnostic alerts and health check callback."""
+    from src.notifier.bot_handler import EmailBotHandler
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        user_id = 12345
+        mock_notifier = MagicMock()
+        mock_notifier.is_configured = True
+        mock_notifier.send_message = AsyncMock(return_value=[1200])
+
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=user_id,
+            notifier=mock_notifier,
+        )
+
+        await handler.send_connector_health_alert(
+            chat_id=user_id,
+            service_name="ГУАП LMS",
+            issue_text="Сессионный токен устарел или служба недоступна",
+        )
+
+        mock_notifier.send_message.assert_called_once()
+        call_args, call_kwargs = mock_notifier.send_message.call_args
+        sent_text = call_args[0]
+        sent_kb = call_kwargs["reply_markup"]
+
+        assert "⚠️ **Служба ГУАП LMS временно недоступна**" in sent_text
+        assert "Сессионный токен устарел" in sent_text
+        assert sent_kb.inline_keyboard[0][0].callback_data == "chk:ГУАП LMS"
+        assert "🔄 Проверить подключение" in sent_kb.inline_keyboard[0][0].text
+
+        # Test callback for check
+        cb = _make_mock_callback(user_id=user_id, data="chk:ГУАП LMS")
+        await handler.cb_connector_health_check(cb)
+        cb.answer.assert_called_with("Проверка связи со службой ГУАП LMS...")
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_secretary_dialog_feedback_attachment(tmp_path):
+    """Test that secretary dialog attaches feedback keyboard to model responses."""
+    from src.notifier.bot_handler import EmailBotHandler
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        user_id = 12345
+        mock_bot = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.message_id = 6789
+        mock_bot.send_message = AsyncMock(return_value=sent_msg)
+        mock_bot.edit_message_reply_markup = AsyncMock()
+
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=user_id,
+            bot=mock_bot,
+        )
+
+        handler.dialog_engine.answer_user_message = AsyncMock(
+            return_value=("Завтра у вас две пары на Гастелло.", [], None)
+        )
+
+        user_msg = _make_mock_message(user_id=user_id, text="Сколько пар завтра?")
+        await handler._handle_secretary_dialog(user_msg, "Сколько пар завтра?")
+
+        # Verify message was sent and feedback keyboard was attached
+        mock_bot.send_message.assert_called_once()
+        mock_bot.edit_message_reply_markup.assert_called_once()
+        edit_kwargs = mock_bot.edit_message_reply_markup.call_args.kwargs
+        assert edit_kwargs["message_id"] == 6789
+        assert edit_kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "fb:up:6789"
+        assert edit_kwargs["reply_markup"].inline_keyboard[0][1].callback_data == "fb:down:6789"
+    finally:
+        await db.close()

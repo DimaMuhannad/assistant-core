@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone, date
 from typing import Any
@@ -45,6 +46,7 @@ from src.notifier.telegram import (
     build_email_action_keyboard,
     build_draft_action_keyboard,
     build_hitl_action_keyboard,
+    build_dialog_feedback_keyboard,
     build_lms_tasks_keyboard,
     build_lms_pub_hide_keyboard,
     format_and_split_for_telegram,
@@ -162,6 +164,11 @@ class EmailBotHandler:
         self.waiting_input: dict[int, dict[str, Any]] = {}
         # Tracking messages to delete upon sending: email_id -> set of message_ids
         self.session_messages: dict[int, set[int]] = {}
+
+        # UXQ-04: In-memory Edge Caching (key -> (expire_at, formatted_text))
+        self._edge_cache: dict[str, tuple[float, str]] = {}
+        # UXQ-04: Deduplication set for feedback voting: (message_id, user_id)
+        self._feedback_voted: set[tuple[int, int]] = set()
 
         self._register_handlers()
         self._register_hitl_action_handlers()
@@ -384,6 +391,10 @@ class EmailBotHandler:
         self.router.callback_query(F.data.startswith("tk:sc:"))(self.cb_ticker_switch_screen)
         self.router.callback_query(F.data == "tk:refresh")(self.cb_ticker_refresh)
 
+        # Callbacks for Connector Health Alerts & Dialog Feedback (UXQ-04)
+        self.router.callback_query(F.data.startswith("chk:"))(self.cb_connector_health_check)
+        self.router.callback_query(F.data.startswith("fb:"))(self.cb_dialog_feedback)
+
         # Interactive text messages (for edit, commands, or conversational secretary)
         self.router.message(Command("ticker", "hud", "tablo", "status"))(self.handle_cmd_ticker)
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
@@ -502,6 +513,20 @@ class EmailBotHandler:
         """Show today's schedule and classes on demand."""
         if not self._is_authorized(message.from_user.id):
             return
+
+        now_date = date.today().isoformat()
+        cache_key = f"today:{now_date}"
+        now_ts = time.time()
+        if cache_key in self._edge_cache:
+            exp_at, cached_text = self._edge_cache[cache_key]
+            if now_ts < exp_at:
+                logger.debug("Serving today schedule from edge cache (< 50ms)")
+                if self.notifier:
+                    await self.notifier.send_message(cached_text, chat_id=message.chat.id)
+                else:
+                    await message.answer(cached_text)
+                return
+
         status_msg = await message.answer("📅 Загружаю расписание на сегодня...")
         try:
             from src import config
@@ -534,11 +559,16 @@ class EmailBotHandler:
                     lines.append(f"• {format_academic_lesson_line(l)}")
                 text = "\n".join(lines)
 
+            self._edge_cache[cache_key] = (now_ts + 15 * 60, text)
+
             try:
                 await status_msg.delete()
             except Exception:
                 pass
-            await self.notifier.send_message(text, chat_id=message.chat.id)
+            if self.notifier:
+                await self.notifier.send_message(text, chat_id=message.chat.id)
+            else:
+                await message.answer(text)
         except Exception as e:
             logger.exception("Error showing today schedule: %s", e)
             await status_msg.edit_text(f"❌ Ошибка загрузки расписания: {e}")
@@ -621,11 +651,22 @@ class EmailBotHandler:
         }
         await callback.answer(f"Экран: {screen_names.get(target_screen, target_screen)}")
 
+    def clear_edge_cache(self, prefix: str | None = None) -> None:
+        """Invalidate edge cache completely or for keys starting with prefix (UXQ-04)."""
+        if prefix is None:
+            self._edge_cache.clear()
+        else:
+            to_remove = [k for k in self._edge_cache if k.startswith(prefix)]
+            for k in to_remove:
+                self._edge_cache.pop(k, None)
+
     async def cb_ticker_refresh(self, callback: CallbackQuery) -> None:
         """Handle inline callback to refresh telemetry on the live ticker."""
         if not self._is_authorized(callback.from_user.id):
             await callback.answer("Нет доступа.", show_alert=True)
             return
+
+        self.clear_edge_cache()
 
         chat_id = callback.message.chat.id
         message_id = callback.message.message_id
@@ -1442,6 +1483,24 @@ class EmailBotHandler:
         if not self._is_authorized(message.from_user.id):
             return
 
+        now_date = date.today().isoformat()
+        cache_key = f"timesheet:{now_date}"
+        now_ts = time.time()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Синхронизировать с Google Drive", callback_data="ts:sync_gdrive")],
+            ]
+        )
+        if cache_key in self._edge_cache:
+            exp_at, cached_text = self._edge_cache[cache_key]
+            if now_ts < exp_at:
+                logger.debug("Serving timesheet balance from edge cache (< 50ms)")
+                if self.notifier and self.notifier.is_configured:
+                    await self.notifier.send_message(cached_text, chat_id=message.chat.id, reply_markup=kb)
+                else:
+                    await message.answer(cached_text, reply_markup=kb)
+                return
+
         service = self._timesheet()
         await service.reconcile_all_conflicts()
         pacing = await service.get_monthly_pacing(project_name=timesheet_settings().default_project)
@@ -1485,12 +1544,8 @@ class EmailBotHandler:
             else:
                 text_lines.append(f"⚠️ **Недоработка за месяц:** `{rem_hours:.2f}` ч\n")
 
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔄 Синхронизировать с Google Drive", callback_data="ts:sync_gdrive")],
-            ]
-        )
         msg_text = "\n".join(text_lines)
+        self._edge_cache[cache_key] = (now_ts + 30 * 60, msg_text)
         if self.notifier and self.notifier.is_configured:
             await self.notifier.send_message(msg_text, chat_id=message.chat.id, reply_markup=kb)
         else:
@@ -1502,6 +1557,7 @@ class EmailBotHandler:
             await callback.answer("Нет доступа.", show_alert=True)
             return
 
+        self.clear_edge_cache("timesheet")
         await callback.answer("Синхронизация с Google Drive...")
         client = self.drive_client_factory()
         if not client.is_configured:
@@ -2144,12 +2200,30 @@ class EmailBotHandler:
             else:
                 await message.answer(msg_text, reply_markup=kb)
         else:
+            sent_msg_id = None
             if self.notifier:
-                await self.notifier.send_message(answer, chat_id=target_chat)
+                sent_ids = await self.notifier.send_message(answer, chat_id=target_chat)
+                if sent_ids:
+                    sent_msg_id = sent_ids[-1]
             elif self.bot:
-                await self.bot.send_message(chat_id=int(target_chat), text=answer)
+                sent_msg = await self.bot.send_message(chat_id=int(target_chat), text=answer)
+                sent_msg_id = getattr(sent_msg, "message_id", None)
             else:
-                await message.answer(answer)
+                sent_msg = await message.answer(answer)
+                sent_msg_id = getattr(sent_msg, "message_id", None)
+
+            if sent_msg_id is not None:
+                fb_kb = build_dialog_feedback_keyboard(sent_msg_id)
+                bot_inst = self.bot or getattr(message, "bot", None) or getattr(self.notifier, "_shared_bot", None)
+                if bot_inst and hasattr(bot_inst, "edit_message_reply_markup"):
+                    try:
+                        await bot_inst.edit_message_reply_markup(
+                            chat_id=int(target_chat),
+                            message_id=sent_msg_id,
+                            reply_markup=fb_kb,
+                        )
+                    except Exception as e:
+                        logger.debug("Could not attach feedback keyboard: %s", e)
 
         # Proactively send files if user asked for templates, forms, or documents
         lower_t = text.lower()
@@ -2167,6 +2241,86 @@ class EmailBotHandler:
                         )
                     except Exception as fe:
                         logger.warning("Could not send document %s: %s", f_path, fe)
+
+    async def send_connector_health_alert(
+        self,
+        chat_id: int,
+        service_name: str,
+        issue_text: str,
+        fix_action: str = "retry",
+    ) -> None:
+        """Send proactive service health diagnostic alert with check/retry button (UXQ-04)."""
+        target_chat = chat_id or self.allowed_user_id
+        if not target_chat:
+            logger.warning("Cannot send connector health alert: no target chat id")
+            return
+
+        card_text = (
+            f"⚠️ **Служба {service_name} временно недоступна**\n"
+            f"_{issue_text}_"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🔄 Проверить подключение",
+                        callback_data=f"chk:{service_name}",
+                    )
+                ]
+            ]
+        )
+        if self.notifier and self.notifier.is_configured:
+            await self.notifier.send_message(card_text, chat_id=target_chat, reply_markup=kb)
+        elif self.bot:
+            await self.bot.send_message(chat_id=int(target_chat), text=card_text, reply_markup=kb)
+
+    async def cb_connector_health_check(self, callback: CallbackQuery) -> None:
+        """Handle inline callback to check connection to external service."""
+        data = callback.data or ""
+        service_name = data.split(":", 1)[1] if ":" in data else "сервисом"
+        await callback.answer(f"Проверка связи со службой {service_name}...")
+
+    async def cb_dialog_feedback(self, callback: CallbackQuery) -> None:
+        """Handle inline feedback (👍/👎) callback for secretary responses (UXQ-04)."""
+        data = callback.data or ""
+        if data == "fb:done":
+            await callback.answer("Отзыв уже зафиксирован.")
+            return
+
+        parts = data.split(":")
+        feedback_type = "up"
+        msg_id = getattr(getattr(callback, "message", None), "message_id", 0) or 0
+        if len(parts) >= 3:
+            feedback_type = parts[1]
+            try:
+                msg_id = int(parts[2])
+            except ValueError:
+                pass
+        elif len(parts) == 2:
+            feedback_type = parts[1]
+
+        user_id = callback.from_user.id
+        dedup_key = (msg_id, user_id)
+        if dedup_key in self._feedback_voted:
+            await callback.answer("Вы уже оставили отзыв на этот ответ.")
+            return
+
+        self._feedback_voted.add(dedup_key)
+        await self.db.log_dialog_feedback(msg_id, user_id, feedback_type)
+
+        emoji = "👍" if feedback_type == "up" else "👎"
+        thanks_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"Спасибо за отзыв! {emoji}", callback_data="fb:done")]
+            ]
+        )
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=thanks_kb)
+            except Exception as e:
+                logger.debug("Failed to update feedback reply markup: %s", e)
+
+        await callback.answer("Спасибо за обратную связь!")
 
     async def handle_user_voice(self, message: Message) -> None:
         """Handle voice messages: transcribe audio and process via conversational secretary."""

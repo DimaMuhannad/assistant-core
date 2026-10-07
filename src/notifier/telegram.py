@@ -150,6 +150,19 @@ def build_hitl_action_keyboard(conf_id: str, action_type: str) -> InlineKeyboard
     return InlineKeyboardMarkup(inline_keyboard=[[btn_confirm, btn_reject]])
 
 
+def build_dialog_feedback_keyboard(msg_id: int) -> InlineKeyboardMarkup:
+    """Builds inline keyboard with upvote/downvote feedback buttons for secretary responses (UXQ-04)."""
+    btn_up = InlineKeyboardButton(
+        text="👍 Полезно",
+        callback_data=f"fb:up:{msg_id}",
+    )
+    btn_down = InlineKeyboardButton(
+        text="👎 Неточно",
+        callback_data=f"fb:down:{msg_id}",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[btn_up, btn_down]])
+
+
 def format_hitl_proposal_card(action_type: str, params: dict[str, Any]) -> str:
     """Formats interactive HITL proposal card for Telegram in Russian with project styling (D-01)."""
     lines: list[str] = []
