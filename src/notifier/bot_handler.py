@@ -595,7 +595,9 @@ class EmailBotHandler:
             )
 
         if edited and stored:
-            await message.answer(full_text, reply_markup=markup)
+            new_msg = await message.answer(full_text, reply_markup=markup)
+            if new_msg:
+                await self.db.set_live_ticker(chat_id, new_msg.message_id, current_screen)
             return
 
         # If edit failed or ticker not yet stored, send a new one
@@ -629,6 +631,12 @@ class EmailBotHandler:
             await callback.answer("Нет доступа.", show_alert=True)
             return
 
+        # Immediate acknowledgement to extinguish the Telegram inline button loading spinner instantly
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+
         target_screen = callback.data.split(":")[-1]
         chat_id = callback.message.chat.id
         message_id = callback.message.message_id
@@ -642,14 +650,6 @@ class EmailBotHandler:
             text_markdown=full_text,
             reply_markup=markup,
         )
-
-        screen_names = {
-            "schedule": "🎓 Расписание пар",
-            "emails": "📬 Входящая почта",
-            "timesheet": f"⏱️ Табель {_get_comp_name()}",
-            "system": "🛡️ Статус систем",
-        }
-        await callback.answer(f"Экран: {screen_names.get(target_screen, target_screen)}")
 
     def clear_edge_cache(self, prefix: str | None = None) -> None:
         """Invalidate edge cache completely or for keys starting with prefix (UXQ-04)."""
@@ -665,6 +665,12 @@ class EmailBotHandler:
         if not self._is_authorized(callback.from_user.id):
             await callback.answer("Нет доступа.", show_alert=True)
             return
+
+        # Immediate acknowledgement to extinguish the Telegram inline button loading spinner instantly
+        try:
+            await callback.answer("⚡ Обновление табло...")
+        except Exception:
+            pass
 
         self.clear_edge_cache()
 
@@ -682,7 +688,6 @@ class EmailBotHandler:
             text_markdown=full_text,
             reply_markup=markup,
         )
-        await callback.answer("⚡ Данные табло обновлены!")
 
     async def setup_bot_commands(self, chat_id: int | None = None) -> None:
         """Register Telegram Bot commands menu."""
