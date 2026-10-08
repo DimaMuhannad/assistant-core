@@ -597,8 +597,10 @@ class EmailBotHandler:
 
         if edited and stored:
             new_msg = await message.answer(full_text, reply_markup=markup)
-            if new_msg:
-                await self.db.set_live_ticker(chat_id, new_msg.message_id, current_screen)
+            if new_msg and hasattr(new_msg, "message_id"):
+                msg_id = getattr(new_msg, "message_id", None)
+                if isinstance(msg_id, int):
+                    await self.db.set_live_ticker(chat_id, msg_id, current_screen)
             return
 
         # If edit failed or ticker not yet stored, send a new one
@@ -687,14 +689,16 @@ class EmailBotHandler:
         current_screen = stored["current_screen"] if stored else "schedule"
 
         # 1. Показываем промежуточный экран ожидания обновления
-        from src.notifier.live_ticker import build_ticker_keyboard
+        from src.notifier.live_ticker import build_ticker_keyboard, _get_univ_name, _get_comp_name
+        u_name = _get_univ_name()
+        c_name = _get_comp_name()
         loading_text = (
             "⏳ **ОБНОВЛЕНИЕ ДАННЫХ ТАБЛО...**\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "🔄 **Выполняется опрос источников:**\n"
-            "• 🎓 Проверка расписания занятий ГУАП\n"
+            f"• 🎓 Проверка расписания занятий {u_name}\n"
             "• 📬 Сбор и фильтрация входящей почты\n"
-            "• ⏱️ Синхронизация и расчет табеля «Тидекс»\n\n"
+            f"• ⏱️ Синхронизация и расчет табеля «{c_name}»\n\n"
             "⚠️ _Сбор данных может занять до 1 минуты. Пожалуйста, подождите..._"
         )
         loading_markup = build_ticker_keyboard(current_screen=current_screen, is_refreshing=True)
