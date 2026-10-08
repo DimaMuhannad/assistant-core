@@ -390,6 +390,7 @@ class EmailBotHandler:
         # Callbacks for Live HUD Ticker
         self.router.callback_query(F.data.startswith("tk:sc:"))(self.cb_ticker_switch_screen)
         self.router.callback_query(F.data == "tk:refresh")(self.cb_ticker_refresh)
+        self.router.callback_query(F.data == "noop")(self.cb_noop)
 
         # Callbacks for Connector Health Alerts & Dialog Feedback (UXQ-04)
         self.router.callback_query(F.data.startswith("chk:"))(self.cb_connector_health_check)
@@ -660,19 +661,24 @@ class EmailBotHandler:
             for k in to_remove:
                 self._edge_cache.pop(k, None)
 
+    async def cb_noop(self, callback: CallbackQuery) -> None:
+        """Handle no-op callback when an operation is already in progress."""
+        try:
+            await callback.answer("⏳ Обновление уже выполняется, пожалуйста, подождите...")
+        except Exception:
+            pass
+
     async def cb_ticker_refresh(self, callback: CallbackQuery) -> None:
-        """Handle inline callback to refresh telemetry on the live ticker."""
+        """Handle inline callback to refresh telemetry on the live ticker with visual loading feedback."""
         if not self._is_authorized(callback.from_user.id):
             await callback.answer("Нет доступа.", show_alert=True)
             return
 
         # Immediate acknowledgement to extinguish the Telegram inline button loading spinner instantly
         try:
-            await callback.answer("⚡ Обновление табло...")
+            await callback.answer("⏳ Запущен сбор свежих данных...")
         except Exception:
             pass
-
-        self.clear_edge_cache()
 
         chat_id = callback.message.chat.id
         message_id = callback.message.message_id
@@ -680,8 +686,36 @@ class EmailBotHandler:
         stored = await self.db.get_live_ticker(chat_id)
         current_screen = stored["current_screen"] if stored else "schedule"
 
-        full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
+        # 1. Показываем промежуточный экран ожидания обновления
+        from src.notifier.live_ticker import build_ticker_keyboard
+        loading_text = (
+            "⏳ **ОБНОВЛЕНИЕ ДАННЫХ ТАБЛО...**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔄 **Выполняется опрос источников:**\n"
+            "• 🎓 Проверка расписания занятий ГУАП\n"
+            "• 📬 Сбор и фильтрация входящей почты\n"
+            "• ⏱️ Синхронизация и расчет табеля «Тидекс»\n\n"
+            "⚠️ _Сбор данных может занять до 1 минуты. Пожалуйста, подождите..._"
+        )
+        loading_markup = build_ticker_keyboard(current_screen=current_screen, is_refreshing=True)
 
+        await self.notifier.edit_rich_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            text_markdown=loading_text,
+            reply_markup=loading_markup,
+        )
+
+        # 2. Очищаем кэш и собираем свежие метрики
+        self.clear_edge_cache()
+
+        try:
+            full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
+        except Exception as e:
+            logger.exception("Error gathering ticker telemetry during refresh: %s", e)
+            full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
+
+        # 3. Возвращаем обновленное табло с сохраненным экраном
         await self.notifier.edit_rich_message(
             chat_id=chat_id,
             message_id=message_id,

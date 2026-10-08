@@ -60,13 +60,19 @@ def _get_univ_name() -> str:
         return "Университет"
 
 
-def build_ticker_keyboard(current_screen: str) -> InlineKeyboardMarkup:
+def build_ticker_keyboard(current_screen: str, is_refreshing: bool = False) -> InlineKeyboardMarkup:
     """Builds inline navigation keyboard with the active screen highlighted."""
     c_name = _get_comp_name()
     sc_sched = "• 🎓 Пары •" if current_screen == SCREEN_SCHEDULE else "🎓 Пары"
     sc_mail = "• 📬 Почта •" if current_screen == SCREEN_EMAILS else "📬 Почта"
     sc_time = f"• ⏱️ {c_name} •" if current_screen == SCREEN_TIMESHEET else f"⏱️ {c_name}"
     sc_sys = "• 🛡️ Статус •" if current_screen == SCREEN_SYSTEM else "🛡️ Статус"
+
+    refresh_btn = (
+        InlineKeyboardButton(text="⏳ Идёт сбор данных...", callback_data="noop")
+        if is_refreshing
+        else InlineKeyboardButton(text="🔄 Обновить табло", callback_data="tk:refresh")
+    )
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -79,7 +85,7 @@ def build_ticker_keyboard(current_screen: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=sc_sys, callback_data=f"tk:sc:{SCREEN_SYSTEM}"),
             ],
             [
-                InlineKeyboardButton(text="🔄 Обновить табло", callback_data="tk:refresh"),
+                refresh_btn,
             ],
         ]
     )

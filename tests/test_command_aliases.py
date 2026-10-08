@@ -397,3 +397,62 @@ async def test_secretary_dialog_feedback_attachment(tmp_path):
         assert edit_kwargs["reply_markup"].inline_keyboard[0][1].callback_data == "fb:down:6789"
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_ticker_refresh_loading_screen_and_restore(tmp_path):
+    """Test that cb_ticker_refresh shows interim loading screen and restores active screen."""
+    from src.notifier.bot_handler import EmailBotHandler
+    from src.notifier.live_ticker import build_ticker_keyboard
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        user_id = 12345
+        chat_id = 12345
+        msg_id = 999
+
+        # Set live ticker with 'system' screen
+        await db.set_live_ticker(chat_id=chat_id, message_id=msg_id, current_screen="system")
+
+        mock_notifier = MagicMock()
+        mock_notifier.edit_rich_message = AsyncMock(return_value=True)
+
+        handler = EmailBotHandler(
+            db=db,
+            allowed_user_id=user_id,
+            notifier=mock_notifier,
+        )
+
+        handler.ticker_service.build_ticker_message = AsyncMock(
+            return_value=("⚡ Свежее табло | ⏱️ Норма OK", build_ticker_keyboard("system"))
+        )
+
+        cb_refresh = _make_mock_callback(user_id=user_id, message_id=msg_id, data="tk:refresh")
+        await handler.cb_ticker_refresh(cb_refresh)
+
+        # 1. Check callback answered immediately
+        cb_refresh.answer.assert_called_once()
+
+        # 2. Check edit_rich_message was called twice:
+        # First call: interim loading text with is_refreshing=True
+        # Second call: final refreshed text
+        assert mock_notifier.edit_rich_message.call_count == 2
+        first_call = mock_notifier.edit_rich_message.call_args_list[0]
+        assert "ОБНОВЛЕНИЕ ДАННЫХ ТАБЛО" in first_call.kwargs["text_markdown"]
+        # Button should be noop
+        assert first_call.kwargs["reply_markup"].inline_keyboard[2][0].callback_data == "noop"
+
+        second_call = mock_notifier.edit_rich_message.call_args_list[1]
+        assert "Свежее табло" in second_call.kwargs["text_markdown"]
+        # Screen preserved as 'system'
+        assert "• 🛡️ Статус •" in second_call.kwargs["reply_markup"].inline_keyboard[1][1].text
+
+        # 3. Test cb_noop
+        cb_noop = _make_mock_callback(user_id=user_id, message_id=msg_id, data="noop")
+        await handler.cb_noop(cb_noop)
+        cb_noop.answer.assert_called_once()
+        assert "уже выполняется" in cb_noop.answer.call_args[0][0]
+    finally:
+        await db.close()
+
