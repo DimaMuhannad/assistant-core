@@ -240,7 +240,17 @@ class CommandRegistry:
         ]
 
     async def resolve_command_or_alias(self, text: str) -> str | None:
-        """Resolve incoming text / alias to a canonical command name."""
+        """Resolve incoming text / alias to a canonical command name.
+
+        Strict UX rule (Issue #46):
+        - Direct slash command (starts with '/'): match first word against aliases/commands.
+          e.g. '/лабы', '/лабы список', '/timesheet' -> instant fast-path.
+        - Exact single-word alias (no spaces): match against aliases/commands.
+          e.g. 'лабы', 'пары', 'табель' -> instant fast-path.
+        - Multi-word text without leading '/': do NOT hijack via fast-path!
+          e.g. 'лабы проверить запиши в календарь' -> returns None, delegating
+          to full semantic routing.
+        """
         if not text:
             return None
 
@@ -248,16 +258,25 @@ class CommandRegistry:
         if not raw:
             return None
 
+        has_leading_slash = raw.startswith("/")
         cleaned = raw.lstrip("/")
         parts = cleaned.split()
         if not parts:
             return None
+
+        # UX rule (Issue #46):
+        # If there is no leading slash and the message has multiple words,
+        # do NOT hijack the message via alias fast-path!
+        # Delegate to semantic analysis instead.
+        if not has_leading_slash and len(parts) > 1:
+            return None
+
         word = parts[0]
 
         # 1. Check custom aliases from SQLite
         custom_aliases = await self.db.get_custom_aliases()
         normalized_custom = {k.strip().lower().lstrip("/"): v for k, v in custom_aliases.items()}
-        target_cmd = normalized_custom.get(cleaned) or normalized_custom.get(word)
+        target_cmd = normalized_custom.get(word)
         if target_cmd:
             active_commands = await self.get_active_commands()
             active_names = {c.name for c in active_commands}
@@ -267,10 +286,10 @@ class CommandRegistry:
         # 2. Check active commands and default aliases
         active_commands = await self.get_active_commands()
         for cmd in active_commands:
-            if cleaned == cmd.name or word == cmd.name:
+            if word == cmd.name:
                 return cmd.name
             normalized_aliases = [a.strip().lower().lstrip("/") for a in cmd.default_aliases]
-            if cleaned in normalized_aliases or word in normalized_aliases:
+            if word in normalized_aliases:
                 return cmd.name
 
         return None

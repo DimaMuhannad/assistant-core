@@ -216,6 +216,29 @@ class FastIntentRouter:
             await self._audit(user_id, cleaned, res)
             return res
 
+        # Slash command prefixes for planning & reminders (Issue #46)
+        if lower.startswith(("/напомни", "/remind", "/напоминание")):
+            res = IntentResult(
+                action="create_reminder",
+                confidence=1.0,
+                reason="Детерминированный префикс напоминания",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
+        if lower.startswith(("/календарь", "/calendar", "/событие")):
+            res = IntentResult(
+                action="calendar_schedule",
+                confidence=1.0,
+                reason="Детерминированный префикс календаря",
+                model="fast-rule",
+                latency_ms=0.0,
+            )
+            await self._audit(user_id, cleaned, res)
+            return res
+
         cal_phrases = ("запиши в календарь", "добавь в календарь", "запланируй встречу")
         if any(p in lower for p in cal_phrases):
             res = IntentResult(

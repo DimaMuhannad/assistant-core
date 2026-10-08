@@ -455,3 +455,56 @@ async def test_ticker_refresh_loading_screen_and_restore(tmp_path):
     finally:
         await db.close()
 
+
+@pytest.mark.asyncio
+async def test_prefix_vs_free_text_routing(tmp_path):
+    """Test strict separation of slash prefixes vs free-text semantic routing (Issue #46).
+
+    - '/лабы' or 'лабы' (single-word) triggers fast-path 'lms'.
+    - '/лабы 1' (slash prefix with args) triggers fast-path 'lms'.
+    - 'лабы проверить запиши в календарь на завтра' (multi-word, no leading slash)
+      is NOT hijacked to 'lms', but correctly routes to 'calendar_schedule'.
+    - '/напомни ...' and '/календарь ...' trigger deterministic fast-path.
+    """
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.init_db()
+    try:
+        registry = CommandRegistry(db=db)
+        router = FastIntentRouter(db=db, command_registry=registry)
+
+        await db.set_custom_alias("лабы", "lms")
+
+        # 1. Exact single-word alias
+        res1 = await router.route(user_id=1, message_text="лабы")
+        assert res1.action == "lms"
+        assert res1.model == "fast-rule"
+
+        # 2. Leading slash alias
+        res2 = await router.route(user_id=1, message_text="/лабы")
+        assert res2.action == "lms"
+        assert res2.model == "fast-rule"
+
+        # 3. Leading slash with arguments
+        res3 = await router.route(user_id=1, message_text="/лабы отчеты")
+        assert res3.action == "lms"
+        assert res3.model == "fast-rule"
+
+        # 4. Multi-word sentence without slash must NOT be hijacked to lms!
+        # It must resolve via calendar intent or full semantic parsing.
+        res4 = await router.route(user_id=1, message_text="лабы проверить запиши в календарь на завтра")
+        assert res4.action == "calendar_schedule"
+        assert res4.action != "lms"
+
+        # 5. Direct prefix for reminders
+        res5 = await router.route(user_id=1, message_text="/напомни проверить отчеты студентов")
+        assert res5.action == "create_reminder"
+        assert res5.model == "fast-rule"
+
+        # 6. Direct prefix for calendar
+        res6 = await router.route(user_id=1, message_text="/календарь консультация в 15:00")
+        assert res6.action == "calendar_schedule"
+        assert res6.model == "fast-rule"
+    finally:
+        await db.close()
+
+
