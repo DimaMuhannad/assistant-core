@@ -423,6 +423,7 @@ async def test_ticker_refresh_loading_screen_and_restore(tmp_path):
             allowed_user_id=user_id,
             notifier=mock_notifier,
         )
+        handler._refresh_pause_seconds = 0.01
 
         handler.ticker_service.build_ticker_message = AsyncMock(
             return_value=("⚡ Свежее табло | ⏱️ Норма OK", build_ticker_keyboard("system"))
@@ -434,19 +435,17 @@ async def test_ticker_refresh_loading_screen_and_restore(tmp_path):
         # 1. Check callback answered immediately
         cb_refresh.answer.assert_called_once()
 
-        # 2. Check edit_rich_message was called twice:
-        # First call: interim loading text with is_refreshing=True
-        # Second call: final refreshed text
-        assert mock_notifier.edit_rich_message.call_count == 2
+        # 2. Check edit_rich_message was called for progress steps and final restore:
+        assert mock_notifier.edit_rich_message.call_count >= 5
         first_call = mock_notifier.edit_rich_message.call_args_list[0]
-        assert "ОБНОВЛЕНИЕ ДАННЫХ ТАБЛО" in first_call.kwargs["text_markdown"]
+        assert "СБОР ДАННЫХ И ОБНОВЛЕНИЕ ТАБЛО" in first_call.kwargs["text_markdown"]
         # Button should be noop
         assert first_call.kwargs["reply_markup"].inline_keyboard[2][0].callback_data == "noop"
 
-        second_call = mock_notifier.edit_rich_message.call_args_list[1]
-        assert "Свежее табло" in second_call.kwargs["text_markdown"]
+        last_call = mock_notifier.edit_rich_message.call_args_list[-1]
+        assert "Свежее табло" in last_call.kwargs["text_markdown"]
         # Screen preserved as 'system'
-        assert "• 🛡️ Статус •" in second_call.kwargs["reply_markup"].inline_keyboard[1][1].text
+        assert "• 🛡️ Статус •" in last_call.kwargs["reply_markup"].inline_keyboard[1][1].text
 
         # 3. Test cb_noop
         cb_noop = _make_mock_callback(user_id=user_id, message_id=msg_id, data="noop")

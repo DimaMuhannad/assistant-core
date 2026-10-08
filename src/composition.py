@@ -112,3 +112,17 @@ def default_git_source_provider() -> BaseGitSourceProvider | None:
 
     return SshGitProvider()
 
+
+def default_schedule_parser(base_url: str | None = None, timeout_seconds: float = 10.0) -> Any:
+    """Собрать парсер расписания по умолчанию."""
+    from src.parser.schedule_parser import ScheduleParser
+
+    return ScheduleParser(base_url=base_url or schedule_site_url(), timeout_seconds=timeout_seconds)
+
+
+def default_email_collector(db: Any) -> Any:
+    """Собрать сборщик почты по умолчанию."""
+    from src.collector.email_collector import EmailCollector
+
+    return EmailCollector(db=db)
+

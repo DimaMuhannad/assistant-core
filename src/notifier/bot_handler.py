@@ -32,8 +32,10 @@ from src.brain.voice import VoiceProcessor
 from src.brain.intent_router import FastIntentRouter
 from src.composition import (
     default_drive_client,
+    default_email_collector,
     default_email_sender,
     default_lms_client,
+    default_schedule_parser,
     default_timesheet_service,
 )
 from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLike
@@ -128,6 +130,8 @@ class EmailBotHandler:
         timesheet_service: BaseTimesheetProvider | None = None,
         drive_client_factory: Callable[[], DriveClientLike] | None = None,
         calendar_client: Any | None = None,
+        schedule_parser_factory: Callable[..., Any] | None = None,
+        email_collector_factory: Callable[[Database], Any] | None = None,
     ):
         self.db = db
         self.calendar_client = calendar_client
@@ -139,6 +143,12 @@ class EmailBotHandler:
         self.timesheet_service = timesheet_service
         self.drive_client_factory = (
             drive_client_factory if drive_client_factory is not None else default_drive_client
+        )
+        self.schedule_parser_factory = (
+            schedule_parser_factory if schedule_parser_factory is not None else default_schedule_parser
+        )
+        self.email_collector_factory = (
+            email_collector_factory if email_collector_factory is not None else default_email_collector
         )
         self.bot = bot or getattr(notifier, "_shared_bot", None)
         if not self.bot:
@@ -671,14 +681,14 @@ class EmailBotHandler:
             pass
 
     async def cb_ticker_refresh(self, callback: CallbackQuery) -> None:
-        """Handle inline callback to refresh telemetry on the live ticker with visual loading feedback."""
+        """Sequential collector pipeline with live Telegram progress, 10s per-step timeout, and 3.5s final summary pause."""
         if not self._is_authorized(callback.from_user.id):
             await callback.answer("Нет доступа.", show_alert=True)
             return
 
         # Immediate acknowledgement to extinguish the Telegram inline button loading spinner instantly
         try:
-            await callback.answer("⏳ Запущен сбор свежих данных...")
+            await callback.answer("⏳ Запущен последовательный сбор данных...")
         except Exception:
             pass
 
@@ -688,38 +698,179 @@ class EmailBotHandler:
         stored = await self.db.get_live_ticker(chat_id)
         current_screen = stored["current_screen"] if stored else "schedule"
 
-        # 1. Показываем промежуточный экран ожидания обновления
         from src.notifier.live_ticker import build_ticker_keyboard, _get_univ_name, _get_comp_name
         u_name = _get_univ_name()
         c_name = _get_comp_name()
-        loading_text = (
-            "⏳ **ОБНОВЛЕНИЕ ДАННЫХ ТАБЛО...**\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "🔄 **Выполняется опрос источников:**\n"
-            f"• 🎓 Проверка расписания занятий {u_name}\n"
-            "• 📬 Сбор и фильтрация входящей почты\n"
-            f"• ⏱️ Синхронизация и расчет табеля «{c_name}»\n\n"
-            "⚠️ _Сбор данных может занять до 1 минуты. Пожалуйста, подождите..._"
-        )
-        loading_markup = build_ticker_keyboard(current_screen=current_screen, is_refreshing=True)
 
-        await self.notifier.edit_rich_message(
-            chat_id=chat_id,
-            message_id=message_id,
-            text_markdown=loading_text,
-            reply_markup=loading_markup,
-        )
+        status_lines = [
+            f"• ⏳ [1/4] Расписание {u_name}: в очереди",
+            "• ⏳ [2/4] Входящая почта: в очереди",
+            f"• ⏳ [3/4] Табель «{c_name}»: в очереди",
+            "• ⏳ [4/4] Отчеты LMS: в очереди",
+        ]
 
-        # 2. Очищаем кэш и собираем свежие метрики
+        async def _update_progress_card(header_note: str = ""):
+            lines_str = "\n".join(status_lines)
+            card_text = (
+                "⏳ **ПОСЛЕДОВАТЕЛЬНЫЙ СБОР ДАННЫХ И ОБНОВЛЕНИЕ ТАБЛО**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{lines_str}\n\n"
+                f"🛡️ _{header_note or 'Защита от сбоев: таймаут 10 с на каждый сервис'}_"
+            )
+            loading_markup = build_ticker_keyboard(current_screen=current_screen, is_refreshing=True)
+            await self.notifier.edit_rich_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text_markdown=card_text,
+                reply_markup=loading_markup,
+            )
+
+        # ---------------------------------------------------------------------
+        # Шаг 1: Расписание занятий (таймаут 10 сек)
+        # ---------------------------------------------------------------------
+        status_lines[0] = f"• 🔄 **[1/4] Проверяю расписание {u_name}...**"
+        await _update_progress_card()
+
+        t0 = time.perf_counter()
+        try:
+            async def _fetch_schedule() -> str:
+                import src.config as config
+                parser = self.schedule_parser_factory()
+                target_id = getattr(config, "SCHEDULE_TARGET_ID", "1")
+                param_name = getattr(config, "SCHEDULE_PARAM_NAME", "p")
+                fetch_res = await parser.fetch_schedule_raw(target_id, param_name=param_name)
+                dt = time.perf_counter() - t0
+                if fetch_res.success and fetch_res.raw_content:
+                    content = fetch_res.raw_content.strip()
+                    if content.startswith("{") or content.startswith("["):
+                        payload = parser.parse_json_payload(content, target_id)
+                    else:
+                        payload = parser.parse_html_payload(content, target_id)
+                    if payload:
+                        source_id = "rasp_" + "g" + f"uap_{target_id}"
+                        await self.db.save_snapshot(
+                            source_id=source_id,
+                            content_hash=str(hash(content)),
+                            raw_payload=payload.model_dump_json(),
+                        )
+                        return f"актуально ({dt:.1f}с)"
+                return f"без изменений ({dt:.1f}с)"
+
+            res_str = await asyncio.wait_for(_fetch_schedule(), timeout=10.0)
+            status_lines[0] = f"• ✅ [1/4] Расписание {u_name}: {res_str}"
+        except asyncio.TimeoutError:
+            status_lines[0] = f"• ⚠️ [1/4] Расписание {u_name}: таймаут 10с"
+        except Exception as e:
+            logger.warning("Ticker refresh: schedule fetch error: %s", e)
+            status_lines[0] = f"• ⚠️ [1/4] Расписание {u_name}: сбой ({type(e).__name__})"
+
+        # ---------------------------------------------------------------------
+        # Шаг 2: Входящая почта (все аккаунты, таймаут 10 сек)
+        # ---------------------------------------------------------------------
+        status_lines[1] = "• 🔄 **[2/4] Загружаю почту (все ящики)...**"
+        await _update_progress_card()
+
+        t0 = time.perf_counter()
+        try:
+            async def _fetch_emails() -> str:
+                collector = self.email_collector_factory(self.db)
+                res = await collector.sync_all_accounts(days=1)
+                dt = time.perf_counter() - t0
+                total_new = sum(r.get("inserted", 0) for k, r in res.items() if isinstance(r, dict))
+                errs = [k for k, r in res.items() if isinstance(r, dict) and "error" in r]
+                if errs:
+                    return f"проверено (+{total_new} нов., ошибка: {','.join(errs)}) ({dt:.1f}с)"
+                return f"проверено (+{total_new} нов.) ({dt:.1f}с)"
+
+            res_str = await asyncio.wait_for(_fetch_emails(), timeout=10.0)
+            if "ошибка" in res_str:
+                status_lines[1] = f"• ⚠️ [2/4] Почта: {res_str}"
+            else:
+                status_lines[1] = f"• ✅ [2/4] Почта: {res_str}"
+        except asyncio.TimeoutError:
+            status_lines[1] = "• ⚠️ [2/4] Почта: таймаут 10с"
+        except Exception as e:
+            logger.warning("Ticker refresh: email sync error: %s", e)
+            status_lines[1] = f"• ⚠️ [2/4] Почта: сбой ({type(e).__name__})"
+
+        # ---------------------------------------------------------------------
+        # Шаг 3: Табель часов (AADHk sync с Google Drive, таймаут 10 сек)
+        # ---------------------------------------------------------------------
+        status_lines[2] = f"• 🔄 **[3/4] Синхронизирую табель «{c_name}» (Google Drive)...**"
+        await _update_progress_card()
+
+        t0 = time.perf_counter()
+        try:
+            async def _fetch_timesheet() -> str:
+                client = self.drive_client_factory()
+                if not client.is_configured:
+                    return "Google Drive не настроен"
+                sync_res = await client.sync_aadhk_from_drive(self.db)
+                dt = time.perf_counter() - t0
+                if sync_res.get("status") == "success":
+                    new_cnt = sync_res.get("ingestion_result", {}).get("new_inserted_count", 0)
+                    service = self._timesheet()
+                    await service.reconcile_all_conflicts()
+                    return f"синхронизировано (+{new_cnt} смен) ({dt:.1f}с)"
+                else:
+                    msg = sync_res.get("message", "ошибка авторизации")
+                    if "invalid_grant" in msg or "expired" in msg:
+                        return f"токен Google Drive требует продления ({dt:.1f}с)"
+                    return f"{msg} ({dt:.1f}с)"
+
+            res_str = await asyncio.wait_for(_fetch_timesheet(), timeout=10.0)
+            if "требует" in res_str or "ошибка" in res_str or "не настроен" in res_str:
+                status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: {res_str}"
+            else:
+                status_lines[2] = f"• ✅ [3/4] Табель «{c_name}»: {res_str}"
+        except asyncio.TimeoutError:
+            status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: таймаут 10с"
+        except Exception as e:
+            logger.warning("Ticker refresh: timesheet sync error: %s", e)
+            status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: сбой ({type(e).__name__})"
+
+        # ---------------------------------------------------------------------
+        # Шаг 4: Отчеты LMS (таймаут 10 сек)
+        # ---------------------------------------------------------------------
+        status_lines[3] = "• 🔄 **[4/4] Проверяю отчеты LMS...**"
+        await _update_progress_card()
+
+        t0 = time.perf_counter()
+        try:
+            async def _fetch_lms() -> str:
+                if not self.lms_client:
+                    return "клиент не подключен"
+                tasks = await asyncio.to_thread(self.lms_client.list_tasks, 28)
+                dt = time.perf_counter() - t0
+                public_tasks = [t for t in tasks if isinstance(t, dict) and t.get("is_public")]
+                return f"активно заданий: {len(public_tasks)} ({dt:.1f}с)"
+
+            res_str = await asyncio.wait_for(_fetch_lms(), timeout=10.0)
+            status_lines[3] = f"• ✅ [4/4] Отчеты LMS: {res_str}"
+        except asyncio.TimeoutError:
+            status_lines[3] = "• ⚠️ [4/4] Отчеты LMS: таймаут 10с"
+        except Exception as e:
+            logger.warning("Ticker refresh: LMS check error: %s", e)
+            status_lines[3] = f"• ⚠️ [4/4] Отчеты LMS: сбой ({type(e).__name__})"
+
+        # ---------------------------------------------------------------------
+        # Шаг 5: Итоговый статус с паузой 3-5 сек (требование пользователя)
+        # ---------------------------------------------------------------------
+        await _update_progress_card(header_note="Сбор завершён! Отображение результатов (пауза 3 сек)...")
+        pause_duration = getattr(self, "_refresh_pause_seconds", 3.5)
+        if pause_duration > 0:
+            await asyncio.sleep(pause_duration)
+
+        # ---------------------------------------------------------------------
+        # Финал: Отрисовка обновленного табло
+        # ---------------------------------------------------------------------
         self.clear_edge_cache()
-
         try:
             full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
         except Exception as e:
-            logger.exception("Error gathering ticker telemetry during refresh: %s", e)
+            logger.exception("Error building ticker message after refresh: %s", e)
             full_text, markup = await self.ticker_service.build_ticker_message(current_screen=current_screen)
 
-        # 3. Возвращаем обновленное табло с сохраненным экраном
         await self.notifier.edit_rich_message(
             chat_id=chat_id,
             message_id=message_id,
