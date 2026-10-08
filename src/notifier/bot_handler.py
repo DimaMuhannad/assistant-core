@@ -779,11 +779,18 @@ class EmailBotHandler:
                 total_new = sum(r.get("inserted", 0) for k, r in res.items() if isinstance(r, dict))
                 errs = [k for k, r in res.items() if isinstance(r, dict) and "error" in r]
                 if errs:
-                    return f"проверено (+{total_new} нов., ошибка: {','.join(errs)}) ({dt:.1f}с)"
+                    err_details = []
+                    for k in errs:
+                        err_str = str(res[k].get("error", ""))
+                        if "invalid_grant" in err_str or "expired" in err_str or "RefreshError" in err_str:
+                            err_details.append(f"{k}: токен требует продления")
+                        else:
+                            err_details.append(k)
+                    return f"проверено (+{total_new} нов., {'; '.join(err_details)}) ({dt:.1f}с)"
                 return f"проверено (+{total_new} нов.) ({dt:.1f}с)"
 
             res_str = await asyncio.wait_for(_fetch_emails(), timeout=10.0)
-            if "ошибка" in res_str:
+            if "ошибка" in res_str or "требует" in res_str:
                 status_lines[1] = f"• ⚠️ [2/4] Почта: {res_str}"
             else:
                 status_lines[1] = f"• ✅ [2/4] Почта: {res_str}"
@@ -827,7 +834,10 @@ class EmailBotHandler:
             status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: таймаут 10с"
         except Exception as e:
             logger.warning("Ticker refresh: timesheet sync error: %s", e)
-            status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: сбой ({type(e).__name__})"
+            if "RefreshError" in type(e).__name__ or "invalid_grant" in str(e) or "expired" in str(e):
+                status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: токен Google Drive требует продления"
+            else:
+                status_lines[2] = f"• ⚠️ [3/4] Табель «{c_name}»: сбой ({type(e).__name__})"
 
         # ---------------------------------------------------------------------
         # Шаг 4: Отчеты LMS (таймаут 10 сек)
