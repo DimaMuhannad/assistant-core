@@ -126,6 +126,15 @@ def core_pytest_env(db_override: Path) -> dict[str, str]:
     return {"ASSISTANT_DB_PATH_OVERRIDE": str(db_override), "PYTEST_ADDOPTS": ""}
 
 
+def shared_pytest_env() -> dict[str, str]:
+    """Окружение для pytest assistant-shared: набор не сужается, подмены БД нет.
+
+    Тесты shared работают на временных БД и сами боевую БД не знают; пустой PYTEST_ADDOPTS
+    не даёт окружению вызывающего сузить набор тестов (T-01-14).
+    """
+    return {"PYTEST_ADDOPTS": ""}
+
+
 def _testsuites(junit_xml: Path) -> list[ET.Element]:
     root = ET.parse(junit_xml).getroot()
     if root.tag == "testsuite":
@@ -500,6 +509,38 @@ def persona_drift_check(chat_copy: Path, core_copy: Path, name: str) -> CheckRes
     return CheckResult(REPO_CORE, name, True)
 
 
+def hook_installed_check(repo: str, repo_dir: Path) -> CheckResult:
+    """pre-commit hook репозитория установлен: core.hooksPath = .githooks и файл исполняемый (D-04).
+
+    Любой сбой (нет каталога, нет git, таймаут) даёт красную строку, а не исключение.
+    """
+    name = "pre-commit hook установлен"
+    advice = "выполните scripts/install_hooks.sh в репозитории"
+    try:
+        if not repo_dir.is_dir():
+            return CheckResult(repo, name, False, f"нет каталога репозитория: {repo_dir}\n{advice}")
+        proc = run_cmd(
+            ["git", "-C", str(repo_dir), "config", "--get", "core.hooksPath"], repo_dir, timeout=30
+        )
+        configured = proc.stdout.strip()
+        if proc.returncode != 0 or not configured:
+            return CheckResult(repo, name, False, f"core.hooksPath не задан\n{advice}")
+        if configured != ".githooks":
+            return CheckResult(
+                repo, name, False, f"core.hooksPath = {configured}, ожидается .githooks\n{advice}"
+            )
+        hook = repo_dir / ".githooks" / "pre-commit"
+        if not hook.is_file():
+            return CheckResult(repo, name, False, f"нет файла .githooks/pre-commit\n{advice}")
+        if not os.access(hook, os.X_OK):
+            return CheckResult(repo, name, False, f".githooks/pre-commit не исполняемый\n{advice}")
+    except Exception as exc:  # нет git, таймаут, ошибка ОС - красная строка (fail-closed)
+        return CheckResult(
+            repo, name, False, f"не удалось проверить hook: {_exc_text(exc)}\n{advice}"
+        )
+    return CheckResult(repo, name, True)
+
+
 def overall_green(results: list[CheckResult]) -> bool:
     """Пустой список результатов - красный: гейт без проверок ничего не доказывает."""
     return bool(results) and all(result.ok for result in results)
@@ -540,6 +581,13 @@ def _safe_shield_step(repo: str, repo_dir: Path) -> CheckResult:
         return CheckResult(repo, "security_shield (--all)", False, f"сбой шага: {_exc_text(exc)}")
 
 
+def _safe_hook_step(repo: str, repo_dir: Path) -> CheckResult:
+    try:
+        return hook_installed_check(repo, repo_dir)
+    except Exception as exc:  # неожиданный сбой шага - красная строка, не трассировка
+        return CheckResult(repo, "pre-commit hook установлен", False, f"сбой шага: {_exc_text(exc)}")
+
+
 def _safe_lint_step(repo: str, **kwargs) -> CheckResult:
     try:
         return run_lint_imports_step(repo=repo, **kwargs)
@@ -578,6 +626,21 @@ def _run_all(save_dir: Path | None) -> list[CheckResult]:
         results.append(
             persona_drift_check(CHAT_TOKENS, CORE_TOKENS, "токены персоны (дрейф SHA-256)")
         )
+        results.append(_safe_hook_step(REPO_CORE, CORE_DIR))
+        # assistant-shared: тесты интерпретатором core .venv (D-03), shield отдельной строкой (D-05)
+        results.append(
+            _safe_pytest_step(
+                REPO_SHARED,
+                pytest_bin=CORE_VENV_BIN / "pytest",
+                target="tests",
+                cwd=SHARED_DIR,
+                env_extra=shared_pytest_env(),
+                tmp_dir=tmp_dir,
+                save_dir=save_dir,
+            )
+        )
+        results.append(_safe_shield_step(REPO_SHARED, SHARED_DIR))
+        results.append(_safe_hook_step(REPO_SHARED, SHARED_DIR))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     return results

@@ -697,8 +697,16 @@ def test_run_all_measures_hash_after_pytest_core_and_before_other_rows(monkeypat
         "persona_drift_check",
         lambda a, b, name: events.append("drift") or CheckResult("assistant-core", name, True),
     )
+    monkeypatch.setattr(
+        gate,
+        "_safe_hook_step",
+        lambda repo, repo_dir: events.append("hook") or CheckResult(repo, "hook", True),
+    )
     results = gate._run_all(None)
-    assert events == ["hash", "pytest", "hash", "lint", "shield", "drift", "drift"]
+    assert events == [
+        "hash", "pytest", "hash", "lint", "shield", "drift", "drift", "hook",
+        "pytest", "shield", "hook",
+    ]  # fmt: skip
     names = [r.name for r in results]
     assert names.index("боевая assistant.db не изменена") == names.index("pytest") + 1
 
@@ -708,10 +716,14 @@ def test_run_all_isolates_pytest_db_and_removes_temp_dir(monkeypatch):
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
 
     def fake_pytest(repo, **kw):
-        seen.update(kw)
+        if repo == gate.REPO_CORE:
+            seen.update(kw)
         return CheckResult(repo, "pytest", True)
 
     monkeypatch.setattr(gate, "_safe_pytest_step", fake_pytest)
+    monkeypatch.setattr(
+        gate, "_safe_hook_step", lambda repo, repo_dir: CheckResult(repo, "hook", True)
+    )
     monkeypatch.setattr(gate, "_safe_lint_step", lambda repo, **kw: CheckResult(repo, "lint", True))
     monkeypatch.setattr(
         gate, "_safe_shield_step", lambda repo, repo_dir: CheckResult(repo, "shield", True)
@@ -1041,3 +1053,207 @@ def test_gate_source_never_prints_or_stores_raw_shield_stdout():
     for node in ast.walk(func):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "CheckResult":
             assert "proc.stdout" not in ast.unparse(node)
+
+
+# ============ Plan 01-05 Task 1: строки assistant-shared и проверка hook ============
+
+HOOK_NAME = "pre-commit hook установлен"
+
+
+def _git_repo(tmp_path, hooks_path=".githooks", hook_mode=0o755, hook_exists=True):
+    """Временный git-репозиторий с настраиваемым core.hooksPath и файлом hook."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    if hooks_path is not None:
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "core.hooksPath", hooks_path], check=True
+        )
+    if hook_exists:
+        hook = repo / ".githooks" / "pre-commit"
+        hook.parent.mkdir()
+        hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        hook.chmod(hook_mode)
+    return repo
+
+
+def test_shared_pytest_env_clears_addopts_and_has_no_db_override():
+    env = gate.shared_pytest_env()
+    assert env == {"PYTEST_ADDOPTS": ""}
+    assert "ASSISTANT_DB_PATH_OVERRIDE" not in env
+
+
+def test_hook_installed_check_green_with_hookspath_and_executable_hook(tmp_path):
+    result = gate.hook_installed_check("assistant-shared", _git_repo(tmp_path))
+    assert result.ok is True
+    assert result.repo == "assistant-shared"
+    assert result.name == HOOK_NAME
+
+
+def test_hook_installed_check_red_without_hookspath_mentions_installer(tmp_path):
+    result = gate.hook_installed_check("assistant-core", _git_repo(tmp_path, hooks_path=None))
+    assert result.ok is False
+    assert result.name == HOOK_NAME
+    assert "scripts/install_hooks.sh" in result.detail
+
+
+def test_hook_installed_check_red_with_other_hookspath(tmp_path):
+    result = gate.hook_installed_check("assistant-core", _git_repo(tmp_path, hooks_path="hooks"))
+    assert result.ok is False
+    assert "scripts/install_hooks.sh" in result.detail
+
+
+def test_hook_installed_check_red_for_non_executable_hook(tmp_path):
+    result = gate.hook_installed_check("assistant-core", _git_repo(tmp_path, hook_mode=0o644))
+    assert result.ok is False
+    assert "scripts/install_hooks.sh" in result.detail
+
+
+def test_hook_installed_check_red_for_missing_hook_file(tmp_path):
+    result = gate.hook_installed_check("assistant-core", _git_repo(tmp_path, hook_exists=False))
+    assert result.ok is False
+    assert "scripts/install_hooks.sh" in result.detail
+
+
+def test_hook_installed_check_red_for_missing_directory(tmp_path):
+    result = gate.hook_installed_check("assistant-shared", tmp_path / "нет")
+    assert result.ok is False
+    assert "scripts/install_hooks.sh" in result.detail or "нет каталога" in result.detail
+
+
+def test_hook_installed_check_without_git_is_red_not_exception(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(gate, "run_cmd", boom)
+    result = gate.hook_installed_check("assistant-core", repo)
+    assert result.ok is False and "scripts/install_hooks.sh" in result.detail
+
+
+def test_hook_installed_check_timeout_is_red_not_exception(tmp_path, monkeypatch):
+    repo = _git_repo(tmp_path)
+
+    def slow(cmd, *args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 30)
+
+    monkeypatch.setattr(gate, "run_cmd", slow)
+    assert gate.hook_installed_check("assistant-core", repo).ok is False
+
+
+def test_safe_hook_step_turns_exception_into_red_row(monkeypatch):
+    def boom(repo, repo_dir):
+        raise RuntimeError("синтетический сбой")
+
+    monkeypatch.setattr(gate, "hook_installed_check", boom)
+    result = gate._safe_hook_step(gate.REPO_SHARED, gate.SHARED_DIR)
+    assert result.ok is False and "сбой шага" in result.detail
+    assert result.repo == gate.REPO_SHARED and result.name == HOOK_NAME
+
+
+EXPECTED_ROW_ORDER = [
+    ("assistant-core", "pytest"),
+    ("assistant-core", "боевая assistant.db не изменена"),
+    ("assistant-core", "import-linter"),
+    ("assistant-core", "security_shield (--all)"),
+    ("assistant-core", "синтетическая персона (дрейф SHA-256)"),
+    ("assistant-core", "токены персоны (дрейф SHA-256)"),
+    ("assistant-core", HOOK_NAME),
+    ("assistant-shared", "pytest"),
+    ("assistant-shared", "security_shield (--all)"),
+    ("assistant-shared", HOOK_NAME),
+]
+
+
+def _stub_all_steps(monkeypatch, calls=None):
+    """Заглушки всех шагов: узнаваемые имена; под стражем БД реальный хеш из теста запрещён."""
+    calls = calls if calls is not None else []
+    monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
+
+    def pytest_step(repo, **kw):
+        calls.append(("pytest", repo, kw))
+        return CheckResult(repo, "pytest", True)
+
+    def lint_step(repo, **kw):
+        calls.append(("lint", repo, kw))
+        return CheckResult(repo, "import-linter", True)
+
+    def shield_step(repo, repo_dir):
+        calls.append(("shield", repo, repo_dir))
+        return CheckResult(repo, "security_shield (--all)", True)
+
+    def hook_step(repo, repo_dir):
+        calls.append(("hook", repo, repo_dir))
+        return CheckResult(repo, HOOK_NAME, True)
+
+    monkeypatch.setattr(gate, "_safe_pytest_step", pytest_step)
+    monkeypatch.setattr(gate, "_safe_lint_step", lint_step)
+    monkeypatch.setattr(gate, "_safe_shield_step", shield_step)
+    monkeypatch.setattr(gate, "_safe_hook_step", hook_step)
+    monkeypatch.setattr(
+        gate, "persona_drift_check", lambda a, b, name: CheckResult("assistant-core", name, True)
+    )
+    return calls
+
+
+def test_run_all_row_order(monkeypatch):
+    _stub_all_steps(monkeypatch)
+    results = gate._run_all(None)
+    assert [(r.repo, r.name) for r in results] == EXPECTED_ROW_ORDER
+
+
+def test_shared_rows_are_separate(monkeypatch):
+    calls = _stub_all_steps(monkeypatch)
+    results = gate._run_all(None)
+    shared_names = [r.name for r in results if r.repo == gate.REPO_SHARED]
+    assert shared_names == ["pytest", "security_shield (--all)", HOOK_NAME]
+    assert len(set(shared_names)) == 3
+    kinds = [c[0] for c in calls if c[1] == gate.REPO_SHARED]
+    assert kinds == ["pytest", "shield", "hook"]
+
+
+def test_shared_pytest_row_uses_core_venv_and_shared_cwd(monkeypatch):
+    calls = _stub_all_steps(monkeypatch)
+    gate._run_all(None)
+    shared_pytest = next(c for c in calls if c[0] == "pytest" and c[1] == gate.REPO_SHARED)
+    kw = shared_pytest[2]
+    assert kw["pytest_bin"] == gate.CORE_VENV_BIN / "pytest"
+    assert kw["cwd"] == gate.SHARED_DIR
+    assert kw["target"] == "tests"
+    assert kw["env_extra"] == {"PYTEST_ADDOPTS": ""}
+    shield = next(c for c in calls if c[0] == "shield" and c[1] == gate.REPO_SHARED)
+    assert shield[2] == gate.SHARED_DIR
+    hooks = {c[1]: c[2] for c in calls if c[0] == "hook"}
+    assert hooks == {gate.REPO_CORE: gate.CORE_DIR, gate.REPO_SHARED: gate.SHARED_DIR}
+
+
+def test_run_all_never_aborts_on_step_exception(monkeypatch):
+    """Исключение одного из run_*_step даёт красную строку «сбой шага», остальные 9 печатаются."""
+    monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
+    monkeypatch.setattr(
+        gate, "run_pytest_step", lambda repo, **kw: CheckResult(repo, "pytest", True)
+    )
+
+    def lint_boom(repo, **kw):
+        raise RuntimeError("синтетический сбой import-linter")
+
+    monkeypatch.setattr(gate, "run_lint_imports_step", lint_boom)
+    monkeypatch.setattr(
+        gate, "run_shield_step", lambda repo, d: CheckResult(repo, "security_shield (--all)", True)
+    )
+    monkeypatch.setattr(
+        gate, "hook_installed_check", lambda repo, d: CheckResult(repo, HOOK_NAME, True)
+    )
+    monkeypatch.setattr(
+        gate, "persona_drift_check", lambda a, b, name: CheckResult("assistant-core", name, True)
+    )
+    results = gate._run_all(None)
+    assert len(results) == 10
+    red = [r for r in results if not r.ok]
+    assert len(red) == 1 and "сбой шага" in red[0].detail
+    assert gate.overall_green(results) is False
+    report = gate.render_report(results)
+    assert report.splitlines()[-1] == "ИТОГ: КРАСНЫЙ"
+    for repo, name in [row for row in EXPECTED_ROW_ORDER if row[1] != "pytest"]:
+        assert name in report
