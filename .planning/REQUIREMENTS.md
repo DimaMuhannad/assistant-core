@@ -124,16 +124,63 @@
 
 ## Traceability
 
-Которые фазы покрывают какие требования. Заполняется при создании дорожной карты.
+Какие фазы покрывают какие требования. Заполнено при создании дорожной карты v3.0 (2026-10-09).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| GATE-01 | Phase 1 | Pending |
+| GATE-02 | Phase 1 | Pending |
+| GATE-03 | Phase 1 | Pending |
+| GATE-04 | Phase 1 | Pending |
+| GATE-05 | Phase 1 | Pending |
+| OPS-01 | Phase 1 | Pending |
+| SECF-01 | Phase 2 | Pending |
+| SECF-02 | Phase 2 | Pending |
+| SAFE-01 | Phase 2 | Pending |
+| PRIV-01 | Phase 2 | Pending |
+| DAT-01 | Phase 3 | Pending |
+| SCH-01 | Phase 3 | Pending |
+| SCH-02 | Phase 3 | Pending |
+| GIT-01 | Phase 4 | Pending |
+| GIT-02 | Phase 4 | Pending |
+| GIT-03 | Phase 4 | Pending |
+| GIT-04 | Phase 4 | Pending |
+| NTN-01 | Phase 4 | Pending |
+| NTN-02 | Phase 4 | Pending |
+| HIT-02 | Phase 5 | Pending |
+| HIT-03 | Phase 5 | Pending |
+| HIT-04 | Phase 5 | Pending |
+| VER-01 | Phase 6 | Pending |
+| DAT-02 | Phase 6 | Pending |
+| DAT-03 | Phase 6 | Pending |
+| DAT-04 | Phase 6 | Pending |
+| SEC-01 | Phase 6 | Pending |
+| SEC-02 | Phase 6 | Pending |
+| SEC-03 | Phase 6 | Pending |
+| HIT-01 | Phase 6 | Pending |
+| ISO-01 | Phase 6 | Pending |
+| ISO-02 | Phase 6 | Pending |
+| ISO-03 | Phase 6 | Pending |
+| ISO-04 | Phase 6 | Pending |
+| FIN-01 | Phase 6 | Pending |
+| ACT-01 | Phase 6 | Pending |
+| ACT-02 | Phase 6 | Pending |
+| ACT-03 | Phase 6 | Pending |
+| ACT-04 | Phase 6 | Pending |
+| UXQ-01 | Phase 6 | Pending |
+| UXQ-02 | Phase 6 | Pending |
+| UXQ-04 | Phase 6 | Pending |
+| UXQ-03 | Phase 7 | Pending |
+| GEN-01 | Phase 8 | Pending |
+| ONB-01 | Phase 8 | Pending |
+| ONB-02 | Phase 9 | Pending |
+| ONB-03 | Phase 9 | Pending |
 
 **Coverage:**
 - v1 requirements: 47 total
-- Mapped to phases: 0
-- Unmapped: 47 ⚠️
+- Mapped to phases: 47 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-10-09*
-*Last updated: 2026-10-09 after initial definition*
+*Last updated: 2026-10-09 after roadmap creation (traceability filled, 9 phases)*
