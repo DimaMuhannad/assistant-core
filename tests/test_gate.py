@@ -1257,3 +1257,268 @@ def test_run_all_never_aborts_on_step_exception(monkeypatch):
     assert report.splitlines()[-1] == "ИТОГ: КРАСНЫЙ"
     for repo, name in [row for row in EXPECTED_ROW_ORDER if row[1] != "pytest"]:
         assert name in report
+
+
+# ============ Решение владельца 2026-10-09: один повтор при записи живого сервиса ============
+
+import os  # noqa: E402
+import time  # noqa: E402
+
+WINDOW = (1000.0, 2000.0)
+
+
+def _spy_remeasure(result):
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return result
+
+    return fn, calls
+
+
+def test_db_retry_service_write_then_quiet_remeasure_match_is_green_with_explicit_note():
+    remeasure, calls = _spy_remeasure(("c" * 64, "c" * 64))
+    result = gate.db_unchanged_check(
+        "a" * 64,
+        "b" * 64,
+        window=WINDOW,
+        evidence_fn=lambda window: (True, "сервис assistant-worker: active; время изменения БД: T"),
+        remeasure_fn=remeasure,
+    )
+    assert result.ok is True
+    assert len(calls) == 1
+    assert "запись сервиса assistant-worker" in result.info
+    assert "повторное измерение" in result.info
+    assert "cccccccccccc" in result.info
+    assert "SHA-256 до/после совпали" not in result.info  # честно: до/после НЕ совпали
+
+
+def test_db_retry_quiet_remeasure_also_differs_is_red_with_guard_phrase():
+    remeasure, calls = _spy_remeasure(("c" * 64, "d" * 64))
+    result = gate.db_unchanged_check(
+        "a",
+        "b",
+        diagnostics_fn=lambda: "ДИАГНОСТИКА",
+        window=WINDOW,
+        evidence_fn=lambda window: (True, "E"),
+        remeasure_fn=remeasure,
+    )
+    assert result.ok is False
+    assert len(calls) == 1  # один повтор, не цикл
+    assert "tests/live_db_guard.py" in result.detail
+    assert "повторное измерение" in result.detail
+    assert "ДИАГНОСТИКА" in result.detail
+
+
+def test_db_retry_not_attempted_when_service_not_active_or_mtime_outside_window():
+    remeasure, calls = _spy_remeasure(("c", "c"))
+    result = gate.db_unchanged_check(
+        "a",
+        "b",
+        window=WINDOW,
+        evidence_fn=lambda window: (False, "сервис assistant-worker: inactive"),
+        remeasure_fn=remeasure,
+    )
+    assert result.ok is False and calls == []
+    assert "tests/live_db_guard.py" in result.detail
+
+
+def test_db_retry_not_attempted_without_window():
+    remeasure, calls = _spy_remeasure(("c", "c"))
+    result = gate.db_unchanged_check(
+        "a", "b", evidence_fn=lambda window: (True, "E"), remeasure_fn=remeasure
+    )
+    assert result.ok is False and calls == []
+
+
+def test_db_retry_not_attempted_when_a_hash_is_none():
+    remeasure, calls = _spy_remeasure(("c", "c"))
+    for before, after in ((None, "b"), ("a", None), (None, None)):
+        result = gate.db_unchanged_check(
+            before,
+            after,
+            window=WINDOW,
+            evidence_fn=lambda window: (True, "E"),
+            remeasure_fn=remeasure,
+        )
+        assert result.ok is False
+    assert calls == []
+
+
+def test_db_retry_none_in_quiet_remeasure_is_red():
+    for pair in ((None, "c"), ("c", None), (None, None)):
+        remeasure, calls = _spy_remeasure(pair)
+        result = gate.db_unchanged_check(
+            "a", "b", window=WINDOW, evidence_fn=lambda window: (True, "E"), remeasure_fn=remeasure
+        )
+        assert result.ok is False and len(calls) == 1
+
+
+def test_db_retry_crash_in_remeasure_or_evidence_is_red():
+    def boom(*args):
+        raise RuntimeError("сбой")
+
+    r1 = gate.db_unchanged_check(
+        "a", "b", window=WINDOW, evidence_fn=lambda window: (True, "E"), remeasure_fn=boom
+    )
+    r2 = gate.db_unchanged_check(
+        "a", "b", window=WINDOW, evidence_fn=boom, remeasure_fn=lambda: ("c", "c")
+    )
+    assert r1.ok is False and r2.ok is False
+
+
+def test_db_unchanged_check_equal_hash_never_triggers_evidence_or_remeasure():
+    remeasure, calls = _spy_remeasure(("c", "c"))
+
+    def evidence(window):
+        raise AssertionError("не должно вызываться")
+
+    result = gate.db_unchanged_check(
+        "a", "a", window=WINDOW, evidence_fn=evidence, remeasure_fn=remeasure
+    )
+    assert result.ok is True and calls == []
+
+
+def test_db_unchanged_check_has_no_loop_so_retry_is_single():
+    tree = _gate_tree()
+    func = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "db_unchanged_check"
+    )
+    assert not [n for n in ast.walk(func) if isinstance(n, (ast.While, ast.For, ast.AsyncFor))]
+
+
+def _fake_service(monkeypatch, state):
+    monkeypatch.setattr(
+        gate, "run_cmd", lambda *a, **k: subprocess.CompletedProcess(a, 0, state + "\n", "")
+    )
+
+
+def test_service_write_evidence_active_and_mtime_inside_window(tmp_path, monkeypatch):
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    os.utime(fake_db, (1500.0, 1500.0))
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    _fake_service(monkeypatch, "active")
+    consistent, text = gate.service_write_evidence(WINDOW)
+    assert consistent is True
+    assert "active" in text and "UTC" in text
+
+
+def test_service_write_evidence_mtime_outside_window_is_not_consistent(tmp_path, monkeypatch):
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    _fake_service(monkeypatch, "active")
+    for stamp in (999.0, 2001.0):
+        os.utime(fake_db, (stamp, stamp))
+        assert gate.service_write_evidence(WINDOW)[0] is False
+
+
+def test_service_write_evidence_idle_service_is_not_consistent(tmp_path, monkeypatch):
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    os.utime(fake_db, (1500.0, 1500.0))
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    for state in ("inactive", "failed", "unknown", ""):
+        _fake_service(monkeypatch, state)
+        assert gate.service_write_evidence(WINDOW)[0] is False
+
+
+def test_service_write_evidence_unknown_state_or_missing_db_is_not_consistent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gate, "LIVE_DB", tmp_path / "нет.db")
+    _fake_service(monkeypatch, "active")
+    assert gate.service_write_evidence(WINDOW)[0] is False
+
+    def boom(*args, **kwargs):
+        raise FileNotFoundError("systemctl")
+
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    os.utime(fake_db, (1500.0, 1500.0))
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    monkeypatch.setattr(gate, "run_cmd", boom)
+    assert gate.service_write_evidence(WINDOW)[0] is False
+
+
+def test_service_write_evidence_counts_wal_sidecar_mtime(tmp_path, monkeypatch):
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    os.utime(fake_db, (10.0, 10.0))
+    wal = tmp_path / "stand-in.db-wal"
+    wal.write_bytes(b"w")
+    os.utime(wal, (1500.0, 1500.0))
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    _fake_service(monkeypatch, "active")
+    assert gate.service_write_evidence(WINDOW)[0] is True
+
+
+def test_service_write_evidence_is_read_only_systemctl(tmp_path, monkeypatch):
+    calls = []
+    fake_db = tmp_path / "stand-in.db"
+    fake_db.write_bytes(b"x")
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+
+    def spy(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "active", "")
+
+    monkeypatch.setattr(gate, "run_cmd", spy)
+    gate.service_write_evidence(WINDOW)
+    assert calls and all(cmd[:2] == ["systemctl", "is-active"] for cmd in calls)
+
+
+def test_quiet_remeasure_takes_hash_waits_constant_then_takes_hash_again(monkeypatch):
+    events = []
+    hashes = iter(["h1", "h2"])
+    monkeypatch.setattr(gate, "_sha_or_none", lambda path: events.append("hash") or next(hashes))
+    monkeypatch.setattr(gate.time, "sleep", lambda s: events.append(("sleep", s)))
+    assert gate.quiet_remeasure() == ("h1", "h2")
+    assert events == ["hash", ("sleep", gate.REMEASURE_WAIT_S), "hash"]
+    assert isinstance(gate.REMEASURE_WAIT_S, (int, float)) and 0 < gate.REMEASURE_WAIT_S <= 30
+
+
+def test_run_all_passes_measurement_window_to_db_check(monkeypatch):
+    _stub_all_steps(monkeypatch)
+    seen = {}
+
+    def fake_check(before, after, **kw):
+        seen.update(kw)
+        return CheckResult("assistant-core", "боевая assistant.db не изменена", True)
+
+    monkeypatch.setattr(gate, "db_unchanged_check", fake_check)
+    t0 = time.time()
+    gate._run_all(None)
+    t1 = time.time()
+    start, end = seen["window"]
+    assert t0 <= start <= end <= t1
+
+
+def test_run_all_service_write_is_remeasured_and_row_is_green_with_note(monkeypatch):
+    _stub_all_steps(monkeypatch)
+    hashes = iter(["before", "after"])
+    monkeypatch.setattr(gate, "_sha_or_none", lambda path: next(hashes))
+    monkeypatch.setattr(gate, "service_write_evidence", lambda window: (True, "сервис active"))
+    monkeypatch.setattr(gate, "quiet_remeasure", lambda: ("quiet-hash-1", "quiet-hash-1"))
+    results = gate._run_all(None)
+    row = next(r for r in results if r.name == "боевая assistant.db не изменена")
+    assert row.ok is True and "запись сервиса" in row.info
+    assert gate.overall_green(results) is True
+
+
+def test_run_all_write_with_idle_service_stays_red(monkeypatch):
+    _stub_all_steps(monkeypatch)
+    hashes = iter(["before", "after"])
+    monkeypatch.setattr(gate, "_sha_or_none", lambda path: next(hashes))
+    monkeypatch.setattr(gate, "service_write_evidence", lambda window: (False, "сервис inactive"))
+
+    def must_not_run():
+        raise AssertionError("повтор не должен запускаться")
+
+    monkeypatch.setattr(gate, "quiet_remeasure", must_not_run)
+    results = gate._run_all(None)
+    row = next(r for r in results if r.name == "боевая assistant.db не изменена")
+    assert row.ok is False
+    assert gate.overall_green(results) is False

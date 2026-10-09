@@ -26,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,9 @@ CORE_TOKENS = CORE_DIR / "tests" / "persona_tokens.py"
 PYTEST_TIMEOUT_S = 900
 LINT_TIMEOUT_S = 300
 SHIELD_TIMEOUT_S = 300
+# Пауза между двумя замерами «тихого окна» при подозрении на запись живого сервиса (решение
+# владельца 2026-10-09): константа, повтор один и без цикла.
+REMEASURE_WAIT_S = 5
 
 REPO_CORE = "assistant-core"
 REPO_SHARED = "assistant-shared"
@@ -436,46 +440,125 @@ def _sha_or_none(path: Path) -> str | None:
         return None
 
 
+def _service_state() -> str:
+    """Состояние assistant-worker: только чтение (``systemctl is-active``), сервис не меняется."""
+    try:
+        proc = run_cmd(["systemctl", "is-active", "assistant-worker"], CORE_DIR, timeout=10)
+        return proc.stdout.strip() or "неизвестно"
+    except Exception:
+        return "неизвестно"
+
+
+def _iso_utc(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).replace(microsecond=0).isoformat()
+
+
 def _db_diagnostics() -> str:
     """Короткая диагностика при расхождении хеша: состояние сервиса и время изменения БД.
 
-    Только чтение: ``systemctl is-active``, сервис не изменяется. Вердикт диагностика не
-    смягчает, она лишь помогает отличить запись живого сервиса от ошибки теста.
+    Вердикт диагностика не смягчает, она лишь помогает отличить запись живого сервиса от
+    ошибки теста.
     """
+    state = _service_state()
     try:
-        proc = run_cmd(["systemctl", "is-active", "assistant-worker"], CORE_DIR, timeout=10)
-        state = proc.stdout.strip() or "неизвестно"
-    except Exception:
-        state = "неизвестно"
-    try:
-        stamp = datetime.fromtimestamp(LIVE_DB.stat().st_mtime, timezone.utc)
-        mtime = stamp.replace(microsecond=0).isoformat()
+        mtime = _iso_utc(LIVE_DB.stat().st_mtime)
     except OSError:
         mtime = "неизвестно"
     return f"сервис assistant-worker: {state}; время изменения БД (UTC): {mtime}"
+
+
+def _db_latest_mtime() -> float | None:
+    """Самое позднее время изменения файла БД или её -wal (запись в WAL не трогает основной файл)."""
+    stamps = []
+    for path in (LIVE_DB, LIVE_DB.with_name(LIVE_DB.name + "-wal")):
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(stamps) if stamps else None
+
+
+def service_write_evidence(window: tuple[float, float]) -> tuple[bool, str]:
+    """Согласуется ли расхождение хеша с записью живого сервиса: (да/нет, пояснение).
+
+    «Да» только если assistant-worker активен И время изменения БД лежит внутри окна измерения
+    [начало «до»; конец «после»]. Любая неизвестность («неизвестно», нет файла) означает «нет».
+    """
+    state = _service_state()
+    mtime = _db_latest_mtime()
+    start, end = window
+    inside = mtime is not None and start <= mtime <= end
+    stamp = _iso_utc(mtime) if mtime is not None else "неизвестно"
+    text = (
+        f"сервис assistant-worker: {state}; время изменения БД (UTC): {stamp}; "
+        f"окно измерения (UTC): {_iso_utc(start)} .. {_iso_utc(end)}"
+    )
+    return state == "active" and inside, text
+
+
+def quiet_remeasure() -> tuple[str | None, str | None]:
+    """Два замера хеша боевой БД через постоянную паузу REMEASURE_WAIT_S (тихое окно)."""
+    first = _sha_or_none(LIVE_DB)
+    time.sleep(REMEASURE_WAIT_S)
+    second = _sha_or_none(LIVE_DB)
+    return first, second
 
 
 def db_unchanged_check(
     before: str | None,
     after: str | None,
     diagnostics_fn=None,
+    window: tuple[float, float] | None = None,
+    evidence_fn=None,
+    remeasure_fn=None,
 ) -> CheckResult:
-    """Хеш боевой БД до и сразу после pytest core: любое расхождение краснит итог."""
+    """Хеш боевой БД до и сразу после pytest core: расхождение краснит итог.
+
+    Единственное смягчение (решение владельца 2026-10-09): если хеши различаются, а
+    ``service_write_evidence`` говорит, что живой assistant-worker активен и писал в БД внутри
+    окна измерения, делается ОДИН повторный замер в тихом окне (две пробы через
+    REMEASURE_WAIT_S). Совпали обе - строка зелёная с явной пометкой в info. Не совпали,
+    сервис не активен, время изменения вне окна, окна нет или любой хеш None - КРАСНЫЙ, как
+    раньше. Основная защита от записи тестов в боевую БД - страж tests/live_db_guard.py.
+    """
     name = "боевая assistant.db не изменена"
     if before is None or after is None:
         return CheckResult(REPO_CORE, name, False, "не удалось вычислить хеш боевой БД")
-    if before != after:
+    if before == after:
+        return CheckResult(REPO_CORE, name, True, info=f"SHA-256 до/после совпали: {before[:12]}")
+    retry_note = ""
+    if window is not None:
         try:
-            diagnostics = (diagnostics_fn or _db_diagnostics)()
+            consistent, evidence = (evidence_fn or service_write_evidence)(window)
         except Exception:
-            diagnostics = "диагностика недоступна"
-        detail = (
-            "хеш боевой БД изменился во время pytest assistant-core\n"
-            f"{diagnostics}\n"
-            "повторите прогон; основная защита тестов это страж tests/live_db_guard.py"
-        )
-        return CheckResult(REPO_CORE, name, False, detail)
-    return CheckResult(REPO_CORE, name, True, info=f"SHA-256 до/после совпали: {before[:12]}")
+            consistent, evidence = False, "диагностика недоступна"
+        if consistent:
+            try:
+                first, second = (remeasure_fn or quiet_remeasure)()
+            except Exception:
+                first = second = None
+            if first is not None and first == second:
+                info = (
+                    f"обнаружена запись сервиса assistant-worker в окне прогона ({evidence})\n"
+                    "SHA-256 до/после не совпали; повторное измерение в тихом окне "
+                    f"({REMEASURE_WAIT_S} с) дало совпадение двух замеров: {first[:12]}"
+                )
+                return CheckResult(REPO_CORE, name, True, info=info)
+            retry_note = (
+                "повторное измерение в тихом окне тоже не подтвердило неизменность "
+                f"(пауза {REMEASURE_WAIT_S} с)\n"
+            )
+    try:
+        diagnostics = (diagnostics_fn or _db_diagnostics)()
+    except Exception:
+        diagnostics = "диагностика недоступна"
+    detail = (
+        "хеш боевой БД изменился во время pytest assistant-core\n"
+        f"{diagnostics}\n"
+        f"{retry_note}"
+        "повторите прогон; основная защита тестов это страж tests/live_db_guard.py"
+    )
+    return CheckResult(REPO_CORE, name, False, detail)
 
 
 def _rel_to(path: Path, base: Path) -> str:
@@ -597,6 +680,7 @@ def _safe_lint_step(repo: str, **kwargs) -> CheckResult:
 
 def _run_all(save_dir: Path | None) -> list[CheckResult]:
     results: list[CheckResult] = []
+    window_start = time.time()
     before = _sha_or_none(LIVE_DB)
     tmp_dir = Path(tempfile.mkdtemp(prefix="gate-"))
     try:
@@ -613,7 +697,8 @@ def _run_all(save_dir: Path | None) -> list[CheckResult]:
         )
         # «После» измеряется СРАЗУ за pytest core: окно для записи живого сервиса минимально.
         after = _sha_or_none(LIVE_DB)
-        results.append(db_unchanged_check(before, after))
+        window_end = time.time()
+        results.append(db_unchanged_check(before, after, window=(window_start, window_end)))
         results.append(
             _safe_lint_step(
                 REPO_CORE, lint_bin=CORE_VENV_BIN / "lint-imports", cwd=CORE_DIR, env_extra=None
