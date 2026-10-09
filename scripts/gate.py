@@ -17,10 +17,16 @@ systemd-сервисы на запись.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parents[1]
@@ -28,12 +34,21 @@ SHARED_DIR = Path(os.environ.get("ASSISTANT_SHARED_DIR", "/opt/assistant-shared"
 CHAT_APP_DIR = Path(os.environ.get("ASSISTANT_CHAT_APP_DIR", "/opt/chat-app"))
 LIVE_DB = CORE_DIR / "data" / "assistant.db"
 CORE_VENV_BIN = CORE_DIR / ".venv" / "bin"
+# Копии общих тестовых файлов в chat-app: только чтение, для сверки дрейфа (D-16).
+CHAT_PERSONA = CHAT_APP_DIR / "backend" / "tests" / "synthetic_persona.py"
+CORE_PERSONA = CORE_DIR / "tests" / "synthetic_persona.py"
+CHAT_TOKENS = CHAT_APP_DIR / "backend" / "tests" / "persona_tokens.py"
+CORE_TOKENS = CORE_DIR / "tests" / "persona_tokens.py"
 PYTEST_TIMEOUT_S = 900
 LINT_TIMEOUT_S = 300
 SHIELD_TIMEOUT_S = 300
 
 REPO_CORE = "assistant-core"
 REPO_SHARED = "assistant-shared"
+
+_SUMMARY_WORDS = frozenset(
+    {"failed", "error", "errors", "skipped", "deselected", "xfailed", "xpassed"}
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +85,171 @@ def _exc_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def sha256_file(path: Path) -> str:
+    """SHA-256 файла, чтение блоками."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def core_pytest_env(db_override: Path) -> dict[str, str]:
+    """Окружение для pytest assistant-core: БД строго во временный файл, набор не сужается.
+
+    ASSISTANT_DB_PATH_OVERRIDE читает src/config.py (до load_dotenv), поэтому тесты, которым
+    нужна БД, не доберутся до боевой. Пустой PYTEST_ADDOPTS не даёт окружению сузить набор
+    тестов. Путь на боевую БД, на корневой assistant.db (с sidecar-файлами) или внутрь
+    каталога data отвергается (T-01-03).
+    """
+    resolved = db_override.resolve()
+    data_dir = (CORE_DIR / "data").resolve()
+    forbidden = {LIVE_DB.resolve(), (CORE_DIR / "assistant.db").resolve()}
+    if resolved in forbidden or resolved == data_dir or data_dir in resolved.parents:
+        raise ValueError(f"ASSISTANT_DB_PATH_OVERRIDE не может указывать на боевую БД: {db_override}")
+    if resolved.parent == CORE_DIR.resolve() and resolved.name.startswith("assistant.db"):
+        raise ValueError(f"ASSISTANT_DB_PATH_OVERRIDE не может указывать на боевую БД: {db_override}")
+    return {"ASSISTANT_DB_PATH_OVERRIDE": str(db_override), "PYTEST_ADDOPTS": ""}
+
+
+def _testsuites(junit_xml: Path) -> list[ET.Element]:
+    root = ET.parse(junit_xml).getroot()
+    if root.tag == "testsuite":
+        return [root]
+    suites = root.findall("testsuite")
+    if not suites:
+        raise ValueError("в junit XML нет элемента testsuite")
+    return suites
+
+
+def pytest_counts(junit_xml: Path) -> dict[str, int]:
+    """Счётчики tests/failures/errors/skipped из junit XML (корень testsuites или testsuite)."""
+    counts = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    for suite in _testsuites(junit_xml):
+        for key in counts:
+            counts[key] += int(suite.get(key, 0))
+    return counts
+
+
+def failed_test_ids(junit_xml: Path, limit: int = 10) -> list[str]:
+    """«classname::name» первых упавших/ошибочных тестов."""
+    ids: list[str] = []
+    root = ET.parse(junit_xml).getroot()
+    for case in root.iter("testcase"):
+        if case.find("failure") is not None or case.find("error") is not None:
+            ids.append(f"{case.get('classname', '')}::{case.get('name', '')}")
+            if len(ids) >= limit:
+                break
+    return ids
+
+
+def _last_summary_line(output: str) -> str:
+    last = ""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("=") and " in " in stripped:
+            last = stripped
+    return last
+
+
+def pytest_summary_flags(output: str) -> list[str]:
+    """Слова из итоговой строки pytest, которые означают «не чисто» (skip/xfail/deselect/ошибки)."""
+    line = _last_summary_line(output)
+    if not line:
+        return []
+    tokens = "".join(ch if ch.isalpha() else " " for ch in line).split()
+    return sorted({t for t in tokens if t in _SUMMARY_WORDS})
+
+
+def pytest_ok(returncode: int, counts: dict[str, int], flags: list[str]) -> bool:
+    """Зелёный только при коде 0, ненулевом числе тестов и без failed/error/skipped/flags."""
+    return (
+        returncode == 0
+        and counts.get("tests", 0) > 0
+        and counts.get("failures", 0) == 0
+        and counts.get("errors", 0) == 0
+        and counts.get("skipped", 0) == 0
+        and not flags
+    )
+
+
+def _git_head(cwd: Path) -> str:
+    try:
+        proc = run_cmd(["git", "-C", str(cwd), "rev-parse", "HEAD"], cwd, timeout=30)
+    except Exception:
+        return "неизвестен"
+    head = proc.stdout.strip()
+    return head if proc.returncode == 0 and head else "неизвестен"
+
+
+def _write_snapshot(
+    save_dir: Path,
+    repo: str,
+    cmd: list[str],
+    env_extra: dict[str, str] | None,
+    cwd: Path,
+    tmp_dir: Path,
+    stdout: str,
+) -> None:
+    """Снимок сырого вывода pytest -v (только pytest: вывод shield не сохраняется никогда)."""
+    parts = [f"{key}={value}" for key, value in (env_extra or {}).items()] + cmd
+    command = " ".join(parts).replace(str(tmp_dir), "временный каталог")
+    stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    header = f"# Команда: {command}\n# Коммит: {_git_head(cwd)}\n# Дата: {stamp}\n"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / f"pytest-{repo}.txt").write_text(header + stdout, encoding="utf-8")
+
+
+def run_pytest_step(
+    repo: str,
+    pytest_bin: Path,
+    target: str,
+    cwd: Path,
+    env_extra: dict[str, str] | None,
+    tmp_dir: Path,
+    save_dir: Path | None,
+) -> CheckResult:
+    """Один запуск pytest -> CheckResult. Команда без фильтров набора тестов: набор не сужается."""
+    name = "pytest — тестов: 0"
+    if not pytest_bin.is_file():
+        return CheckResult(repo, name, False, f"не найден pytest: {pytest_bin}")
+    if not cwd.is_dir():
+        return CheckResult(repo, name, False, f"нет каталога репозитория: {cwd}")
+    junit = tmp_dir / f"junit-{repo}.xml"
+    cmd = [
+        str(pytest_bin),
+        target,
+        "-v",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "xfail_strict=true",
+        f"--junitxml={junit}",
+        f"--basetemp={tmp_dir}/pytest-{repo}",
+    ]
+    try:
+        proc = run_cmd(cmd, cwd, env_extra)
+    except subprocess.TimeoutExpired:
+        return CheckResult(repo, name, False, "превышено время выполнения pytest")
+    if save_dir is not None:
+        _write_snapshot(save_dir, repo, cmd, env_extra, cwd, tmp_dir, proc.stdout)
+    try:
+        counts = pytest_counts(junit)
+        failed = failed_test_ids(junit)
+    except (OSError, ET.ParseError, ValueError):
+        counts = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+        failed = []
+    flags = pytest_summary_flags(proc.stdout)
+    name = f"pytest — тестов: {counts['tests']}"
+    if pytest_ok(proc.returncode, counts, flags):
+        return CheckResult(repo, name, True)
+    lines = [_last_summary_line(proc.stdout) or f"код возврата pytest: {proc.returncode}"]
+    if counts["tests"] == 0:
+        lines.append("не собрано ни одного теста")
+    lines.extend(f"упал: {test_id}" for test_id in failed)
+    return CheckResult(repo, name, False, "\n".join(lines))
+
+
 def run_lint_imports_step(
     repo: str,
     lint_bin: Path,
@@ -100,6 +280,105 @@ def run_lint_imports_step(
     return CheckResult(repo, name, False, "\n".join(lines[:10]))
 
 
+def db_content_hash(db: Path) -> str:
+    """SHA-256 логического содержимого БД (дамп схемы и данных, соединение только на чтение).
+
+    Хеш файла ненадёжен в режиме WAL: записи лежат в -wal, а checkpoint меняет основной файл
+    без изменения данных. Дамп в одной транзакции от этого не зависит. Единственное обращение
+    гейта к боевой БД: чтение для хеша, запись исключена режимом mode=ro.
+    """
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+    try:
+        conn.execute("BEGIN")
+        digest = hashlib.sha256()
+        for line in conn.iterdump():
+            digest.update(line.encode("utf-8", "surrogatepass"))
+            digest.update(b"\n")
+        return digest.hexdigest()
+    finally:
+        conn.close()
+
+
+def _sha_or_none(path: Path) -> str | None:
+    try:
+        return db_content_hash(path)
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def _db_diagnostics() -> str:
+    """Короткая диагностика при расхождении хеша: состояние сервиса и время изменения БД.
+
+    Только чтение: ``systemctl is-active``, сервис не изменяется. Вердикт диагностика не
+    смягчает, она лишь помогает отличить запись живого сервиса от ошибки теста.
+    """
+    try:
+        proc = run_cmd(["systemctl", "is-active", "assistant-worker"], CORE_DIR, timeout=10)
+        state = proc.stdout.strip() or "неизвестно"
+    except Exception:
+        state = "неизвестно"
+    try:
+        stamp = datetime.fromtimestamp(LIVE_DB.stat().st_mtime, timezone.utc)
+        mtime = stamp.replace(microsecond=0).isoformat()
+    except OSError:
+        mtime = "неизвестно"
+    return f"сервис assistant-worker: {state}; время изменения БД (UTC): {mtime}"
+
+
+def db_unchanged_check(
+    before: str | None,
+    after: str | None,
+    diagnostics_fn=None,
+) -> CheckResult:
+    """Хеш боевой БД до и сразу после pytest core: любое расхождение краснит итог."""
+    name = "боевая assistant.db не изменена"
+    if before is None or after is None:
+        return CheckResult(REPO_CORE, name, False, "не удалось вычислить хеш боевой БД")
+    if before != after:
+        try:
+            diagnostics = (diagnostics_fn or _db_diagnostics)()
+        except Exception:
+            diagnostics = "диагностика недоступна"
+        detail = (
+            "хеш боевой БД изменился во время pytest assistant-core\n"
+            f"{diagnostics}\n"
+            "повторите прогон; основная защита тестов это страж tests/live_db_guard.py"
+        )
+        return CheckResult(REPO_CORE, name, False, detail)
+    return CheckResult(REPO_CORE, name, True, info=f"SHA-256 до/после совпали: {before[:12]}")
+
+
+def _rel_to(path: Path, base: Path) -> str:
+    """Путь относительно корня; вне него - как есть."""
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
+def persona_drift_check(chat_copy: Path, core_copy: Path, name: str) -> CheckResult:
+    """Две копии общего тестового файла (chat-app и assistant-core) совпадают побайтно.
+
+    Копия chat-app только читается. Отсутствие любого файла - красный (D-16, fail-closed).
+    """
+    for path in (chat_copy, core_copy):
+        if not path.is_file():
+            return CheckResult(REPO_CORE, name, False, f"нет файла: {path}")
+    try:
+        same = sha256_file(chat_copy) == sha256_file(core_copy)
+    except OSError as exc:
+        return CheckResult(REPO_CORE, name, False, f"не удалось прочитать копии: {_exc_text(exc)}")
+    if not same:
+        return CheckResult(
+            REPO_CORE,
+            name,
+            False,
+            f"копии различаются — синхронизируйте {_rel_to(chat_copy, CHAT_APP_DIR)} "
+            f"в chat-app и {_rel_to(core_copy, CORE_DIR)} в assistant-core",
+        )
+    return CheckResult(REPO_CORE, name, True)
+
+
 def overall_green(results: list[CheckResult]) -> bool:
     """Пустой список результатов - красный: гейт без проверок ничего не доказывает."""
     return bool(results) and all(result.ok for result in results)
@@ -126,6 +405,13 @@ def render_report(results: list[CheckResult]) -> str:
     return "\n".join(lines)
 
 
+def _safe_pytest_step(repo: str, **kwargs) -> CheckResult:
+    try:
+        return run_pytest_step(repo=repo, **kwargs)
+    except Exception as exc:  # неожиданный сбой шага - красная строка, не трассировка
+        return CheckResult(repo, "pytest — тестов: 0", False, f"сбой шага: {_exc_text(exc)}")
+
+
 def _safe_lint_step(repo: str, **kwargs) -> CheckResult:
     try:
         return run_lint_imports_step(repo=repo, **kwargs)
@@ -135,11 +421,36 @@ def _safe_lint_step(repo: str, **kwargs) -> CheckResult:
 
 def _run_all(save_dir: Path | None) -> list[CheckResult]:
     results: list[CheckResult] = []
-    results.append(
-        _safe_lint_step(
-            REPO_CORE, lint_bin=CORE_VENV_BIN / "lint-imports", cwd=CORE_DIR, env_extra=None
+    before = _sha_or_none(LIVE_DB)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="gate-"))
+    try:
+        results.append(
+            _safe_pytest_step(
+                REPO_CORE,
+                pytest_bin=CORE_VENV_BIN / "pytest",
+                target="tests",
+                cwd=CORE_DIR,
+                env_extra=core_pytest_env(tmp_dir / "gate-core-test.db"),
+                tmp_dir=tmp_dir,
+                save_dir=save_dir,
+            )
         )
-    )
+        # «После» измеряется СРАЗУ за pytest core: окно для записи живого сервиса минимально.
+        after = _sha_or_none(LIVE_DB)
+        results.append(db_unchanged_check(before, after))
+        results.append(
+            _safe_lint_step(
+                REPO_CORE, lint_bin=CORE_VENV_BIN / "lint-imports", cwd=CORE_DIR, env_extra=None
+            )
+        )
+        results.append(
+            persona_drift_check(CHAT_PERSONA, CORE_PERSONA, "синтетическая персона (дрейф SHA-256)")
+        )
+        results.append(
+            persona_drift_check(CHAT_TOKENS, CORE_TOKENS, "токены персоны (дрейф SHA-256)")
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     return results
 
 
