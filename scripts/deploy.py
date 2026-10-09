@@ -24,8 +24,10 @@ import ast
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -47,6 +49,9 @@ STATE_FILE_DEFAULT = Path("/var/tmp/assistant-core-smoke-state.json")
 MESSAGE_LIMIT = 160
 MAX_LISTED_FINDINGS = 10
 GET_ME_TIMEOUT_S = 15
+AWAIT_INTERVAL_S = 5
+DEFAULT_AWAIT_TIMEOUT_S = 120
+MAX_STORED_ERRORS = 50
 # Единственный ключ .env, который читает скрипт; значение нигде не печатается и не сохраняется.
 BOT_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 ENV_FILE_DEFAULT = CORE_DIR / ".env"
@@ -111,6 +116,10 @@ class CommandError(Exception):
     """Команда не выполнилась; текст пригоден для вывода (без сырого вывода команды)."""
 
 
+class StateError(Exception):
+    """Файл состояния смоука отсутствует или повреждён; текст пригоден для вывода."""
+
+
 # --------------------------------------------------------------------------- подпроцессы
 
 
@@ -125,6 +134,8 @@ def ensure_read_only(cmd: Sequence[str]) -> None:
         raise ValueError("пустая команда")
     program = cmd[0]
     if program == "systemctl" and len(cmd) >= 2 and cmd[1] == "show":
+        return
+    if program == "git" and len(cmd) == 5 and cmd[1] == "-C" and list(cmd[3:]) == ["rev-parse", "HEAD"]:
         return
     if program == "journalctl" and "--rotate" not in cmd and not any(
         part.startswith("--vacuum") or part == "--flush" for part in cmd
@@ -535,21 +546,253 @@ def check_get_me(env_path: Path, opener: Opener = urllib.request.urlopen) -> Che
 
 # --------------------------------------------------------------------------- состояние смоука
 
+_STATE_REQUIRED_KEYS = ("invocation_id", "help_marker_utc", "checks")
 
-def save_state(path: Path, data: dict) -> None:
-    """Записать JSON с правами 0600 (каталог вне репозитория, секретов в данных нет)."""
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
+
+def _write_private(path: Path, text: str) -> None:
+    """Записать файл с правами 0600 (в том числе сузить права существующего файла)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
+            handle.write(text)
     except BaseException:
         try:
             os.close(fd)
         except OSError:
             pass
         raise
+
+
+def save_state(path: Path, data: dict) -> None:
+    """Записать JSON состояния с правами 0600 (каталог вне репозитория, секретов нет)."""
+    _write_private(path, json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def load_state(path: Path) -> dict:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise StateError(
+            "файл состояния не найден: сначала запустите смоук без флагов (python3 scripts/deploy.py)"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise StateError(f"файл состояния повреждён ({type(exc).__name__}): повторите смоук") from exc
+    if not isinstance(data, dict) or any(key not in data for key in _STATE_REQUIRED_KEYS):
+        raise StateError("файл состояния имеет неожиданный формат: повторите смоук")
+    return data
+
+
+def build_state(result: SmokeResult, moment: datetime) -> dict:
+    """Состояние смоука из очищенных данных: сырые строки журнала сюда не попадают."""
+    stamp = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return {
+        "created_utc": stamp,
+        "invocation_id": result.invocation_id,
+        "checks": [asdict(row) for row in result.rows],
+        "errors": [asdict(f) for f in result.errors[:MAX_STORED_ERRORS]],
+        "errors_total": len(result.errors),
+        "warnings": dict(Counter(f.logger or "?" for f in result.warnings)),
+        "help_marker_utc": stamp,
+        "help_handled": None,
+        "owner_confirmed": None,
+    }
+
+
+# --------------------------------------------------------------------------- фазы без TTY (D-09)
+
+_RE_HANDLED = re.compile(r"^Update id=\d+ is handled\b")
+UPDATES_LOGGER = "aiogram.event"
+
+
+def count_handled_updates(records: Sequence[JournalRecord], since: datetime) -> int:
+    """Число обработанных ботом обновлений («Update id=N is handled») не раньше метки."""
+    return sum(
+        1
+        for record in records
+        if record.logger == UPDATES_LOGGER
+        and record.ts >= since
+        and _RE_HANDLED.match(record.text.splitlines()[0] if record.text else "")
+    )
+
+
+def _marker(state: dict) -> datetime:
+    marker = _parse_ts(str(state.get("help_marker_utc", "")))
+    if marker is None:
+        raise StateError("в файле состояния нет метки времени: повторите смоук")
+    return marker
+
+
+def _handled_since_marker(state: dict, runner: Runner) -> bool:
+    marker = _marker(state)
+    text = read_invocation_journal(runner, str(state["invocation_id"]), since=marker)
+    return count_handled_updates(parse_journal(text), marker) > 0
+
+
+def ensure_same_invocation(state: dict, runner: Runner) -> None:
+    """Состояние смоука относится к текущему запуску сервиса, иначе подтверждать нечего."""
+    current = get_service_state(runner)
+    if current.invocation_id != state.get("invocation_id"):
+        raise CommandError(
+            "сервис перезапущен или остановлен после смоука: повторите автоматическую часть"
+        )
+
+
+def await_help(
+    state: dict,
+    runner: Runner,
+    sleep: Callable[[float], None],
+    now: Callable[[], datetime],
+    timeout: int = DEFAULT_AWAIT_TIMEOUT_S,
+    interval: int = AWAIT_INTERVAL_S,
+) -> bool:
+    """Ждать в журнале обработанное обновление после метки; опрос с шагом ``interval``."""
+    deadline = now() + timedelta(seconds=timeout)
+    while True:
+        if _handled_since_marker(state, runner):
+            return True
+        if now() >= deadline:
+            return False
+        sleep(interval)
+
+
+def confirm_help(state: dict, answer: str, runner: Runner) -> dict:
+    """Записать ответ владельца; если обновление ещё не проверялось, один раз глянуть журнал."""
+    updated = dict(state)
+    updated["owner_confirmed"] = answer == "yes"
+    if updated.get("help_handled") is None:
+        updated["help_handled"] = _handled_since_marker(updated, runner)
+    return updated
+
+
+def final_verdict(state: dict) -> str:
+    """ЗЕЛЁНЫЙ только при зелёной автоматической части, обработанном обновлении и «да» владельца."""
+    checks = state.get("checks") or []
+    if not checks or not all(item.get("ok") for item in checks):
+        return "КРАСНЫЙ"
+    if state.get("owner_confirmed") is False or state.get("help_handled") is False:
+        return "КРАСНЫЙ"
+    if state.get("owner_confirmed") is True and state.get("help_handled") is True:
+        return "ЗЕЛЁНЫЙ"
+    return "ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ"
+
+
+def verdict_reasons(state: dict) -> list[str]:
+    """Пояснения к вердикту по-русски (без секретов: имена проверок и флаги)."""
+    reasons: list[str] = []
+    checks = state.get("checks") or []
+    failed = [str(item.get("name", "?")) for item in checks if not item.get("ok")]
+    if not checks:
+        reasons.append("автоматическая часть не выполнялась")
+    if failed:
+        reasons.append("красные проверки автоматической части: " + "; ".join(failed))
+    if state.get("help_handled") is False:
+        if state.get("owner_confirmed") is True:
+            reasons.append(
+                "ответ владельца «да», но в журнале нет обработанного обновления после метки"
+            )
+        else:
+            reasons.append("в журнале нет обработанного обновления после метки")
+    if state.get("owner_confirmed") is False:
+        reasons.append("владелец ответил «нет»")
+    if state.get("help_handled") is None:
+        reasons.append("не выполнен --await-help")
+    if state.get("owner_confirmed") is None:
+        reasons.append("не выполнен --confirm-help")
+    return reasons
+
+
+# --------------------------------------------------------------------------- отчёт (D-13)
+
+
+def validate_report_path(path: Path) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if ".git" in resolved.parts:
+        raise ValueError("отчёт нельзя писать внутрь каталога .git")
+    if resolved.is_dir():
+        raise ValueError("путь отчёта указывает на каталог")
+    if not resolved.parent.is_dir():
+        raise ValueError(f"каталог отчёта не существует: {resolved.parent}")
+    return resolved
+
+
+def get_head(runner: Runner) -> str | None:
+    """Хеш HEAD репозитория через ``git rev-parse`` (единственная не-systemd команда)."""
+    try:
+        out = _run(runner, ["git", "-C", str(CORE_DIR), "rev-parse", "HEAD"], SYSTEMCTL_TIMEOUT_S)
+    except CommandError:
+        return None
+    value = out.strip()
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def _md(text: object) -> str:
+    """Очистка и экранирование для markdown-таблиц и списков."""
+    return redact(str(text)).replace("|", "\\|").replace("`", "'")
+
+
+def _yes_no(value: object, unknown: str) -> str:
+    return unknown if value is None else ("да" if value else "нет")
+
+
+def render_report_md(state: dict, head: str | None, now: datetime) -> str:
+    """Markdown-отчёт смоука только из состояния и очищенных данных (повторная очистка внутри)."""
+    stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines = [
+        "# Отчёт смоука assistant-worker",
+        "",
+        f"- Дата: {stamp}",
+        f"- Коммит HEAD: {('`' + head + '`') if head else 'неизвестен'}",
+        f"- InvocationID: `{_md(state.get('invocation_id', ''))}`",
+        "",
+        "## Проверки",
+        "",
+        "| Проверка | Результат |",
+        "|---|---|",
+    ]
+    details: list[str] = []
+    for item in state.get("checks") or []:
+        lines.append(f"| {_md(item.get('name', '?'))} | {'✓' if item.get('ok') else '✗'} |")
+        for detail_line in str(item.get("detail", "")).splitlines():
+            details.append(f"- {_md(item.get('name', '?'))} ↳ {_md(detail_line)}")
+    if details:
+        lines += ["", *details]
+
+    errors = state.get("errors") or []
+    total = int(state.get("errors_total", len(errors)) or 0)
+    lines += ["", f"## Ошибки в окне старта ({total})", ""]
+    if errors:
+        lines += [
+            f"- [{_md(e.get('level', '?'))}] `{_md(e.get('logger', '?'))}`: {_md(e.get('message', ''))}"
+            for e in errors
+        ]
+        if total > len(errors):
+            lines.append(f"- … показано {len(errors)} из {total}")
+    else:
+        lines.append("Нет.")
+
+    warnings = state.get("warnings") or {}
+    lines += ["", "## WARNING в окне старта", ""]
+    if warnings:
+        ordered = sorted(warnings.items(), key=lambda item: (-int(item[1]), str(item[0])))
+        lines += [f"- `{_md(name)}`: {int(count)}" for name, count in ordered]
+        lines.append("Вердикт WARNING не меняют.")
+    else:
+        lines.append("Нет.")
+
+    lines += [
+        "",
+        "## Подтверждение бота",
+        "",
+        f"- Обработанное обновление после метки {_md(state.get('help_marker_utc', '?'))}: "
+        f"{_yes_no(state.get('help_handled'), 'не проверялось')}",
+        f"- Ответ владельца на /help: {_yes_no(state.get('owner_confirmed'), 'не получен')}",
+    ]
+    verdict = final_verdict(state)
+    if verdict != "ЗЕЛЁНЫЙ":
+        lines += ["", *[f"- {_md(reason)}" for reason in verdict_reasons(state)]]
+    lines += ["", f"**ИТОГ СМОУКА: {verdict}**", ""]
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- автоматическая часть
@@ -608,10 +851,23 @@ def run_smoke(
 # --------------------------------------------------------------------------- CLI
 
 
+def _nonneg_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("нужно целое число секунд") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("число секунд не может быть отрицательным")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deploy.py",
-        description="Read-only смоук сервиса assistant-worker (без флагов сервис не меняется).",
+        description=(
+            "Read-only смоук сервиса assistant-worker. Без флагов выполняется автоматическая часть "
+            "и сервис не меняется; фазы подтверждения /help работают по файлу состояния."
+        ),
     )
     parser.add_argument(
         "--state-file",
@@ -619,7 +875,106 @@ def build_parser() -> argparse.ArgumentParser:
         default=STATE_FILE_DEFAULT,
         help=f"файл состояния смоука вне репозитория (по умолчанию {STATE_FILE_DEFAULT})",
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="записать markdown-отчёт в PATH (каталог должен существовать, не внутри .git)",
+    )
+    phase = parser.add_mutually_exclusive_group()
+    phase.add_argument(
+        "--await-help",
+        action="store_true",
+        help="ждать в журнале обработанное обновление после метки смоука (отправьте боту /help)",
+    )
+    phase.add_argument(
+        "--confirm-help",
+        choices=("yes", "no"),
+        help="записать ответ владельца на /help (ответ Claude получает опросом в чате)",
+    )
+    parser.add_argument(
+        "--await-timeout",
+        type=_nonneg_int,
+        default=DEFAULT_AWAIT_TIMEOUT_S,
+        metavar="SECONDS",
+        help=f"дедлайн для --await-help (по умолчанию {DEFAULT_AWAIT_TIMEOUT_S} с)",
+    )
     return parser
+
+
+def _instruction(state_file: Path) -> str:
+    suffix = "" if state_file == STATE_FILE_DEFAULT else f" --state-file {shlex.quote(str(state_file))}"
+    return "\n".join(
+        [
+            "Автоматическая часть зелёная. Дальше фазы без TTY (D-09):",
+            "  1. Отправьте боту команду /help.",
+            f"  2. Выполните: python3 scripts/deploy.py --await-help{suffix}",
+            "  3. Claude спросит владельца в чате опросом, пришёл ли ответ, и выполнит:",
+            f"     python3 scripts/deploy.py --confirm-help yes{suffix}   (или no)",
+            "Подтверждение «ответ пришёл?» Claude получает опросом в чате, а не вводом в терминале.",
+        ]
+    )
+
+
+def _write_report(
+    path: Path, state: dict, runner: Runner, clock: Callable[[], datetime]
+) -> int:
+    try:
+        _write_private(path, render_report_md(state, get_head(runner), clock()))
+    except OSError as exc:
+        print(f"Не удалось записать отчёт: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    print(f"Отчёт записан: {path}")
+    return 0
+
+
+def _run_phase(
+    args: argparse.Namespace,
+    runner: Runner,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+    report_path: Path | None,
+) -> int:
+    try:
+        state = load_state(args.state_file)
+        ensure_same_invocation(state, runner)
+        if args.await_help:
+            handled = await_help(state, runner, sleep, clock, args.await_timeout)
+            state["help_handled"] = handled
+            if handled:
+                print("Обновление после метки смоука: обработано ботом.")
+            else:
+                print(f"Обновление после метки смоука не получено за {args.await_timeout} с.")
+        else:
+            state = confirm_help(state, args.confirm_help, runner)
+    except StateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except CommandError as exc:
+        print(f"Смоук прерван: {exc}")
+        return 1
+    try:
+        save_state(args.state_file, state)
+    except OSError as exc:
+        print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
+        return 2
+
+    verdict = final_verdict(state)
+    if args.confirm_help:
+        print(f"ИТОГ СМОУКА: {verdict}")
+        if verdict != "ЗЕЛЁНЫЙ":
+            for reason in verdict_reasons(state):
+                print(f"  ↳ {reason}")
+    elif state["help_handled"]:
+        print("Дальше Claude спросит владельца, пришёл ли ответ, и выполнит --confirm-help.")
+    rc = 0
+    if report_path is not None:
+        rc = _write_report(report_path, state, runner, clock)
+    if rc:
+        return rc
+    if args.await_help:
+        return 0 if state["help_handled"] else 1
+    return 0 if verdict == "ЗЕЛЁНЫЙ" else 1
 
 
 def main(
@@ -629,6 +984,7 @@ def main(
     opener: Opener | None = None,
     env_path: Path | None = None,
     main_py_path: Path | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> int:
     parser = build_parser()
     try:
@@ -636,6 +992,18 @@ def main(
     except SystemExit as exc:
         return int(exc.code or 0)
     clock = now or (lambda: datetime.now(timezone.utc))
+    sleep_fn = sleep or time.sleep
+
+    report_path: Path | None = None
+    if args.report is not None:
+        try:
+            report_path = validate_report_path(args.report)
+        except ValueError as exc:
+            print(f"Отчёт: {exc}", file=sys.stderr)
+            return 2
+
+    if args.await_help or args.confirm_help:
+        return _run_phase(args, runner, clock, sleep_fn, report_path)
 
     result = run_smoke(
         runner,
@@ -644,18 +1012,19 @@ def main(
         main_py_path=main_py_path or MAIN_PY_DEFAULT,
     )
     print(render_table(result.rows, result.warnings))
-
-    state = {
-        "created_utc": clock().astimezone(timezone.utc).isoformat(timespec="seconds"),
-        "invocation_id": result.invocation_id,
-        "checks": [asdict(row) for row in result.rows],
-    }
+    state = build_state(result, clock())
     try:
         save_state(args.state_file, state)
     except OSError as exc:
         print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
         return 2
-    return 0 if auto_ok(result.rows) else 1
+    green = auto_ok(result.rows)
+    if green:
+        print(_instruction(args.state_file))
+    print(f"ИТОГ СМОУКА: {final_verdict(state)}")
+    if report_path is not None and _write_report(report_path, state, runner, clock):
+        return 2
+    return 0 if green else 1
 
 
 if __name__ == "__main__":

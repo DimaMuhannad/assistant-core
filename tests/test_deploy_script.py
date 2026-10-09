@@ -831,3 +831,537 @@ def test_read_env_key_is_called_only_with_bot_token_key():
     keys = re.findall(r"read_env_key\([^,()]+,\s*([^)]+)\)", code)
     assert keys and all(key.strip() in {"BOT_TOKEN_KEY", '"TELEGRAM_BOT_TOKEN"'} for key in keys)
     assert deploy.BOT_TOKEN_KEY == "TELEGRAM_BOT_TOKEN"
+
+
+# ================================================================ Task 3: фазы без TTY и отчёт
+
+import ast  # noqa: E402
+import json  # noqa: E402
+
+BOT_HANDLER_PATH = Path(__file__).resolve().parents[1] / "src" / "notifier" / "bot_handler.py"
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+BOT_TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
+
+
+def _line_at(moment: datetime, level: str, logger: str, text: str) -> str:
+    """Строка журнала с явным временем (для обновлений после метки смоука)."""
+    stamp = moment.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    app_time = moment.strftime("%Y-%m-%d %H:%M:%S") + ",001"
+    return f"{stamp} host python3[4242]: {app_time} [{level}] {logger}: {text}"
+
+
+def _handled(moment: datetime, update_id: int = 7) -> str:
+    return _line_at(
+        moment, "INFO", "aiogram.event", f"Update id={update_id} is handled. Duration 182 ms by bot id=1"
+    )
+
+
+class Clock:
+    """Часы и sleep для ожидания без реальных пауз."""
+
+    def __init__(self, start: datetime = NOW) -> None:
+        self.current = start
+        self.slept: list[float] = []
+
+    def now(self) -> datetime:
+        return self.current
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.current += timedelta(seconds=seconds)
+
+
+class SeqRunner(FakeRunner):
+    """Журнал меняется от вызова к вызову: последний элемент повторяется."""
+
+    def __init__(self, journals: list[str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.journals = list(journals)
+        self.journal_calls = 0
+
+    def __call__(self, cmd, timeout):
+        if cmd[0] == "journalctl":
+            index = min(self.journal_calls, len(self.journals) - 1)
+            self.journal_calls += 1
+            self.journal = self.journals[index]
+        if cmd[0] == "git":
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="a" * 40 + "\n", stderr="")
+        return super().__call__(cmd, timeout)
+
+
+def _handled_journal(offset_s: float = 5) -> str:
+    return GREEN_JOURNAL + _journal(_handled(NOW + timedelta(seconds=offset_s)))
+
+
+def _make_state(tmp_path: Path) -> Path:
+    assert _run_main(tmp_path, FakeRunner()) == 0
+    return tmp_path / "state.json"
+
+
+def _phase(tmp_path: Path, runner, *flags: str, clock: Clock | None = None) -> int:
+    clock = clock or Clock()
+    return deploy.main(
+        ["--state-file", str(tmp_path / "state.json"), *flags],
+        runner=runner,
+        now=clock.now,
+        sleep=clock.sleep,
+    )
+
+
+def _state(tmp_path: Path) -> dict:
+    return json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- счёт обновлений
+
+
+def test_count_handled_updates_counts_only_handled_after_marker():
+    marker = NOW
+    records = deploy.parse_journal(
+        _journal(
+            _handled(NOW - timedelta(seconds=30), 1),
+            _handled(NOW + timedelta(seconds=1), 2),
+            _line_at(NOW + timedelta(seconds=2), "INFO", "aiogram.event", "Update id=3 is not handled."),
+            _line_at(NOW + timedelta(seconds=3), "INFO", "other.logger", "Update id=4 is handled."),
+            _handled(NOW, 5),
+        )
+    )
+    assert deploy.count_handled_updates(records, marker) == 2
+
+
+# ---------------------------------------------------------------- ожидание /help
+
+
+def _state_dict(**over) -> dict:
+    data = {
+        "created_utc": NOW.isoformat(),
+        "invocation_id": INVOCATION,
+        "checks": [{"name": "сервис active", "ok": True, "detail": ""}],
+        "errors": [],
+        "warnings": {},
+        "help_marker_utc": NOW.isoformat(timespec="seconds"),
+        "help_handled": None,
+        "owner_confirmed": None,
+    }
+    data.update(over)
+    return data
+
+
+def test_await_help_returns_true_when_update_appears_later():
+    clock = Clock()
+    runner = SeqRunner([GREEN_JOURNAL, GREEN_JOURNAL, _handled_journal()])
+    handled = deploy.await_help(_state_dict(), runner, clock.sleep, clock.now, timeout=120)
+    assert handled is True
+    assert clock.slept == [5, 5]
+
+
+def test_await_help_times_out_without_real_waiting():
+    clock = Clock()
+    runner = SeqRunner([GREEN_JOURNAL])
+    handled = deploy.await_help(_state_dict(), runner, clock.sleep, clock.now, timeout=30)
+    assert handled is False
+    assert sum(clock.slept) >= 30
+    assert all(step == 5 for step in clock.slept)
+
+
+def test_await_help_journal_query_filters_by_invocation_and_marker():
+    clock = Clock()
+    runner = SeqRunner([_handled_journal()])
+    deploy.await_help(_state_dict(), runner, clock.sleep, clock.now, timeout=10)
+    call = next(c for c in runner.calls if c[0] == "journalctl")
+    assert f"_SYSTEMD_INVOCATION_ID={INVOCATION}" in call
+    assert "--since" in call
+    assert call[call.index("--since") + 1] == "2026-10-09 12:00:00 UTC"
+
+
+# ---------------------------------------------------------------- вердикт
+
+
+@pytest.mark.parametrize(
+    "over, expected",
+    [
+        ({"help_handled": True, "owner_confirmed": True}, "ЗЕЛЁНЫЙ"),
+        ({"help_handled": True, "owner_confirmed": False}, "КРАСНЫЙ"),
+        ({"help_handled": False, "owner_confirmed": True}, "КРАСНЫЙ"),
+        ({"help_handled": False}, "КРАСНЫЙ"),
+        ({"help_handled": True, "owner_confirmed": None}, "ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ"),
+        ({}, "ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ"),
+        (
+            {"checks": [{"name": "x", "ok": False, "detail": ""}], "help_handled": True,
+             "owner_confirmed": True},
+            "КРАСНЫЙ",
+        ),
+        ({"checks": [], "help_handled": True, "owner_confirmed": True}, "КРАСНЫЙ"),
+    ],
+)
+def test_final_verdict_rules(over, expected):
+    assert deploy.final_verdict(_state_dict(**over)) == expected
+
+
+def test_verdict_reasons_explain_yes_without_handled_update():
+    reasons = deploy.verdict_reasons(_state_dict(help_handled=False, owner_confirmed=True))
+    assert any("журнал" in reason for reason in reasons)
+
+
+# ---------------------------------------------------------------- confirm_help
+
+
+def test_confirm_help_checks_journal_once_without_waiting():
+    runner = SeqRunner([_handled_journal()])
+    state = deploy.confirm_help(_state_dict(), "yes", runner)
+    assert state["owner_confirmed"] is True
+    assert state["help_handled"] is True
+    assert runner.journal_calls == 1
+
+
+def test_confirm_help_yes_without_update_is_recorded_as_not_handled():
+    runner = SeqRunner([GREEN_JOURNAL])
+    state = deploy.confirm_help(_state_dict(), "yes", runner)
+    assert state["help_handled"] is False
+    assert deploy.final_verdict(state) == "КРАСНЫЙ"
+
+
+def test_confirm_help_keeps_known_handled_flag_without_journal_query():
+    runner = SeqRunner([GREEN_JOURNAL])
+    state = deploy.confirm_help(_state_dict(help_handled=True), "no", runner)
+    assert runner.journal_calls == 0
+    assert state["owner_confirmed"] is False
+
+
+# ---------------------------------------------------------------- main: обычный запуск
+
+
+def test_main_green_prints_three_step_instruction(tmp_path, capsys):
+    assert _run_main(tmp_path, FakeRunner()) == 0
+    out = capsys.readouterr().out
+    assert "/help" in out
+    assert "--await-help" in out and "--confirm-help" in out
+    assert "опросом" in out
+    assert "ИТОГ СМОУКА: ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ" in out
+
+
+def test_main_red_does_not_print_instruction(tmp_path, capsys):
+    journal = _journal(_app(0, "ERROR", "src.x", "boom"))
+    assert _run_main(tmp_path, FakeRunner(journal=journal)) == 1
+    out = capsys.readouterr().out
+    assert "--await-help" not in out
+    assert "ИТОГ СМОУКА: КРАСНЫЙ" in out
+
+
+def test_main_state_has_marker_checks_and_unknown_help(tmp_path):
+    path = _make_state(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["help_marker_utc"] == "2026-10-09T12:00:00+00:00"
+    assert data["invocation_id"] == INVOCATION
+    assert len(data["checks"]) == 6
+    assert data["help_handled"] is None and data["owner_confirmed"] is None
+    assert "host python3[" not in path.read_text(encoding="utf-8")
+
+
+def test_main_state_stores_redacted_errors_without_raw_lines(tmp_path):
+    mail = "owner" + "@" + "example.org"
+    journal = _journal(
+        _app(0, "ERROR", "src.mail", f"login {mail} failed"),
+        *_job_lines(10),
+        _app(30, "INFO", "aiogram.dispatcher", "Run polling for bot id=1 - 'n'"),
+    )
+    _run_main(tmp_path, FakeRunner(journal=journal))
+    text = (tmp_path / "state.json").read_text(encoding="utf-8")
+    assert mail not in text and "host python3[" not in text
+    assert json.loads(text)["errors"][0]["logger"] == "src.mail"
+
+
+# ---------------------------------------------------------------- main: --await-help
+
+
+def test_await_help_without_state_file_returns_two(tmp_path, capsys):
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--await-help")
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "состояния" in captured.out + captured.err
+
+
+def test_await_help_handled_updates_state_and_returns_zero(tmp_path, capsys):
+    _make_state(tmp_path)
+    rc = _phase(tmp_path, SeqRunner([_handled_journal()]), "--await-help")
+    assert rc == 0
+    assert _state(tmp_path)["help_handled"] is True
+    assert ((tmp_path / "state.json").stat().st_mode & 0o777) == 0o600
+    assert "обработано" in capsys.readouterr().out
+
+
+def test_await_help_timeout_returns_one_and_marks_not_handled(tmp_path):
+    _make_state(tmp_path)
+    clock = Clock()
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--await-help", "--await-timeout", "15", clock=clock)
+    assert rc == 1
+    assert _state(tmp_path)["help_handled"] is False
+    assert sum(clock.slept) >= 15
+
+
+def test_await_help_refuses_state_of_previous_service_run(tmp_path, capsys):
+    _make_state(tmp_path)
+    other = "f" * 32
+    runner = SeqRunner([_handled_journal()], show=_show(invocation=other))
+    rc = _phase(tmp_path, runner, "--await-help")
+    assert rc == 1
+    assert "перезапущен" in capsys.readouterr().out
+    assert _state(tmp_path)["help_handled"] is None
+
+
+def test_await_help_corrupt_state_file_returns_two(tmp_path):
+    (tmp_path / "state.json").write_text("{not json", encoding="utf-8")
+    assert _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--await-help") == 2
+
+
+def test_await_timeout_must_be_non_negative_integer(tmp_path):
+    assert _phase(tmp_path, FakeRunner(), "--await-help", "--await-timeout", "abc") == 2
+    assert _phase(tmp_path, FakeRunner(), "--await-help", "--await-timeout", "-5") == 2
+
+
+# ---------------------------------------------------------------- main: --confirm-help
+
+
+def test_confirm_help_yes_after_handled_update_is_green(tmp_path, capsys):
+    _make_state(tmp_path)
+    assert _phase(tmp_path, SeqRunner([_handled_journal()]), "--await-help") == 0
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "yes")
+    assert rc == 0
+    assert "ИТОГ СМОУКА: ЗЕЛЁНЫЙ" in capsys.readouterr().out
+    assert _state(tmp_path)["owner_confirmed"] is True
+
+
+def test_confirm_help_no_is_red(tmp_path, capsys):
+    _make_state(tmp_path)
+    assert _phase(tmp_path, SeqRunner([_handled_journal()]), "--await-help") == 0
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "no")
+    assert rc == 1
+    assert "ИТОГ СМОУКА: КРАСНЫЙ" in capsys.readouterr().out
+
+
+def test_confirm_help_yes_without_handled_update_is_red_with_explanation(tmp_path, capsys):
+    _make_state(tmp_path)
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "yes")
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "ИТОГ СМОУКА: КРАСНЫЙ" in out
+    assert "журнал" in out
+
+
+def test_confirm_help_does_not_wait(tmp_path):
+    _make_state(tmp_path)
+    clock = Clock()
+    _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "yes", clock=clock)
+    assert clock.slept == []
+
+
+def test_confirm_help_rejects_unknown_answer(tmp_path):
+    _make_state(tmp_path)
+    assert _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "maybe") == 2
+
+
+def test_await_and_confirm_are_mutually_exclusive(tmp_path):
+    _make_state(tmp_path)
+    assert _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--await-help", "--confirm-help", "yes") == 2
+
+
+# ---------------------------------------------------------------- отчёт
+
+
+def _dirty_state() -> dict:
+    mail = "owner" + "@" + "example.org"
+    token = "123456789" + ":" + "AAH" + "z" * 32
+    return _state_dict(
+        errors=[
+            {"level": "ERROR", "logger": "src.collector.mail", "message": f"login {mail} failed"},
+            {"level": "TRACEBACK", "logger": "src.x", "message": f"bad {token} | `tick`"},
+        ],
+        warnings={"src.a": 2, "src.b": 1},
+        checks=[
+            {"name": "сервис active", "ok": True, "detail": ""},
+            {"name": "getMe: токен бота жив", "ok": False, "detail": f"url bot{token}/getMe {mail}"},
+        ],
+        help_handled=True,
+        owner_confirmed=True,
+    )
+
+
+def test_render_report_md_has_required_sections():
+    report = deploy.render_report_md(_dirty_state(), "a" * 40, NOW)
+    for fragment in (
+        "2026-10-09",
+        "a" * 40,
+        "| Проверка |",
+        "Ошибки в окне старта",
+        "src.collector.mail",
+        "WARNING",
+        "src.a",
+        "Подтверждение бота",
+        "ИТОГ СМОУКА:",
+    ):
+        assert fragment in report
+
+
+def test_render_report_md_contains_no_emails_tokens_or_raw_lines():
+    report = deploy.render_report_md(_dirty_state(), "a" * 40, NOW)
+    assert not EMAIL_RE.search(report)
+    assert not BOT_TOKEN_RE.search(report)
+    assert "host python3[" not in report
+
+
+def test_render_report_md_unknown_head_is_marked():
+    report = deploy.render_report_md(_state_dict(), None, NOW)
+    assert "неизвестен" in report
+
+
+def test_render_report_md_verdict_matches_final_verdict():
+    green = deploy.render_report_md(_state_dict(help_handled=True, owner_confirmed=True), "b" * 40, NOW)
+    assert "ИТОГ СМОУКА: ЗЕЛЁНЫЙ" in green
+    pending = deploy.render_report_md(_state_dict(), "b" * 40, NOW)
+    assert "ИТОГ СМОУКА: ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ" in pending
+
+
+def test_main_report_flag_writes_file_with_head_from_git(tmp_path):
+    report = tmp_path / "smoke.md"
+    runner = SeqRunner([GREEN_JOURNAL])
+    rc = _phase(tmp_path, runner, "--report", str(report))
+    assert rc in (0, 1)
+    text = report.read_text(encoding="utf-8")
+    assert "a" * 40 in text
+    git_calls = [c for c in runner.calls if c[0] == "git"]
+    assert git_calls == [["git", "-C", str(deploy.CORE_DIR), "rev-parse", "HEAD"]]
+
+
+def test_main_report_overwrites_existing_file(tmp_path):
+    report = tmp_path / "smoke.md"
+    report.write_text("старое содержимое", encoding="utf-8")
+    _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--report", str(report))
+    assert "старое содержимое" not in report.read_text(encoding="utf-8")
+
+
+def test_main_report_after_confirm_reflects_final_verdict(tmp_path):
+    _make_state(tmp_path)
+    _phase(tmp_path, SeqRunner([_handled_journal()]), "--await-help")
+    report = tmp_path / "smoke.md"
+    rc = _phase(tmp_path, SeqRunner([GREEN_JOURNAL]), "--confirm-help", "yes", "--report", str(report))
+    assert rc == 0
+    assert "ИТОГ СМОУКА: ЗЕЛЁНЫЙ" in report.read_text(encoding="utf-8")
+
+
+def test_validate_report_path_requires_existing_parent(tmp_path):
+    with pytest.raises(ValueError):
+        deploy.validate_report_path(tmp_path / "no_dir" / "r.md")
+
+
+def test_validate_report_path_rejects_git_directory(tmp_path):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    with pytest.raises(ValueError):
+        deploy.validate_report_path(git_dir / "r.md")
+
+
+def test_validate_report_path_accepts_existing_file_and_new_file(tmp_path):
+    existing = tmp_path / "r.md"
+    existing.write_text("x", encoding="utf-8")
+    assert deploy.validate_report_path(existing) == existing.resolve()
+    assert deploy.validate_report_path(tmp_path / "new.md") == (tmp_path / "new.md").resolve()
+
+
+def test_main_invalid_report_path_returns_two_before_any_command(tmp_path):
+    runner = FakeRunner()
+    rc = _phase(tmp_path, runner, "--report", str(tmp_path / "missing" / "r.md"))
+    assert rc == 2
+    assert runner.calls == []
+
+
+# ---------------------------------------------------------------- read-only во всех режимах
+
+
+def test_all_modes_pass_only_whitelisted_commands(tmp_path):
+    _make_state(tmp_path)
+    runners = []
+    for flags in (
+        ("--await-help",),
+        ("--confirm-help", "yes"),
+        ("--report", str(tmp_path / "r.md")),
+    ):
+        runner = SeqRunner([_handled_journal()])
+        _phase(tmp_path, runner, *flags)
+        runners.append(runner)
+    forbidden = {"restart", "stop", "start", "kill", "reload", "enable", "disable", "daemon-reload"}
+    for runner in runners:
+        assert runner.calls
+        for call in runner.calls:
+            deploy.ensure_read_only(call)
+            assert call[0] in {"systemctl", "journalctl", "git"}
+            assert not (forbidden & set(call))
+
+
+def test_ensure_read_only_git_only_rev_parse_head():
+    deploy.ensure_read_only(["git", "-C", "/opt/assistant-core", "rev-parse", "HEAD"])
+    for cmd in (
+        ["git", "-C", "/x", "push"],
+        ["git", "-C", "/x", "rev-parse", "HEAD", "--", "extra"],
+        ["git", "commit", "-m", "x"],
+    ):
+        with pytest.raises(ValueError):
+            deploy.ensure_read_only(cmd)
+
+
+# ---------------------------------------------------------------- состояние: загрузка
+
+
+def test_load_state_roundtrip_and_validation(tmp_path):
+    path = tmp_path / "s.json"
+    deploy.save_state(path, _state_dict())
+    assert deploy.load_state(path)["invocation_id"] == INVOCATION
+    with pytest.raises(deploy.StateError):
+        deploy.load_state(tmp_path / "absent.json")
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(deploy.StateError):
+        deploy.load_state(path)
+    path.write_text('{"invocation_id": "x"}', encoding="utf-8")
+    with pytest.raises(deploy.StateError):
+        deploy.load_state(path)
+
+
+def test_save_state_tightens_mode_of_existing_file(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o644)
+    deploy.save_state(path, _state_dict())
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+# ---------------------------------------------------------------- D-07 и CLI
+
+
+def test_help_handler_does_not_touch_db():
+    """D-07: /help не пишет в БД. Если справка начнёт обращаться к self.db, тест краснеет.
+
+    Предупреждение PRIV-01 в тексте справки допустимо: оно не использует БД. Запись в БД из
+    справки возвращает вопрос владельцу.
+    """
+    tree = ast.parse(BOT_HANDLER_PATH.read_text(encoding="utf-8"))
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == "handle_cmd_help"
+    ]
+    assert len(handlers) == 1, "обработчик handle_cmd_help не найден: тест не может быть пустым"
+    for node in ast.walk(handlers[0]):
+        if isinstance(node, ast.Attribute) and node.attr in {"db", "database"}:
+            owner = node.value
+            assert not (isinstance(owner, ast.Name) and owner.id == "self"), "handle_cmd_help обращается к БД"
+        if isinstance(node, ast.Name):
+            assert node.id not in {"Database", "sqlite3", "aiosqlite"}
+
+
+def test_cli_help_lists_all_five_options():
+    proc = subprocess.run(
+        [sys.executable, str(DEPLOY_PATH), "--help"], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0
+    for option in ("--state-file", "--report", "--await-help", "--await-timeout", "--confirm-help"):
+        assert option in proc.stdout
