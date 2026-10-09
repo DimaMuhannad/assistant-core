@@ -27,7 +27,7 @@ last_mapped_at: 2026-10-09
 - Enums are `StrEnum` with lowercase string values: `ConnectorRole`, `WorkspaceClearance` (`src/core/domain/entities.py`).
 
 **Variables and constants:**
-- Module constants are `UPPER_SNAKE_CASE`: `VALID_ACTIONS` (`src/brain/intent_router.py`), `MAX_IGNORED_IMPORTS` and `LINT_ARGS` (`tests/test_architecture_contract.py`), `KNOWN_SHIELD_FALSE_POSITIVES` (`/opt/chat-app/scripts/gate.py`).
+- Module constants are `UPPER_SNAKE_CASE`: `VALID_ACTIONS` (`src/brain/intent_router.py`), `MAX_IGNORED_IMPORTS` and `LINT_ARGS` (`tests/test_architecture_contract.py`), `KNOWN_SHIELD_FALSE_POSITIVES` (`scripts/gate.py` of this repository).
 - Module-level logger is always `logger = logging.getLogger(__name__)`, with one exception: `src/main.py` uses `logging.getLogger("assistant-worker")`.
 - Private module constants use a leading underscore: `_CONF_COL`, `_CAT_STUD` in `src/storage/db.py`.
 
@@ -43,7 +43,7 @@ last_mapped_at: 2026-10-09
 
 **Linting:**
 - No ruff, flake8, pylint, or mypy config exists for assistant-core.
-- The only enforced static check is architectural: `import-linter` with the contracts in `/opt/assistant-core/.importlinter`. Run through the shared gate (`lint-imports`).
+- The only enforced static check is architectural: `import-linter` with the contracts in `/opt/assistant-core/.importlinter`. Run through the own gate `scripts/gate.py` (`lint-imports`).
 - `scripts/security_shield.py` is a security scan (secret/NDA keywords), not a style linter. It runs through the pre-commit hook `/opt/assistant-core/.githooks/pre-commit`.
 
 **Dependency direction (enforced by `.importlinter`):**

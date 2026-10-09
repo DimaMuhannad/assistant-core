@@ -29,7 +29,8 @@ last_mapped_at: 2026-10-09
 /opt/assistant-core/.venv/bin/pytest tests/test_brain.py -q                 # Single file
 /opt/assistant-core/.venv/bin/pytest tests -k hitl                          # Keyword subset (dev only; not valid for the gate)
 /opt/assistant-core/.venv/bin/pytest tests -p no:cacheprovider              # Match the gate's invocation
-python3 /opt/chat-app/scripts/gate.py                                       # Full quality gate (both repos)
+python3 scripts/gate.py                                                     # Own quality gate (assistant-core + assistant-shared)
+cd /opt/assistant-shared && /opt/assistant-core/.venv/bin/pytest tests      # assistant-shared tests
 /opt/assistant-core/.venv/bin/python3 /opt/assistant-core/scripts/security_shield.py   # Security scan (staged files)
 /opt/assistant-core/.venv/bin/python3 /opt/assistant-core/scripts/security_shield.py --all  # Security scan, all tracked files
 ```
@@ -37,15 +38,26 @@ python3 /opt/chat-app/scripts/gate.py                                       # Fu
 - Coverage: no coverage tool is configured (`.coverage` is git-ignored, no `pytest-cov` in `requirements-dev.txt`). No coverage command is defined.
 - Watch mode: not configured.
 
-## Quality Gate (shared, read-only description)
+## Quality Gate (own)
 
-assistant-core has no gate of its own yet (planned early task). The shared gate `/opt/chat-app/scripts/gate.py` is the current reference. For assistant-core it checks:
+assistant-core runs its own quality gate via `python3 scripts/gate.py` from `/opt/assistant-core` (stdlib only, any python3). The summary is printed in Russian: `ИТОГ: ЗЕЛЁНЫЙ` (exit code 0) or `ИТОГ: КРАСНЫЙ`. The gate does not abort on the first failure: a failed step becomes a red line, and all ten lines are printed. The `--save-pytest-output DIR` option saves raw pytest output. The chat-app shared gate (`/opt/chat-app/scripts/gate.py`) remains the consumer gate, checks assistant-core and assistant-shared from its side, and is not changed (D-15).
 
-1. **pytest assistant-core** on `/opt/assistant-core/tests` using `/opt/assistant-core/.venv/bin/pytest`. The gate runs with `-v`, `-p no:cacheprovider`, a JUnit XML report, and its own `--basetemp`. Timeout: 900 s.
-2. **lint-imports** with `/opt/assistant-core/.importlinter` (architecture contracts; see CONVENTIONS.md).
-3. **security_shield** `--all` over tracked files, with a frozen list of known false positives. For assistant-core the only entry is `config/persona.yaml` (`nda-keyword`, 3 hits), to be removed by SEC-01.
-4. **Persona drift**: SHA-256 of `tests/synthetic_persona.py` in chat-app and assistant-core must match.
-5. **Production DB hash** before and after the run. Any change marks the gate red. The gate reads the live DB only through a read-only backup, and never the live DB itself for chat-app tests.
+The ten checks in actual order (repository | check):
+1. assistant-core | `pytest — тестов: N` (789 tests on the 01-05 plan baseline)
+2. assistant-core | `боевая assistant.db не изменена` (SHA-256 of the production DB before pytest and immediately after; upon divergence and a write by the live assistant-worker service within the window, ONE retry measurement is allowed in a quiet window, 5 s, green only if two measurements match, with a note in info)
+3. assistant-core | `import-linter` (contracts `.importlinter`)
+4. assistant-core | `security_shield (--all)` (comparison against frozen false positives list)
+5. assistant-core | `синтетическая персона (дрейф SHA-256)` (`tests/synthetic_persona.py` against copy in chat-app, read-only)
+6. assistant-core | `токены персоны (дрейф SHA-256)` (`tests/persona_tokens.py` against copy in chat-app, read-only)
+7. assistant-core | `pre-commit hook установлен` (`core.hooksPath = .githooks`, executable `.githooks/pre-commit`; hint `scripts/install_hooks.sh`)
+8. assistant-shared | `pytest — тестов: N` (91 tests; run with `.venv` interpreter of assistant-core, cwd = `/opt/assistant-shared`)
+9. assistant-shared | `security_shield (--all)` (false positives list is empty)
+10. assistant-shared | `pre-commit hook установлен`
+
+Key gate properties:
+- **Test DB isolation:** `tests/live_db_guard.py` (live DB guard) and env var `ASSISTANT_DB_PATH_OVERRIDE`, which the gate sets to a temporary DB; `PYTEST_ADDOPTS` is cleared, and the test set is not narrowed.
+- **Frozen false positives list for shield (D-17):** `KNOWN_SHIELD_FALSE_POSITIVES` in `scripts/gate.py`; for assistant-core the single entry is `config/persona.yaml` (`nda-keyword`, 3 findings); entries can only be removed, an obsolete entry (finding no longer present) makes the gate red; for assistant-shared the list is empty.
+- **Fail-closed when chat-app copy is missing (D-16):** missing copy of `synthetic_persona.py` or `persona_tokens.py` in chat-app results in a RED line stating the reason; "not checked" is never green.
 
 Gate pass rules that affect how tests must be written:
 - Zero collected tests = red.
@@ -145,7 +157,7 @@ def test_is_authenticated_check():
 ## Fixtures and Factories
 
 **Test Data:**
-- Synthetic persona: `tests/synthetic_persona.py` (`SYNTHETIC_PERSONA` dict). A second persona validates that nothing depends on the owner profile (FND-03). The copy in chat-app must stay byte-identical (gate checks SHA-256).
+- Synthetic persona: `tests/synthetic_persona.py` (`SYNTHETIC_PERSONA` dict). A second persona validates that nothing depends on the owner profile (FND-03). The copy in chat-app must stay byte-identical (gate checks SHA-256; `scripts/gate.py`, read-only comparison, fail-closed if the chat-app copy is missing).
 - Golden prompt snapshots: `tests/fixtures/prompts_snapshot/*.txt`. Updating a snapshot is an intentional change, reviewed as a diff; see `tests/test_prompt_snapshot.py`.
 - Domain object factories: build inline, e.g. `Lesson(subject=..., lesson_type=LessonType.LECTURE, date=today, start_time=time(9, 30), ...)`.
 
@@ -227,7 +239,7 @@ def test_connector_requires_scopes():
 - No coverage measurement is configured.
 - Count of `test_` functions is static (~378); the gate reports the collected total at run time.
 - `tests/test_phase1.py` and similar phase-named files reach across several modules; splitting them is optional debt, not a requirement.
-- Shared `security_shield` findings for `config/persona.yaml` are excepted in the gate until SEC-01 is done.
+- Three `nda-keyword` findings in `config/persona.yaml` are listed in `KNOWN_SHIELD_FALSE_POSITIVES` in `scripts/gate.py` (decision D-17); entries can only be removed, and the entry will be removed after SEC-01.
 
 ---
 

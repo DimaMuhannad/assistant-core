@@ -54,7 +54,7 @@ last_mapped_at: 2026-10-09
 - No build step; container built from `Dockerfile` (apt: build-essential, curl, tzdata)
 - docker-compose (`docker-compose.yml`, version 3.8) - single service `assistant-worker`, mounts `./data`, `credentials.json` (read-only), `token.json`
 - Security gate: `scripts/security_shield.py` (run with `/opt/assistant-core/.venv/bin/python3`)
-- Quality gate: `python3 /opt/chat-app/scripts/gate.py` (external, until assistant-core has its own)
+- Quality gate: `python3 scripts/gate.py` (own gate of assistant-core and assistant-shared)
 
 ## AI / ML Libraries
 
