@@ -13,7 +13,7 @@ from src.models.second_brain import (
 
 @pytest.mark.asyncio
 async def test_debrief_parser_fallback_flow():
-    parser = DebriefParser(api_key="AIzaSyYour_Mock_Key")
+    parser = DebriefParser(api_key="AIzaSyYour_Mock")
     assert not parser.is_configured
 
     sample_transcript = (
@@ -47,7 +47,7 @@ async def test_debrief_parser_fallback_flow():
 
 @pytest.mark.asyncio
 async def test_debrief_parser_empty_text():
-    parser = DebriefParser(api_key="AIzaSyYour_Mock_Key")
+    parser = DebriefParser(api_key="AIzaSyYour_Mock")
     result = await parser.parse_debrief("", target_date=date(2026, 9, 28))
 
     assert len(result.completed_tasks) == 0

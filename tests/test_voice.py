@@ -19,7 +19,7 @@ async def test_voice_processor_empty_payload():
 @pytest.mark.asyncio
 async def test_voice_processor_groq_success():
     """Verify Groq Cloud Whisper STT when API key is configured and request succeeds."""
-    vp = VoiceProcessor(groq_api_key="gsk_valid_key_12345")
+    vp = VoiceProcessor(groq_api_key="gsk_valid_12345")
     assert vp.has_groq is True
 
     fake_response = MagicMock(spec=httpx.Response)
@@ -43,7 +43,7 @@ async def test_voice_processor_groq_success():
 @pytest.mark.asyncio
 async def test_voice_processor_groq_fallback_to_local():
     """Verify fallback to local faster-whisper when Groq API fails."""
-    vp = VoiceProcessor(groq_api_key="gsk_valid_key_12345")
+    vp = VoiceProcessor(groq_api_key="gsk_valid_12345")
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=httpx.HTTPError("Groq Down")):
         with patch.object(
@@ -98,7 +98,7 @@ async def test_voice_processor_local_whisper_direct():
 @pytest.mark.asyncio
 async def test_voice_processor_gemini_success():
     """Verify Gemini Multimodal Audio STT when Groq is unavailable."""
-    vp = VoiceProcessor(groq_api_key="", gemini_api_key="valid_gemini_key_123")
+    vp = VoiceProcessor(groq_api_key="", gemini_api_key="gemini_key_123")
     assert vp.has_groq is False
     assert vp.has_gemini is True
 

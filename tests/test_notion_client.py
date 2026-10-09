@@ -50,7 +50,7 @@ async def test_notion_client_unconfigured():
 
 @pytest.mark.asyncio
 async def test_notion_client_create_and_sync():
-    client = NotionAsyncClient(api_key="ntn_mock_valid_key_12345")
+    client = NotionAsyncClient(api_key="ntn_mock_12345")
     assert client.is_configured
 
     mock_resp = MagicMock()
