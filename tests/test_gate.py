@@ -689,12 +689,16 @@ def test_run_all_measures_hash_after_pytest_core_and_before_other_rows(monkeypat
     )
     monkeypatch.setattr(
         gate,
+        "_safe_shield_step",
+        lambda repo, repo_dir: events.append("shield") or CheckResult(repo, "shield", True),
+    )
+    monkeypatch.setattr(
+        gate,
         "persona_drift_check",
         lambda a, b, name: events.append("drift") or CheckResult("assistant-core", name, True),
     )
     results = gate._run_all(None)
-    assert events[:4] == ["hash", "pytest", "hash", "lint"]
-    assert events[4:] == ["drift", "drift"]
+    assert events == ["hash", "pytest", "hash", "lint", "shield", "drift", "drift"]
     names = [r.name for r in results]
     assert names.index("боевая assistant.db не изменена") == names.index("pytest") + 1
 
@@ -710,6 +714,9 @@ def test_run_all_isolates_pytest_db_and_removes_temp_dir(monkeypatch):
     monkeypatch.setattr(gate, "_safe_pytest_step", fake_pytest)
     monkeypatch.setattr(gate, "_safe_lint_step", lambda repo, **kw: CheckResult(repo, "lint", True))
     monkeypatch.setattr(
+        gate, "_safe_shield_step", lambda repo, repo_dir: CheckResult(repo, "shield", True)
+    )
+    monkeypatch.setattr(
         gate, "persona_drift_check", lambda a, b, name: CheckResult("assistant-core", name, True)
     )
     gate._run_all(None)
@@ -719,3 +726,318 @@ def test_run_all_isolates_pytest_db_and_removes_temp_dir(monkeypatch):
     assert not seen["tmp_dir"].exists()
     assert seen["env_extra"]["PYTEST_ADDOPTS"] == ""
     assert seen["target"] == "tests" and seen["cwd"] == gate.CORE_DIR
+
+
+# ============ Task 3: нормализация shield и замороженный список ложных срабатываний ============
+
+import collections  # noqa: E402
+
+# Тексты, которые не должны попасть в таблицу, собраны из частей: файл лежит в tests/,
+# а shield сканирует отслеживаемые файлы целиком.
+NDA_WORD = "".join(["tydex", "_internal", "_secret"])
+AUTHOR_MAIL = "".join(["owner", "@", "example", ".org"])
+REMOTE_URL = "".join(["https://", "git.example", "/synthetic/repo.git"])
+ALERT = "\U0001F6A8"
+
+_SYNTH_HEADER = (
+    "\U0001F6E1 Running Security Shield on repository: {repo}\n"
+    f"   • Origin Remote: {REMOTE_URL}\n"
+    f"   • Author Email:  {AUTHOR_MAIL}\n"
+    "   • Profile Mode:  PUBLIC / ACADEMIC\n"
+    "   • Scanning 7 files...\n"
+)
+
+
+def _synthetic_shield_output(repo: Path) -> str:
+    return (
+        _SYNTH_HEADER.format(repo=repo)
+        + "\n❌ SECURITY VIOLATIONS DETECTED:\n"
+        + f"   {ALERT} {repo}/docs/a.md:3 - Found proprietary corporate keyword '{NDA_WORD}' in public repository!\n"
+        + f"   {ALERT} {repo}/docs/a.md:9 - Found proprietary corporate keyword '{NDA_WORD}' in public repository!\n"
+        + f"   {ALERT} {repo}/tests/t.py:12 - Found potential Generic Bearer Secret\n"
+        + f"   {ALERT} something unexpected without a known shape\n"
+        + "\nCommit or push blocked.\n"
+    )
+
+
+def test_parse_shield_findings_normalizes_and_drops_sensitive_text(tmp_path):
+    found = gate.parse_shield_findings(_synthetic_shield_output(tmp_path), tmp_path)
+    assert found == {
+        ("docs/a.md", "nda-keyword"): 2,
+        ("tests/t.py", "secret:Generic Bearer Secret"): 1,
+        ("(нераспознано)", "unparsed"): 1,
+    }
+    flat = " ".join(f"{path} {kind} {count}" for (path, kind), count in found.items())
+    assert NDA_WORD not in flat and AUTHOR_MAIL not in flat and REMOTE_URL not in flat
+    assert "Origin" not in flat
+
+
+def test_parse_shield_findings_special_kinds(tmp_path):
+    output = (
+        f"   {ALERT} Forbidden file pattern committed: credentials.json\n"
+        f"   {ALERT} CRITICAL: synthetic remote problem\n"
+        f"   {ALERT} {tmp_path}/x.bin - Read error: boom\n"
+    )
+    assert gate.parse_shield_findings(output, tmp_path) == {
+        ("credentials.json", "forbidden-file"): 1,
+        ("(remote)", "remote"): 1,
+        ("x.bin", "read-error"): 1,
+    }
+
+
+def test_parse_shield_findings_ignores_header_only_output(tmp_path):
+    assert not gate.parse_shield_findings(_SYNTH_HEADER.format(repo=tmp_path), tmp_path)
+
+
+def test_parse_shield_findings_ignores_lines_without_alert_prefix(tmp_path):
+    output = f"{tmp_path}/docs/a.md:3 - Found proprietary corporate keyword '{NDA_WORD}'\n"
+    assert not gate.parse_shield_findings(output, tmp_path)
+
+
+def test_parse_shield_findings_returns_counter_without_line_numbers(tmp_path):
+    output = (
+        f"   {ALERT} {tmp_path}/a.md:1 - Found proprietary corporate keyword 'x'\n"
+        f"   {ALERT} {tmp_path}/a.md:99 - Found proprietary corporate keyword 'y'\n"
+    )
+    found = gate.parse_shield_findings(output, tmp_path)
+    assert isinstance(found, collections.Counter)
+    assert found == {("a.md", "nda-keyword"): 2}
+
+
+def test_compare_shield_findings_equal_sets_no_problems():
+    found = collections.Counter({("docs/a.md", "nda-keyword"): 2})
+    assert gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2}) == ([], [])
+
+
+def test_compare_shield_findings_extra_finding_is_new():
+    found = collections.Counter({("docs/a.md", "nda-keyword"): 3})
+    new, stale = gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2})
+    assert new and not stale
+    assert "docs/a.md" in new[0]
+
+
+def test_compare_shield_findings_missing_finding_is_stale():
+    found = collections.Counter({("docs/a.md", "nda-keyword"): 1})
+    new, stale = gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2})
+    assert stale and not new
+
+
+def test_compare_shield_findings_results_are_sorted_by_path_and_kind():
+    found = collections.Counter(
+        {("z.md", "nda-keyword"): 1, ("a.md", "nda-keyword"): 1, ("a.md", "forbidden-file"): 1}
+    )
+    allowed = {("y.md", "nda-keyword"): 1, ("b.md", "nda-keyword"): 1}
+    new, stale = gate.compare_shield_findings(found, allowed)
+    assert [line.split(": ", 1)[1].split(" [")[0] for line in new] == ["a.md", "a.md", "z.md"]
+    assert "[forbidden-file]" in new[0] and "[nda-keyword]" in new[1]
+    assert [line.split(": ", 1)[1].split(" [")[0] for line in stale] == ["b.md", "y.md"]
+
+
+def test_known_shield_false_positives_frozen_list_is_exact():
+    assert gate.KNOWN_SHIELD_FALSE_POSITIVES == {
+        gate.REPO_CORE: {("config/persona.yaml", "nda-keyword"): 3},
+        gate.REPO_SHARED: {},
+    }
+
+
+def test_known_shield_false_positives_has_no_chat_app_key():
+    assert "chat-app" not in gate.KNOWN_SHIELD_FALSE_POSITIVES
+
+
+def _fake_repo(tmp_path, script_body="print('stub')\n"):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "security_shield.py").write_text(script_body, encoding="utf-8")
+    return tmp_path
+
+
+def _shield_proc(stdout, returncode=1):
+    def fake(cmd, cwd, env_extra=None, timeout=0):
+        return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+
+    return fake
+
+
+def test_run_shield_step_missing_script_is_red(tmp_path):
+    result = gate.run_shield_step(gate.REPO_CORE, tmp_path)
+    assert result.ok is False
+    assert "security_shield.py" in result.detail
+
+
+def test_run_shield_step_timeout_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="x", timeout=1)
+
+    monkeypatch.setattr(gate, "run_cmd", boom)
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False and "превышено время" in result.detail
+
+
+@pytest.mark.parametrize("code", [2, 3, 127, -9])
+def test_run_shield_step_unexpected_returncode_is_red(tmp_path, monkeypatch, code):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 3 files...\n", code))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "сбой" in result.detail
+
+
+def test_run_shield_step_code_one_without_findings_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 3 files...\n", 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "без распознанных находок" in result.detail
+
+
+def test_run_shield_step_scanning_zero_files_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 0 files...\n", 0))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "ничего не просканировал" in result.detail
+
+
+def test_run_shield_step_no_scanning_line_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(
+        gate, "run_cmd", _shield_proc("   • No staged or modified files found to scan.\n", 0)
+    )
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "ничего не просканировал" in result.detail
+
+
+def test_run_shield_step_clean_scan_is_green_for_shared_with_empty_list(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 4 files...\n", 0))
+    assert gate.run_shield_step(gate.REPO_SHARED, repo).ok is True
+
+
+def test_run_shield_step_runs_all_mode_with_list_args_and_core_python(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    seen = {}
+
+    def spy(cmd, cwd, env_extra=None, timeout=0):
+        seen.update(cmd=cmd, cwd=cwd, timeout=timeout)
+        return subprocess.CompletedProcess(cmd, 0, "   • Scanning 4 files...\n", "")
+
+    monkeypatch.setattr(gate, "run_cmd", spy)
+    gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert seen["cmd"][1].endswith("security_shield.py") and seen["cmd"][-1] == "--all"
+    assert seen["cmd"][0] == str(gate.CORE_VENV_BIN / "python")
+    assert seen["cwd"] == repo and seen["timeout"] == gate.SHIELD_TIMEOUT_S
+
+
+def test_run_shield_step_falls_back_to_current_interpreter_without_core_venv(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "CORE_VENV_BIN", tmp_path / "нет-venv")
+    seen = {}
+
+    def spy(cmd, cwd, env_extra=None, timeout=0):
+        seen["python"] = cmd[0]
+        return subprocess.CompletedProcess(cmd, 0, "   • Scanning 4 files...\n", "")
+
+    monkeypatch.setattr(gate, "run_cmd", spy)
+    gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert seen["python"] == sys.executable
+
+
+def _core_persona_output(repo: Path, count: int) -> str:
+    lines = "".join(
+        f"   {ALERT} {repo}/config/persona.yaml:{40 + i} - Found proprietary corporate keyword '{NDA_WORD}{i}' in public repository!\n"
+        for i in range(count)
+    )
+    return "   • Scanning 9 files...\n\n❌ SECURITY VIOLATIONS DETECTED:\n" + lines
+
+
+def test_run_shield_step_core_frozen_entry_matches_exactly_is_green(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 3), 1))
+    assert gate.run_shield_step(gate.REPO_CORE, repo).ok is True
+
+
+def test_run_shield_step_core_one_extra_finding_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 4), 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False and "новая находка" in result.detail
+
+
+def test_run_shield_step_core_stale_frozen_entry_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 2), 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False and "устаревшая запись" in result.detail
+
+
+def test_run_shield_step_core_clean_run_makes_frozen_entry_stale(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 9 files...\n", 0))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False and "устаревшая запись" in result.detail
+
+
+def test_run_shield_step_shared_has_no_allowance_for_any_finding(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 3), 1))
+    result = gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert result.ok is False and "новая находка" in result.detail
+
+
+def test_run_shield_step_does_not_leak_nda_word_email_or_remote(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_synthetic_shield_output(repo), 1))
+    result = gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert result.ok is False and "новая находка" in result.detail
+    leaked = [s for s in (NDA_WORD, AUTHOR_MAIL, REMOTE_URL, "Origin Remote") if s in result.detail]
+    assert not leaked
+    report = gate.render_report([result])
+    assert NDA_WORD not in report and AUTHOR_MAIL not in report and REMOTE_URL not in report
+
+
+def test_run_shield_step_failure_detail_never_contains_raw_output(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    raw = _synthetic_shield_output(repo)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(raw, 2))
+    result = gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert NDA_WORD not in result.detail and AUTHOR_MAIL not in result.detail
+
+
+def test_run_shield_step_limits_detail_lines(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    lines = "".join(
+        f"   {ALERT} {repo}/f{i}.md:1 - Found proprietary corporate keyword 'k'\n" for i in range(40)
+    )
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc("   • Scanning 40 files...\n" + lines, 1))
+    result = gate.run_shield_step(gate.REPO_SHARED, repo)
+    assert len(result.detail.splitlines()) == gate._SHIELD_MAX_DETAIL
+
+
+def test_safe_shield_step_turns_exception_into_red_row(monkeypatch):
+    def boom(repo, repo_dir):
+        raise RuntimeError("синтетический сбой")
+
+    monkeypatch.setattr(gate, "run_shield_step", boom)
+    result = gate._safe_shield_step(gate.REPO_CORE, gate.CORE_DIR)
+    assert result.ok is False and "сбой шага" in result.detail
+
+
+def test_gate_source_never_prints_or_stores_raw_shield_stdout():
+    tree = _gate_tree()
+    func = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_shield_step"
+    )
+    uses = [
+        n
+        for n in ast.walk(func)
+        if isinstance(n, ast.Attribute) and n.attr in ("stdout", "stderr")
+    ]
+    # stdout допустим только как вход parse_shield_findings и поиск строки «Scanning N files»
+    sources = {ast.unparse(n) for n in uses}
+    assert sources <= {"proc.stdout"}
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "CheckResult":
+            assert "proc.stdout" not in ast.unparse(node)

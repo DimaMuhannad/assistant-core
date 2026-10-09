@@ -17,8 +17,10 @@ systemd-сервисы на запись.
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -45,6 +47,18 @@ SHIELD_TIMEOUT_S = 300
 
 REPO_CORE = "assistant-core"
 REPO_SHARED = "assistant-shared"
+
+# Известные ложные срабатывания эвристик shield (решение D-17). Записи только удаляются:
+# новая запись не добавляется, устаревшая запись (находки больше нет) краснит гейт, чтобы
+# исключение не пережило причину. Ключ: (путь в posix, вид находки) -> число находок; без
+# номеров строк и без текста ключевых слов. Для assistant-shared список пуст; chat-app
+# в словаре нет: его shield гоняет собственный гейт.
+KNOWN_SHIELD_FALSE_POSITIVES: dict[str, dict[tuple[str, str], int]] = {
+    REPO_CORE: {
+        ("config/persona.yaml", "nda-keyword"): 3,
+    },
+    REPO_SHARED: {},
+}
 
 _SUMMARY_WORDS = frozenset(
     {"failed", "error", "errors", "skipped", "deselected", "xfailed", "xpassed"}
@@ -280,6 +294,113 @@ def run_lint_imports_step(
     return CheckResult(repo, name, False, "\n".join(lines[:10]))
 
 
+_SHIELD_LINE_RE = re.compile(r"^\s+\U0001F6A8 (?P<body>.*)$")
+_SHIELD_AT_LINE_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+) - (?P<msg>.*)$")
+_SHIELD_SCANNED_RE = re.compile(r"Scanning (?P<n>\d+) files")
+_SHIELD_MAX_DETAIL = 15
+
+
+def _relative_posix(raw_path: str, repo_dir: Path) -> str:
+    """Путь относительно repo_dir в posix; вне репозитория остаётся как есть."""
+    try:
+        return Path(raw_path).relative_to(repo_dir).as_posix()
+    except ValueError:
+        return raw_path
+
+
+def parse_shield_findings(output: str, repo_dir: Path) -> collections.Counter:
+    """Нормализует вывод shield в Counter {(путь, вид): число}.
+
+    Рассматриваются ТОЛЬКО строки находок («пробелы, значок, пробел, тело»). Заголовок shield
+    (адрес remote, e-mail автора), текст NDA-слов и номера строк отбрасываются и не попадают
+    в результат: гейт ничего из этого не печатает и не сохраняет (T-01-09).
+    """
+    found: collections.Counter = collections.Counter()
+    for line in output.splitlines():
+        match = _SHIELD_LINE_RE.match(line)
+        if not match:
+            continue
+        body = match.group("body").strip()
+        if body.startswith("Forbidden file pattern committed:"):
+            name = body.split(":", 1)[1].strip()
+            found[(name, "forbidden-file")] += 1
+            continue
+        if body.startswith("CRITICAL"):
+            found[("(remote)", "remote")] += 1
+            continue
+        at_line = _SHIELD_AT_LINE_RE.match(body)
+        if at_line:
+            path = _relative_posix(at_line.group("path"), repo_dir)
+            msg = at_line.group("msg")
+            if msg.startswith("Found potential "):
+                found[(path, "secret:" + msg[len("Found potential ") :].strip())] += 1
+                continue
+            if msg.startswith("Found proprietary corporate keyword"):
+                found[(path, "nda-keyword")] += 1
+                continue
+        read_error = body.split(" - Read error", 1)
+        if len(read_error) == 2:
+            found[(_relative_posix(read_error[0].strip(), repo_dir), "read-error")] += 1
+            continue
+        found[("(нераспознано)", "unparsed")] += 1
+    return found
+
+
+def compare_shield_findings(
+    found: collections.Counter, allowed: dict[tuple[str, str], int]
+) -> tuple[list[str], list[str]]:
+    """(новые находки, устаревшие записи замороженного списка), оба списка отсортированы."""
+    new = [
+        f"новая находка: {path} [{kind}] ×{count}"
+        for (path, kind), count in sorted(found.items())
+        if count > allowed.get((path, kind), 0)
+    ]
+    stale = [
+        f"устаревшая запись (удалите из KNOWN_SHIELD_FALSE_POSITIVES): {path} [{kind}]"
+        for (path, kind), count in sorted(allowed.items())
+        if found.get((path, kind), 0) < count
+    ]
+    return new, stale
+
+
+def run_shield_step(repo: str, repo_dir: Path) -> CheckResult:
+    """Один запуск scripts/security_shield.py репозитория (режим --all) -> CheckResult.
+
+    detail содержит только строки «новая находка»/«устаревшая запись» или причину сбоя,
+    никогда сырой вывод shield. Интерпретатор для обоих репозиториев берётся из .venv core
+    (D-03), при его отсутствии используется текущий.
+    """
+    name = "security_shield (--all)"
+    script = repo_dir / "scripts" / "security_shield.py"
+    if not script.is_file():
+        return CheckResult(repo, name, False, f"не найден scripts/security_shield.py: {script}")
+    if not repo_dir.is_dir():
+        return CheckResult(repo, name, False, f"нет каталога репозитория: {repo_dir}")
+    python_bin = CORE_VENV_BIN / "python"
+    if not python_bin.is_file():
+        python_bin = Path(sys.executable)
+    cmd = [str(python_bin), str(script), str(repo_dir), "--all"]
+    try:
+        proc = run_cmd(cmd, repo_dir, timeout=SHIELD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return CheckResult(repo, name, False, "превышено время выполнения security_shield")
+    if proc.returncode not in (0, 1):
+        return CheckResult(
+            repo, name, False, f"сбой security_shield: код возврата {proc.returncode}"
+        )
+    found = parse_shield_findings(proc.stdout, repo_dir)
+    if proc.returncode == 1 and not found:
+        return CheckResult(repo, name, False, "сбой security_shield: код 1 без распознанных находок")
+    scanned = _SHIELD_SCANNED_RE.search(proc.stdout)
+    if not scanned or int(scanned.group("n")) == 0:
+        return CheckResult(repo, name, False, "security_shield ничего не просканировал")
+    new, stale = compare_shield_findings(found, KNOWN_SHIELD_FALSE_POSITIVES.get(repo, {}))
+    problems = new + stale
+    if problems:
+        return CheckResult(repo, name, False, "\n".join(problems[:_SHIELD_MAX_DETAIL]))
+    return CheckResult(repo, name, True)
+
+
 def db_content_hash(db: Path) -> str:
     """SHA-256 логического содержимого БД (дамп схемы и данных, соединение только на чтение).
 
@@ -412,6 +533,13 @@ def _safe_pytest_step(repo: str, **kwargs) -> CheckResult:
         return CheckResult(repo, "pytest — тестов: 0", False, f"сбой шага: {_exc_text(exc)}")
 
 
+def _safe_shield_step(repo: str, repo_dir: Path) -> CheckResult:
+    try:
+        return run_shield_step(repo, repo_dir)
+    except Exception as exc:  # неожиданный сбой шага - красная строка, не трассировка
+        return CheckResult(repo, "security_shield (--all)", False, f"сбой шага: {_exc_text(exc)}")
+
+
 def _safe_lint_step(repo: str, **kwargs) -> CheckResult:
     try:
         return run_lint_imports_step(repo=repo, **kwargs)
@@ -443,6 +571,7 @@ def _run_all(save_dir: Path | None) -> list[CheckResult]:
                 REPO_CORE, lint_bin=CORE_VENV_BIN / "lint-imports", cwd=CORE_DIR, env_extra=None
             )
         )
+        results.append(_safe_shield_step(REPO_CORE, CORE_DIR))
         results.append(
             persona_drift_check(CHAT_PERSONA, CORE_PERSONA, "синтетическая персона (дрейф SHA-256)")
         )
