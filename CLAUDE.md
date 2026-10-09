@@ -44,11 +44,11 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
   ```bash
   /opt/assistant-core/.venv/bin/python3 scripts/security_shield.py
   ```
-- **Run Quality Gate (until assistant-core has its own):** `python3 /opt/chat-app/scripts/gate.py` — both pytest suites, import-linter, security_shield; exit 0 = «ЗЕЛЁНЫЙ». A dedicated assistant-core gate is a planned early task.
-- **Restart Services (if modified):**
+- **Run Quality Gate:** run `python3 scripts/gate.py` from `/opt/assistant-core` — the own gate of this repo. It checks assistant-core (pytest, import-linter, security_shield with the frozen list of known false positives, drift of `synthetic_persona.py` and `persona_tokens.py` against the chat-app copies read-only, SHA-256 of the live DB before and after pytest, pre-commit hook installed) and assistant-shared (pytest, security_shield, hook installed); exit 0 = «ЗЕЛЁНЫЙ». The chat-app gate stays unchanged as the consumer's gate (D-15) and is not the way to check assistant-core.
+- **Deploy / smoke check:** `python3 scripts/deploy.py` runs a read-only smoke check of `assistant-worker`; `--backup` and `--restart` only with explicit owner permission (procedure in `docs/OPS_DEPLOY.md`).
+- **Restart Services (if modified):** restart `assistant-worker.service` only with explicit owner permission, via `python3 scripts/deploy.py --restart` (see `docs/OPS_DEPLOY.md`). The `chat-app.service` line is unchanged:
   ```bash
   systemctl restart chat-app.service
-  systemctl restart assistant-worker.service
   ```
 
 ## 4. Coding Standards & Conventions

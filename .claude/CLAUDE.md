@@ -60,7 +60,7 @@
 - No build step; container built from `Dockerfile` (apt: build-essential, curl, tzdata)
 - docker-compose (`docker-compose.yml`, version 3.8) - single service `assistant-worker`, mounts `./data`, `credentials.json` (read-only), `token.json`
 - Security gate: `scripts/security_shield.py` (run with `/opt/assistant-core/.venv/bin/python3`)
-- Quality gate: `python3 /opt/chat-app/scripts/gate.py` (external, until assistant-core has its own)
+- Quality gate: `python3 scripts/gate.py` (own gate of assistant-core and assistant-shared)
 
 ## AI / ML Libraries
 
@@ -133,7 +133,7 @@
 - Protocol ports end in the role name: `BaseConnector`, `BaseTimesheetProvider`, `BaseScheduleProvider` (`src/core/ports/connectors.py`), `CommandResolver` (`src/brain/intent_router.py`).
 - Exceptions end in `Error`: `AirGapViolationError`, `MissingScopeError` (`src/core/exceptions.py`).
 - Enums are `StrEnum` with lowercase string values: `ConnectorRole`, `WorkspaceClearance` (`src/core/domain/entities.py`).
-- Module constants are `UPPER_SNAKE_CASE`: `VALID_ACTIONS` (`src/brain/intent_router.py`), `MAX_IGNORED_IMPORTS` and `LINT_ARGS` (`tests/test_architecture_contract.py`), `KNOWN_SHIELD_FALSE_POSITIVES` (`/opt/chat-app/scripts/gate.py`).
+- Module constants are `UPPER_SNAKE_CASE`: `VALID_ACTIONS` (`src/brain/intent_router.py`), `MAX_IGNORED_IMPORTS` and `LINT_ARGS` (`tests/test_architecture_contract.py`), `KNOWN_SHIELD_FALSE_POSITIVES` (`scripts/gate.py` of this repository).
 - Module-level logger is always `logger = logging.getLogger(__name__)`, with one exception: `src/main.py` uses `logging.getLogger("assistant-worker")`.
 - Private module constants use a leading underscore: `_CONF_COL`, `_CAT_STUD` in `src/storage/db.py`.
 - Type hints use PEP 604 unions (`str | None`) and built-in generics (`dict[str, Any]`), with `from __future__ import annotations` in core and newer modules. `typing.Any`, `Protocol`, `ClassVar` are imported from `typing`.
@@ -144,7 +144,7 @@
 - No formatter configuration is committed (no `pyproject.toml`, `ruff.toml`, `.editorconfig`, `setup.cfg`, or `.prettierrc` in the repository root). Formatting follows the observed style: 4-space indent, double quotes, lines commonly up to ~100–120 characters. Do not reformat unrelated code in a diff.
 - Trailing commas in multi-line calls and literals are the norm.
 - No ruff, flake8, pylint, or mypy config exists for assistant-core.
-- The only enforced static check is architectural: `import-linter` with the contracts in `/opt/assistant-core/.importlinter`. Run through the shared gate (`lint-imports`).
+- The only enforced static check is architectural: `import-linter` with the contracts in `/opt/assistant-core/.importlinter`. Run through the own gate `scripts/gate.py` (`lint-imports`).
 - `scripts/security_shield.py` is a security scan (secret/NDA keywords), not a style linter. It runs through the pre-commit hook `/opt/assistant-core/.githooks/pre-commit`.
 - `src/core/` imports only stdlib and `src.core.*` (contract `core-is-pure`). Domain entities are `@dataclass(frozen=True, slots=True)` with `tuple` collections.
 - `src/brain/` (use cases) must not import adapters (`src.connectors`, `src.calendar`, `src.parser`, `src.sender`, `src.collector`, `src.notifier`). Wiring goes through `src/composition.py`, which is the only place allowed to know concrete classes.
