@@ -187,26 +187,31 @@ class GoogleDriveClient:
         include_db: bool = True,
         include_env: bool = True,
         include_uploads: bool = False,
+        core_dir: str | Path = "/opt/assistant-core",
     ) -> Path:
-        """Create a compressed .tar.gz archive of sensitive non-git server data."""
+        """Create a compressed .tar.gz archive of sensitive non-git server data.
+
+        core_dir: корень assistant-core; тесты передают поддельный каталог (GATE-02).
+        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_folder = Path(dest_dir)
         dest_folder.mkdir(parents=True, exist_ok=True)
         archive_path = dest_folder / f"server_backup_{timestamp}.tar.gz"
 
+        core_root = Path(core_dir)
         files_to_pack: list[tuple[str, str]] = []
         if include_db:
-            db_path = "/opt/assistant-core/data/assistant.db"
+            db_path = core_root / "data" / "assistant.db"
             if os.path.exists(db_path):
-                files_to_pack.append((db_path, "assistant.db"))
-            session_path = "/opt/assistant-core/data/assistant_worker.session"
+                files_to_pack.append((str(db_path), "assistant.db"))
+            session_path = core_root / "data" / "assistant_worker.session"
             if os.path.exists(session_path):
-                files_to_pack.append((session_path, "assistant_worker.session"))
+                files_to_pack.append((str(session_path), "assistant_worker.session"))
 
         if include_env:
-            env_core = "/opt/assistant-core/.env"
+            env_core = core_root / ".env"
             if os.path.exists(env_core):
-                files_to_pack.append((env_core, "assistant-core.env"))
+                files_to_pack.append((str(env_core), "assistant-core.env"))
 
         with tarfile.open(archive_path, "w:gz") as tar:
             for src_file, arc_name in files_to_pack:
