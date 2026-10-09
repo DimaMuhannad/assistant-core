@@ -44,6 +44,7 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
   ```bash
   /opt/assistant-core/.venv/bin/python3 scripts/security_shield.py
   ```
+- **Run Quality Gate (until assistant-core has its own):** `python3 /opt/chat-app/scripts/gate.py` — both pytest suites, import-linter, security_shield; exit 0 = «ЗЕЛЁНЫЙ». A dedicated assistant-core gate is a planned early task.
 - **Restart Services (if modified):**
   ```bash
   systemctl restart chat-app.service
@@ -54,3 +55,10 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
 - **Language:** Code, comments, commits, and PR descriptions in English or Russian. User-facing outputs strictly Russian.
 - **KISS & YAGNI:** Avoid over-engineering; prefer clear, typed dataclasses and Pydantic models.
 - **Asyncio:** Async-first for all I/O, database interactions (`aiosqlite`), and network requests (`httpx`, `aiohttp`).
+
+## 5. GSD Project & Delegation (since 2026-10-09)
+- **Own GSD project:** assistant-core is planned in its own `/opt/assistant-core/.planning/` (owner decision 2026-10-09). The chat-app planning (`/opt/chat-app/.planning/`, milestone v2.0 archived) is frozen and is history/reference only: `milestones/v2.0-*`, `MILESTONES.md`, `RETROSPECTIVE.md`, `BACKLOG.md` (section «Перенесено в отдельный GSD-проект assistant-core» = starting backlog).
+- **Shared code:** `/opt/assistant-shared` owns the DB schema (migrations) and the security library; assistant-core is the schema owner side, chat-app is a consumer. Changes to chat-app only via small `/gsd-quick` tasks there.
+- **Delegate token-heavy routine to Antigravity agents** only via the jail wrapper in chat-app: `/opt/chat-app/scripts/agy_task.sh run --repo /opt/assistant-core --mode read|edit <<< "<task>"` (see `/opt/chat-app/.claude/skills/agy-delegate/SKILL.md`). Never run `agy` directly. The jail has no git history and no `.venv`/DB — tasks needing `git log`/tests stay with Claude.
+  **Default routing (owner decision 2026-10-09, no need to ask):** bulk reading/inventories/log summaries, boilerplate code and test drafts, docs/translation, uniform edits across ≥4 files → agy. Always Claude: research, discuss/planning, architecture, security/NDA/HITL logic, code review, verification, edits of 1–3 files. Claude reads the full patch, runs the gate, commits.
+- **Phase hygiene (lesson from v2.0):** a phase is closed only with SUMMARY.md written in the same run and a VERIFICATION.md that checks the feature is reachable from the runtime (not just unit-tested).
