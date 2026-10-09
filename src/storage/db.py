@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import json
@@ -91,7 +92,8 @@ class Database:
                 await conn.commit()
                 await self._seed_initial_data_if_empty(conn)
         else:
-            run_migrations(self.db_path)
+            # Синхронный мигратор может ждать блокировку до 30 с: не блокируем event loop демона (WR-06)
+            await asyncio.to_thread(run_migrations, self.db_path)
             async with self.connection() as conn:
                 await conn.execute(
                     """
