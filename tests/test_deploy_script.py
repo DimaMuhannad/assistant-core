@@ -1665,3 +1665,542 @@ def test_main_backup_cannot_be_combined_with_phase_flags(tmp_path, capsys):
         assert rc == 2
     assert runner.calls == []
     assert "--backup" in capsys.readouterr().err
+
+
+# ================================================================ Task 2 (план 01-07): --restart и откат без автоотката
+
+HEAD_FULL = "c" * 40
+PARENT_FULL = "d" * 40
+NEW_INVOCATION = "fedcba9876543210fedcba9876543210"
+STARTING_JOURNAL = _journal(_app(0, "INFO", "assistant-worker", "Assistant Worker starting up..."))
+MUTATING_VERBS = {"restart", "stop", "start", "kill", "reload", "enable", "disable", "daemon-reload"}
+ROLLBACK_MARK = "ОТЧЁТ О СБОЕ ВЫКАТКИ"
+NO_AUTOROLLBACK = "Автоотката нет: откат требует нового разрешения владельца"
+
+
+class RestartRunner:
+    """Сценарный раннер: git, systemctl show/restart и журнал нового запуска; всё записывается."""
+
+    def __init__(
+        self,
+        *,
+        status: str = "",
+        head: str | None = HEAD_FULL,
+        parent: str | None = PARENT_FULL,
+        show_polls_before_new: int = 0,
+        journal_polls_before_polling: int = 0,
+        journal: str = GREEN_JOURNAL,
+        restart_rc: int = 0,
+        restart_raises: Exception | None = None,
+        invocation_never_changes: bool = False,
+        on_restart=None,
+    ) -> None:
+        self.status = status
+        self.head = head
+        self.parent = parent
+        self.show_polls_before_new = show_polls_before_new
+        self.journal_polls_before_polling = journal_polls_before_polling
+        self.journal = journal
+        self.restart_rc = restart_rc
+        self.restart_raises = restart_raises
+        self.invocation_never_changes = invocation_never_changes
+        self.on_restart = on_restart
+        self.calls: list[list[str]] = []
+        self.timeouts: list[int] = []
+        self.restarted = False
+        self.show_after_restart = 0
+        self.journal_calls = 0
+
+    def restart_calls(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:2] == ["systemctl", "restart"]]
+
+    def __call__(self, cmd, timeout):
+        self.calls.append(list(cmd))
+        self.timeouts.append(timeout)
+        prog = cmd[0]
+
+        def done(out: str = "", rc: int = 0):
+            return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr="")
+
+        if prog == "git":
+            sub = list(cmd[3:])
+            if sub and sub[0] == "status":
+                return done(self.status)
+            if sub == ["rev-parse", "HEAD"]:
+                return done(f"{self.head}\n") if self.head else done("", 128)
+            if sub == ["rev-parse", "HEAD^"]:
+                return done(f"{self.parent}\n") if self.parent else done("", 128)
+        if prog == "systemctl" and cmd[1] == "restart":
+            if self.on_restart is not None:
+                self.on_restart()
+            if self.restart_raises is not None:
+                raise self.restart_raises
+            self.restarted = True
+            return done("", self.restart_rc)
+        if prog == "systemctl" and cmd[1] == "show":
+            if not self.restarted or self.invocation_never_changes:
+                return done(_show())
+            self.show_after_restart += 1
+            if self.show_after_restart <= self.show_polls_before_new:
+                return done(_show(active="activating", sub="start"))
+            return done(_show(invocation=NEW_INVOCATION))
+        if prog == "journalctl":
+            self.journal_calls += 1
+            if self.journal_calls <= self.journal_polls_before_polling:
+                return done(STARTING_JOURNAL)
+            return done(self.journal)
+        raise AssertionError(f"неожиданная команда раннеру: {cmd}")
+
+
+def _restart_main(
+    tmp_path: Path,
+    runner,
+    *flags: str,
+    clock: Clock | None = None,
+    live_db: Path | None = None,
+    opener: FakeOpener | None = None,
+) -> int:
+    clock = clock or Clock()
+    env_path = tmp_path / ".env.test"
+    env_path.write_text(f"TELEGRAM_BOT_TOKEN={BOT_TOKEN}\n", encoding="utf-8")
+    main_py = tmp_path / "main_synthetic.py"
+    main_py.write_text(SYNTHETIC_MAIN, encoding="utf-8")
+    return deploy.main(
+        ["--state-file", str(tmp_path / "state.json"), *flags],
+        runner=runner,
+        now=clock.now,
+        sleep=clock.sleep,
+        opener=opener or FakeOpener(),
+        env_path=env_path,
+        main_py_path=main_py,
+        live_db=live_db,
+    )
+
+
+def _tokens(runner) -> set[str]:
+    return {part for call in runner.calls for part in call}
+
+
+# ---------------------------------------------------------------- CLI и разбор git status
+
+
+def test_build_parser_restart_flag_defaults_to_false():
+    parser = deploy.build_parser()
+    assert parser.parse_args([]).restart is False
+    assert parser.parse_args(["--restart"]).restart is True
+
+
+def test_restart_cannot_be_combined_with_phase_flags(tmp_path, capsys):
+    runner = RestartRunner()
+    for phase in (["--await-help"], ["--confirm-help", "yes"]):
+        assert _restart_main(tmp_path, runner, "--restart", *phase) == 2
+    assert runner.calls == []
+    assert "--restart" in capsys.readouterr().err
+
+
+def test_git_dirty_paths_ignores_clean_tree_and_planning_only_changes():
+    runner = RestartRunner(status=" M .planning/config.json\0?? .planning/state.json\0A  .planning/x/y.md\0")
+    assert deploy.git_dirty_paths(runner) == []
+
+
+def test_git_dirty_paths_lists_modified_and_untracked_outside_planning():
+    runner = RestartRunner(status=" M src/a.py\0?? scripts/new.py\0 M .planning/config.json\0D  docs/old.md\0")
+    assert deploy.git_dirty_paths(runner) == ["src/a.py", "scripts/new.py", "docs/old.md"]
+
+
+def test_git_dirty_paths_handles_renames_and_copies():
+    runner = RestartRunner(
+        status="R  docs/new.md\0.planning/old.md\0C  src/copy.py\0src/orig.py\0 M .planning/p.md\0"
+    )
+    assert deploy.git_dirty_paths(runner) == ["docs/new.md", "src/copy.py", "src/orig.py"]
+
+
+def test_git_dirty_paths_uses_porcelain_z_with_all_untracked_files():
+    runner = RestartRunner()
+    deploy.git_dirty_paths(runner)
+    assert runner.calls == [
+        ["git", "-C", str(deploy.CORE_DIR), "status", "--porcelain=v1", "-z", "--untracked-files=all"]
+    ]
+
+
+def test_git_dirty_paths_raises_command_error_when_git_fails():
+    class Failing(RestartRunner):
+        def __call__(self, cmd, timeout):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="fatal: not a git repository")
+
+    with pytest.raises(deploy.CommandError):
+        deploy.git_dirty_paths(Failing())
+
+
+def test_ensure_read_only_allows_git_status_and_parent_lookup_only_in_exact_form():
+    core = str(deploy.CORE_DIR)
+    deploy.ensure_read_only(["git", "-C", core, "status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    deploy.ensure_read_only(["git", "-C", core, "rev-parse", "HEAD^"])
+    for cmd in (
+        ["git", "-C", core, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"],
+        ["git", "-C", core, "status"],
+        ["git", "-C", core, "rev-parse", "HEAD^^"],
+        ["git", "-C", core, "revert", "--no-edit", "HEAD"],
+        ["git", "-C", core, "checkout", "--", "."],
+    ):
+        with pytest.raises(ValueError):
+            deploy.ensure_read_only(cmd)
+
+
+def test_ensure_read_only_still_rejects_restart_command():
+    with pytest.raises(ValueError):
+        deploy.ensure_read_only(["systemctl", "restart", deploy.SERVICE_NAME])
+
+
+# ---------------------------------------------------------------- без флага рестарт недостижим
+
+
+def test_without_restart_flag_runner_never_sees_restart(tmp_path):
+    for flags in ((), ("--report", str(tmp_path / "r.md"))):
+        runner = RestartRunner(invocation_never_changes=True)
+        assert _restart_main(tmp_path, runner, *flags) == 0
+        assert runner.calls
+        assert not (MUTATING_VERBS & _tokens(runner))
+        assert runner.restart_calls() == []
+
+
+def test_backup_flag_alone_never_reaches_runner_or_restart(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    runner = RestartRunner()
+    try:
+        rc = _restart_main(tmp_path, runner, "--backup", "--backup-dir", str(tmp_path / "b"), live_db=live)
+    finally:
+        writer.close()
+    assert rc == 0
+    assert runner.calls == []
+
+
+# ---------------------------------------------------------------- отказ при грязном дереве
+
+
+def test_restart_refused_on_dirty_tree(tmp_path, capsys):
+    runner = RestartRunner(status=" M src/a.py\0?? scripts/new.py\0 M .planning/config.json\0")
+    rc = _restart_main(tmp_path, runner, "--restart")
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "src/a.py" in out and "scripts/new.py" in out
+    assert ".planning/config.json" not in out
+    assert [c[0] for c in runner.calls] == ["git"]  # ни одного вызова systemctl
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_restart_refused_when_git_status_fails(tmp_path, capsys):
+    class Failing(RestartRunner):
+        def __call__(self, cmd, timeout):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="")
+
+    runner = Failing()
+    assert _restart_main(tmp_path, runner, "--restart") == 2
+    assert all(c[0] == "git" for c in runner.calls)
+    assert "дерево git" in capsys.readouterr().out
+
+
+def test_restart_refused_when_head_is_unknown(tmp_path):
+    runner = RestartRunner(head=None)
+    assert _restart_main(tmp_path, runner, "--restart") == 2
+    assert all(c[0] == "git" for c in runner.calls)
+
+
+def test_restart_dirty_tree_with_backup_makes_no_copy(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    runner = RestartRunner(status=" M src/a.py\0")
+    dst = tmp_path / "b"
+    try:
+        rc = _restart_main(tmp_path, runner, "--restart", "--backup", "--backup-dir", str(dst), live_db=live)
+    finally:
+        writer.close()
+    assert rc == 2
+    assert not dst.exists()
+
+
+# ---------------------------------------------------------------- порядок и ожидание готовности
+
+
+def test_restart_sequence_and_ready_wait(tmp_path, capsys):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst = tmp_path / "backups"
+    seen_at_restart: dict[str, list[str]] = {}
+    runner = RestartRunner(
+        show_polls_before_new=2,
+        journal_polls_before_polling=1,
+        on_restart=lambda: seen_at_restart.setdefault("files", sorted(os.listdir(dst))),
+    )
+    clock = Clock()
+    try:
+        rc = _restart_main(
+            tmp_path, runner, "--restart", "--backup", "--backup-dir", str(dst), clock=clock, live_db=live
+        )
+    finally:
+        writer.close()
+    out = capsys.readouterr().out
+    assert rc == 0
+
+    kinds = []
+    for call in runner.calls:
+        if call[0] == "git":
+            kinds.append("git:" + call[3] + (":" + call[4] if call[3] == "rev-parse" else ""))
+        else:
+            kinds.append(f"{call[0]}:{call[1]}")
+    # git: status, rev-parse HEAD, rev-parse HEAD^; затем прежнее состояние, restart, опрос.
+    assert kinds[:3] == ["git:status", "git:rev-parse:HEAD", "git:rev-parse:HEAD^"]
+    assert kinds[3] == "systemctl:show"
+    assert kinds[4] == "systemctl:restart"
+    restart_index = 4
+    assert runner.calls[restart_index] == ["systemctl", "restart", deploy.SERVICE_NAME]
+    assert runner.timeouts[restart_index] >= deploy.RESTART_TIMEOUT_S
+    assert len(runner.restart_calls()) == 1
+    # копия готова до рестарта
+    assert len(seen_at_restart["files"]) == 1 and seen_at_restart["files"][0].startswith("assistant-")
+    # опрос: два «activating», новая инвокация без polling в журнале, затем polling; потом тот же смоук
+    assert kinds[5:] == (
+        ["systemctl:show"] * 3
+        + ["journalctl:-u", "systemctl:show", "journalctl:-u"]
+        + ["systemctl:show", "journalctl:-u"]
+    )
+    assert runner.journal_calls == 3
+    # паузы: шаг опроса и затем окно старта до смоука
+    assert deploy.POLL_INTERVAL_S in clock.slept
+    assert clock.slept[-1] == deploy.STARTUP_TAIL_SECONDS
+    # состояние и вывод относятся к новой инвокации
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert state["invocation_id"] == NEW_INVOCATION
+    assert "АВТОМАТИЧЕСКАЯ ЧАСТЬ: ЗЕЛЁНАЯ" in out
+    assert "--await-help" in out and "--confirm-help" in out
+    assert ROLLBACK_MARK not in out
+
+
+def test_restart_service_returns_result_with_old_and_new_invocation():
+    runner = RestartRunner(show_polls_before_new=1, journal_polls_before_polling=1)
+    clock = Clock()
+    result = deploy.restart_service(runner, clock.sleep, clock.now)
+    assert isinstance(result, deploy.RestartResult)
+    assert result.ok is True
+    assert result.old_invocation == INVOCATION
+    assert result.new_invocation == NEW_INVOCATION
+
+
+def test_restart_without_backup_does_not_create_copy(tmp_path):
+    runner = RestartRunner()
+    assert _restart_main(tmp_path, runner, "--restart", "--backup-dir", str(tmp_path / "b")) == 2
+    runner = RestartRunner()
+    assert _restart_main(tmp_path, runner, "--restart") == 0
+    assert not (tmp_path / "b").exists()
+
+
+def test_restart_backup_failure_stops_before_any_systemctl(tmp_path, capsys):
+    runner = RestartRunner()
+    rc = _restart_main(
+        tmp_path, runner, "--restart", "--backup", "--backup-dir", str(tmp_path / "b"),
+        live_db=tmp_path / "absent.db",
+    )
+    assert rc == 1
+    assert all(c[0] == "git" for c in runner.calls)
+    assert "Резервная копия не создана" in capsys.readouterr().out
+
+
+def test_restart_ready_timeout_when_invocation_never_changes(tmp_path, capsys):
+    runner = RestartRunner(invocation_never_changes=True)
+    clock = Clock()
+    rc = _restart_main(tmp_path, runner, "--restart", clock=clock)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert sum(clock.slept) >= deploy.READY_TIMEOUT_S
+    assert len(runner.restart_calls()) == 1
+    assert runner.journal_calls == 0  # смоук не запускался
+    assert ROLLBACK_MARK in out and NO_AUTOROLLBACK in out
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert deploy.final_verdict(state) == "КРАСНЫЙ"
+
+
+def test_restart_ready_timeout_when_polling_never_appears(tmp_path, capsys):
+    runner = RestartRunner(journal_polls_before_polling=10**6)
+    clock = Clock()
+    rc = _restart_main(tmp_path, runner, "--restart", clock=clock)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert sum(clock.slept) >= deploy.READY_TIMEOUT_S
+    assert "Run polling for bot" in out
+    assert ROLLBACK_MARK in out
+    assert len(runner.restart_calls()) == 1
+
+
+def test_restart_command_nonzero_exit_is_red_without_waiting(tmp_path, capsys):
+    runner = RestartRunner(restart_rc=1)
+    clock = Clock()
+    rc = _restart_main(tmp_path, runner, "--restart", clock=clock)
+    assert rc == 1
+    assert clock.slept == []
+    assert ROLLBACK_MARK in capsys.readouterr().out
+
+
+def test_restart_command_timeout_is_red_without_second_attempt(tmp_path, capsys):
+    runner = RestartRunner(restart_raises=subprocess.TimeoutExpired(["systemctl"], 300))
+    rc = _restart_main(tmp_path, runner, "--restart")
+    assert rc == 1
+    assert len(runner.restart_calls()) == 1
+    assert ROLLBACK_MARK in capsys.readouterr().out
+
+
+def test_restart_report_is_written_for_green_and_red_outcomes(tmp_path):
+    green = tmp_path / "green.md"
+    assert _restart_main(tmp_path, RestartRunner(), "--restart", "--report", str(green)) == 0
+    assert "c" * 40 in green.read_text(encoding="utf-8")
+    red_journal = GREEN_JOURNAL + _journal(_app(20, "ERROR", "src.collector.mail", "boom"))
+    red = tmp_path / "red.md"
+    rc = _restart_main(tmp_path, RestartRunner(journal=red_journal), "--restart", "--report", str(red))
+    assert rc == 1
+    assert "КРАСНЫЙ" in red.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- красный смоук: отчёт без автоотката
+
+
+RED_JOURNAL = GREEN_JOURNAL + _journal(_app(20, "ERROR", "src.collector.mail", "boom while polling"))
+
+
+def test_red_smoke_after_restart_prints_rollback_and_runs_nothing(tmp_path, capsys, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst = tmp_path / "backups"
+    events: list[tuple[str, object]] = []
+    real_print = print
+
+    def spy_print(*args, **kwargs):
+        events.append(("print", " ".join(str(a) for a in args)))
+        real_print(*args, **kwargs)
+
+    class Recording(RestartRunner):
+        def __call__(self, cmd, timeout):
+            events.append(("call", list(cmd)))
+            return super().__call__(cmd, timeout)
+
+    monkeypatch.setattr(deploy, "print", spy_print, raising=False)
+    runner = Recording(journal=RED_JOURNAL)
+    try:
+        rc = _restart_main(
+            tmp_path, runner, "--restart", "--backup", "--backup-dir", str(dst),
+            "--report", str(tmp_path / "r.md"), live_db=live,
+        )
+    finally:
+        writer.close()
+    out = capsys.readouterr().out
+    assert rc == 1
+    backup_file = next(dst.iterdir())
+
+    # отчёт и команды отката напечатаны
+    assert ROLLBACK_MARK in out
+    assert "src.collector.mail" in out and "boom while polling" in out
+    assert "git -C" in out and "revert --no-edit " + HEAD_FULL[:10] in out
+    assert str(backup_file) in out and str(deploy.LIVE_DB) in out
+    assert NO_AUTOROLLBACK in out
+    assert "затрёт" in out  # предупреждение про данные после выкатки
+
+    # раннер после отчёта не получает ни одной команды
+    report_index = max(i for i, (kind, value) in enumerate(events) if kind == "print" and ROLLBACK_MARK in value)
+    assert not [e for e in events[report_index:] if e[0] == "call"]
+
+    # за всё время: ни revert, ни checkout, ни cp, ни stop/start, ни второго restart
+    tokens = _tokens(runner)
+    assert not ({"revert", "checkout", "cp", "stop", "start", "reset", "kill"} & tokens)
+    assert len(runner.restart_calls()) == 1
+    # отчёт --report записан и при красном исходе, состояние красное
+    assert "КРАСНЫЙ" in (tmp_path / "r.md").read_text(encoding="utf-8")
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert deploy.final_verdict(state) == "КРАСНЫЙ"
+
+
+def test_red_smoke_without_backup_has_no_restore_commands(tmp_path, capsys):
+    runner = RestartRunner(journal=RED_JOURNAL)
+    assert _restart_main(tmp_path, runner, "--restart") == 1
+    out = capsys.readouterr().out
+    assert ROLLBACK_MARK in out and "revert --no-edit" in out
+    assert "cp " not in out and "systemctl stop" not in out
+    assert "резервной копии не было" in out
+
+
+def test_build_rollback_report_uses_short_hashes_and_numbers_commands():
+    rows = [deploy.CheckResult("в окне старта нет ERROR/CRITICAL/Traceback", False, "src.x: boom")]
+    text = deploy.build_rollback_report(HEAD_FULL, PARENT_FULL, Path("/var/backups/x/assistant-1.db"), rows)
+    assert HEAD_FULL not in text and PARENT_FULL not in text
+    assert HEAD_FULL[:10] in text and PARENT_FULL[:10] in text
+    assert "в окне старта нет ERROR/CRITICAL/Traceback" in text and "src.x: boom" in text
+    numbered = [line for line in text.splitlines() if line.strip()[:2] in {f"{i}." for i in range(1, 10)}]
+    assert len(numbered) >= 5
+    assert "/var/backups/x/assistant-1.db" in text
+    assert NO_AUTOROLLBACK in text
+
+
+def test_build_rollback_report_handles_unknown_parent_and_missing_backup():
+    text = deploy.build_rollback_report(HEAD_FULL, None, None, [deploy.CheckResult("сервис active", False)])
+    assert HEAD_FULL[:10] in text
+    assert "родитель" in text and "неизвестен" in text
+    assert "systemctl stop" not in text
+
+
+def test_build_rollback_report_redacts_secrets_in_failed_rows():
+    rows = [deploy.CheckResult("проверка", False, f"token {BOT_TOKEN} user@example.org")]
+    text = deploy.build_rollback_report(HEAD_FULL, PARENT_FULL, None, rows)
+    assert BOT_TOKEN not in text and "user@example.org" not in text
+
+
+# ---------------------------------------------------------------- статические свойства (T-01-21, T-01-22)
+
+
+def test_restart_command_is_built_in_exactly_one_place():
+    code = _code_lines()
+    assert sum(line.count('"restart"') for line in code) == 1
+    tree = ast.parse(DEPLOY_PATH.read_text(encoding="utf-8"))
+    for func in ast.walk(tree):
+        if isinstance(func, ast.FunctionDef) and any(
+            isinstance(n, ast.Constant) and n.value == "restart" for n in ast.walk(func)
+        ):
+            assert func.name == "restart_service"
+
+
+def test_restart_service_is_called_only_from_the_restart_branch():
+    tree = ast.parse(DEPLOY_PATH.read_text(encoding="utf-8"))
+    callers: set[str] = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, ast.FunctionDef):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "restart_service":
+                callers.add(func.name)
+    assert callers == {"_run_restart"}
+    main_src = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    guarded = [
+        n for n in ast.walk(main_src)
+        if isinstance(n, ast.If) and "args.restart" in ast.unparse(n.test)
+        and any(isinstance(c, ast.Name) and c.id == "_run_restart" for sub in n.body for c in ast.walk(sub))
+    ]
+    assert guarded, "_run_restart должна вызываться из main только под условием args.restart"
+
+
+def test_rollback_commands_are_never_executed_by_the_script():
+    code = "\n".join(_code_lines())
+    assert 'runner(["git", "revert"' not in code
+    assert 'runner(["git", "checkout"' not in code
+    assert not re.search(r'\[\s*"git",\s*"-C",[^\]]*"(revert|checkout|reset)"', code)
+    assert not re.search(r'\[\s*"cp"', code)
+    assert not re.search(r'"systemctl",\s*"(stop|start)"', code)
+
+
+def test_cli_help_lists_backup_and_restart_options():
+    proc = subprocess.run(
+        [sys.executable, str(DEPLOY_PATH), "--help"], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0
+    for option in ("--backup", "--backup-dir", "--restart"):
+        assert option in proc.stdout

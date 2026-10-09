@@ -66,6 +66,14 @@ MAIN_PY_DEFAULT = CORE_DIR / "src" / "main.py"
 # Резервные копии лежат вне дерева git (D-11). Каталог выбран планировщиком, меняется --backup-dir.
 BACKUP_DIR_DEFAULT = Path("/var/backups/assistant-core")
 LIVE_DB = CORE_DIR / "data" / "assistant.db"
+# Рестарт: systemd может останавливать сервис до 90 с (TimeoutStopSec) перед SIGKILL, поэтому запас
+# на сам restart и на ожидание готовности по 300 с (Pitfall 5). Шаг опроса - POLL_INTERVAL_S.
+RESTART_TIMEOUT_S = 300
+READY_TIMEOUT_S = 300
+POLL_INTERVAL_S = 5
+SHORT_HASH_LEN = 10
+MAX_LISTED_PATHS = 20
+POLLING_MARK = "Run polling for bot"
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess]
 Opener = Callable[..., object]
@@ -122,6 +130,16 @@ class SmokeResult:
     records: list[JournalRecord]
 
 
+@dataclass(frozen=True)
+class RestartResult:
+    """Итог рестарта: сервис вернулся в рабочее состояние (новая инвокация, polling) или нет."""
+
+    ok: bool
+    detail: str
+    old_invocation: str
+    new_invocation: str
+
+
 class CommandError(Exception):
     """Команда не выполнилась; текст пригоден для вывода (без сырого вывода команды)."""
 
@@ -146,14 +164,22 @@ def run_cmd(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, shell=False, timeout=timeout)
 
 
+_GIT_STATUS_TAIL = ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+_READ_ONLY_GIT_TAILS = (["rev-parse", "HEAD"], ["rev-parse", "HEAD^"], _GIT_STATUS_TAIL)
+
+
 def ensure_read_only(cmd: Sequence[str]) -> None:
-    """Белый список команд: только чтение. Всё остальное (включая изменение сервиса) - ошибка."""
+    """Белый список команд: только чтение. Всё остальное (включая изменение сервиса) - ошибка.
+
+    Команда рестарта сюда намеренно не входит: она формируется в одном месте (restart_service)
+    и достижима только из ветки ``--restart``.
+    """
     if not cmd:
         raise ValueError("пустая команда")
     program = cmd[0]
     if program == "systemctl" and len(cmd) >= 2 and cmd[1] == "show":
         return
-    if program == "git" and len(cmd) == 5 and cmd[1] == "-C" and list(cmd[3:]) == ["rev-parse", "HEAD"]:
+    if program == "git" and len(cmd) >= 4 and cmd[1] == "-C" and list(cmd[3:]) in _READ_ONLY_GIT_TAILS:
         return
     if program == "journalctl" and "--rotate" not in cmd and not any(
         part.startswith("--vacuum") or part == "--flush" for part in cmd
@@ -324,7 +350,7 @@ def startup_window(
     records: Sequence[JournalRecord], tail_seconds: int = STARTUP_TAIL_SECONDS
 ) -> tuple[list[JournalRecord], datetime | None]:
     """Окно старта и метка запуска polling (None, если записи «Run polling for bot» нет)."""
-    polling_ts = next((r.ts for r in records if "Run polling for bot" in r.text), None)
+    polling_ts = next((r.ts for r in records if POLLING_MARK in r.text), None)
     if polling_ts is None:
         return list(records), None
     end = polling_ts + timedelta(seconds=tail_seconds)
@@ -734,14 +760,47 @@ def validate_report_path(path: Path) -> Path:
     return resolved
 
 
-def get_head(runner: Runner) -> str | None:
-    """Хеш HEAD репозитория через ``git rev-parse`` (единственная не-systemd команда)."""
+def _git_commit(runner: Runner, rev: str) -> str | None:
+    """Полный хеш коммита через ``git rev-parse`` или None, если определить не удалось."""
     try:
-        out = _run(runner, ["git", "-C", str(CORE_DIR), "rev-parse", "HEAD"], SYSTEMCTL_TIMEOUT_S)
+        out = _run(runner, ["git", "-C", str(CORE_DIR), "rev-parse", rev], SYSTEMCTL_TIMEOUT_S)
     except CommandError:
         return None
     value = out.strip()
     return value if re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def get_head(runner: Runner) -> str | None:
+    """Хеш HEAD репозитория."""
+    return _git_commit(runner, "HEAD")
+
+
+def get_parent_head(runner: Runner) -> str | None:
+    """Хеш родителя HEAD (None у первого коммита или при сбое)."""
+    return _git_commit(runner, "HEAD^")
+
+
+def git_dirty_paths(runner: Runner) -> list[str]:
+    """Пути с изменениями вне ``.planning/`` (изменённые, добавленные, неотслеживаемые, переименованные).
+
+    Разбор ``git status --porcelain=v1 -z``: записи разделены NUL, у переименования и копирования
+    следом идёт запись с исходным путём. Содержимое файлов не читается и не возвращается.
+    """
+    out = _run(runner, ["git", "-C", str(CORE_DIR), *_GIT_STATUS_TAIL], SYSTEMCTL_TIMEOUT_S)
+    entries = out.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        paths.append(path)
+        if ("R" in status or "C" in status) and index < len(entries) and entries[index]:
+            paths.append(entries[index])
+            index += 1
+    return [path for path in paths if path != ".planning" and not path.startswith(".planning/")]
 
 
 def _md(text: object) -> str:
@@ -928,6 +987,123 @@ def make_db_copy(live_db: Path, dst_dir: Path, now: datetime) -> Path:
     return copy_path
 
 
+# --------------------------------------------------------------------------- рестарт (D-10, D-12)
+
+
+def _poll_ready(runner: Runner, old_invocation: str) -> tuple[str, str]:
+    """Один опрос готовности: (новая инвокация, причина ожидания); пустая причина - готово."""
+    try:
+        state = get_service_state(runner)
+    except CommandError as exc:
+        return "", f"состояние сервиса недоступно ({exc})"
+    if not state.invocation_id or state.invocation_id == old_invocation:
+        return "", "новая инвокация сервиса не появилась"
+    if state.active_state != "active":
+        return state.invocation_id, f"ActiveState={state.active_state}"
+    try:
+        records = parse_journal(read_invocation_journal(runner, state.invocation_id))
+    except CommandError as exc:
+        return state.invocation_id, f"журнал новой инвокации недоступен ({exc})"
+    if not any(POLLING_MARK in record.text for record in records):
+        return state.invocation_id, f"в журнале новой инвокации нет записи «{POLLING_MARK}»"
+    return state.invocation_id, ""
+
+
+def restart_service(
+    runner: Runner,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], datetime] | None = None,
+) -> RestartResult:
+    """Перезапустить assistant-worker и дождаться новой инвокации и запуска polling.
+
+    Единственное место, где формируется команда рестарта; вызывается только из ветки ``--restart``.
+    Ничего не откатывает и не повторяет: любой сбой возвращается красным результатом.
+    """
+    clock = now or (lambda: datetime.now(timezone.utc))
+    try:
+        before = get_service_state(runner)
+    except CommandError as exc:
+        return RestartResult(False, f"не удалось прочитать состояние сервиса до рестарта: {exc}", "", "")
+    old = before.invocation_id
+
+    command = ["systemctl", "restart", SERVICE_NAME]
+    try:
+        proc = runner(command, RESTART_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return RestartResult(False, f"systemctl: таймаут рестарта {RESTART_TIMEOUT_S} с", old, "")
+    except OSError as exc:
+        return RestartResult(False, f"systemctl: {type(exc).__name__}", old, "")
+    if proc.returncode != 0:
+        reason = f"systemctl: код возврата рестарта {proc.returncode}"
+        stderr = redact(proc.stderr or "", limit=80)
+        return RestartResult(False, f"{reason}: {stderr}" if stderr else reason, old, "")
+
+    deadline = clock() + timedelta(seconds=READY_TIMEOUT_S)
+    while True:
+        new, reason = _poll_ready(runner, old)
+        if not reason:
+            return RestartResult(True, "", old, new)
+        if clock() >= deadline:
+            detail = f"сервис не вернулся в рабочее состояние за {READY_TIMEOUT_S} с: {reason}"
+            return RestartResult(False, detail, old, new)
+        sleep(POLL_INTERVAL_S)
+
+
+def _short(commit: str) -> str:
+    return commit[:SHORT_HASH_LEN]
+
+
+def build_rollback_report(
+    head: str,
+    previous_head: str | None,
+    backup_path: Path | None,
+    failed_rows: Sequence[CheckResult],
+) -> str:
+    """Отчёт о сбое выкатки и команды отката. Команды только печатаются, скрипт их не исполняет (D-12)."""
+    core = shlex.quote(str(CORE_DIR))
+    db = shlex.quote(str(LIVE_DB))
+    previous = _short(previous_head) if previous_head else "неизвестен"
+    lines = ["ОТЧЁТ О СБОЕ ВЫКАТКИ", "", "Что упало:"]
+    for row in failed_rows:
+        lines.append(f"  - {redact(row.name)}")
+        lines += [f"      {redact(detail_line)}" for detail_line in row.detail.splitlines()]
+    lines += [
+        "",
+        f"Выкатывался коммит {_short(head)}; родитель этого коммита: {previous}.",
+        "",
+        "Команды отката (скрипт их НЕ выполняет; каждая требует разрешения владельца):",
+    ]
+    steps: list[tuple[str, str]] = [
+        (
+            f"git -C {core} revert --no-edit {_short(head)}",
+            f"откат кода новым коммитом; если выкатка включала несколько коммитов, укажите диапазон сами "
+            f"(родитель: {previous})",
+        )
+    ]
+    if backup_path is not None:
+        backup = shlex.quote(str(backup_path))
+        steps += [
+            (f"systemctl stop {SERVICE_NAME}", "остановить сервис перед заменой БД"),
+            (
+                f"cp -p {backup} {db}",
+                "ВНИМАНИЕ: восстановление из копии затрёт данные, появившиеся после выкатки",
+            ),
+            (
+                f"rm -f {db}-wal {db}-shm",
+                "убрать sidecar-файлы прежней БД, если остались (копия самодостаточна)",
+            ),
+            (f"systemctl start {SERVICE_NAME}", "запустить сервис на откаченном коде и восстановленной БД"),
+        ]
+    else:
+        steps.append((f"systemctl restart {SERVICE_NAME}", "применить откаченный код"))
+    for number, (command, note) in enumerate(steps, start=1):
+        lines += [f"  {number}. {command}", f"       {note}"]
+    if backup_path is None:
+        lines += ["", "Откат БД невозможен: резервной копии не было (выкатка без --backup)."]
+    lines += ["", "Автоотката нет: откат требует нового разрешения владельца."]
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -945,8 +1121,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deploy.py",
         description=(
-            "Read-only смоук сервиса assistant-worker. Без флагов выполняется автоматическая часть "
-            "и сервис не меняется; фазы подтверждения /help работают по файлу состояния."
+            "Смоук сервиса assistant-worker. Без флагов выполняется только чтение: автоматическая часть, "
+            "сервис не меняется; фазы подтверждения /help работают по файлу состояния. "
+            "Изменяющие действия только по флагам --backup и --restart."
         ),
     )
     parser.add_argument(
@@ -967,6 +1144,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "сделать резервную копию боевой БД (backup API, источник mode=ro) вне дерева git, "
             "права 0600 в каталоге 0700; без других флагов больше ничего не делает"
+        ),
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help=(
+            "перезапустить assistant-worker, дождаться новой инвокации и polling, повторить смоук; "
+            "только по разрешению владельца; при красном исходе откат лишь печатается"
         ),
     )
     parser.add_argument(
@@ -1089,6 +1274,80 @@ def _run_backup(args: argparse.Namespace, clock: Callable[[], datetime], live_db
     return 0 if _make_backup(args, clock, live_db) is not None else 1
 
 
+def _run_restart(
+    args: argparse.Namespace,
+    runner: Runner,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+    opener: Opener,
+    env_path: Path,
+    main_py_path: Path,
+    report_path: Path | None,
+    live_db: Path,
+) -> int:
+    """Выкатка по ``--restart``: дерево, [копия], рестарт, ожидание, смоук; при красном - отчёт.
+
+    Порядок фиксирован (D-10, D-11, D-12). Откат здесь не выполняется никогда: после отчёта
+    раннер не получает ни одной команды.
+    """
+    try:
+        dirty = git_dirty_paths(runner)
+    except CommandError as exc:
+        print(f"Рестарт отменён: не удалось проверить дерево git ({exc}). Сервис не тронут.")
+        return 2
+    if dirty:
+        print("Рестарт отменён: дерево git не чистое вне .planning/. Сервис не тронут.")
+        print("Пути с изменениями (содержимое не печатается):")
+        for path in dirty[:MAX_LISTED_PATHS]:
+            print(f"  - {path}")
+        if len(dirty) > MAX_LISTED_PATHS:
+            print(f"  … и ещё {len(dirty) - MAX_LISTED_PATHS}")
+        return 2
+    head = get_head(runner)
+    if head is None:
+        print("Рестарт отменён: не удалось определить HEAD (git rev-parse HEAD). Сервис не тронут.")
+        return 2
+    previous_head = get_parent_head(runner)
+
+    backup_path: Path | None = None
+    if args.backup:
+        backup_path = _make_backup(args, clock, live_db)
+        if backup_path is None:
+            print("Выкатка остановлена до рестарта: сервис не тронут.")
+            return 1
+
+    result = restart_service(runner, sleep, clock)
+    if result.ok:
+        print(f"Сервис перезапущен. Ожидание окна старта {STARTUP_TAIL_SECONDS} с перед смоуком.")
+        sleep(STARTUP_TAIL_SECONDS)
+        smoke = run_smoke(runner, opener=opener, env_path=env_path, main_py_path=main_py_path)
+        restart_row = CheckResult("рестарт: новая инвокация active, polling запущен", True)
+        smoke = replace(smoke, rows=[restart_row, *smoke.rows])
+    else:
+        failed = CheckResult("рестарт: сервис вернулся в рабочее состояние", False, result.detail)
+        smoke = SmokeResult([failed], [], [], result.new_invocation, [])
+
+    print(render_table(smoke.rows, smoke.warnings))
+    state = build_state(smoke, clock())
+    try:
+        save_state(args.state_file, state)
+    except OSError as exc:
+        print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    green = auto_ok(smoke.rows)
+    if green:
+        print(_instruction(args.state_file))
+    print(f"ИТОГ СМОУКА: {final_verdict(state)}")
+    # Отчёт --report пишется ДО печати отчёта об откате: после него раннер молчит.
+    report_failed = report_path is not None and _write_report(report_path, state, runner, clock) != 0
+    if green:
+        return 2 if report_failed else 0
+    failed_rows = [row for row in smoke.rows if not row.ok]
+    print()
+    print(build_rollback_report(head, previous_head, backup_path, failed_rows))
+    return 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     runner: Runner = run_cmd,
@@ -1111,8 +1370,11 @@ def main(
         print("--backup-dir имеет смысл только вместе с --backup", file=sys.stderr)
         return 2
 
-    if (args.await_help or args.confirm_help) and args.backup:
-        print("--backup нельзя сочетать с фазами --await-help и --confirm-help", file=sys.stderr)
+    if (args.await_help or args.confirm_help) and (args.backup or args.restart):
+        print(
+            "--backup и --restart нельзя сочетать с фазами --await-help и --confirm-help",
+            file=sys.stderr,
+        )
         return 2
 
     report_path: Path | None = None
@@ -1125,6 +1387,19 @@ def main(
 
     if args.await_help or args.confirm_help:
         return _run_phase(args, runner, clock, sleep_fn, report_path)
+
+    if args.restart:
+        return _run_restart(
+            args,
+            runner,
+            clock,
+            sleep_fn,
+            opener or urllib.request.urlopen,
+            env_path or ENV_FILE_DEFAULT,
+            main_py_path or MAIN_PY_DEFAULT,
+            report_path,
+            live_db or LIVE_DB,
+        )
 
     if args.backup:
         return _run_backup(args, clock, live_db or LIVE_DB)
