@@ -15,6 +15,10 @@ except ImportError:
 __all__ = ["audit_repository", "CORPORATE_NDA_KEYWORDS"]
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
-    staged_only = "--all" not in sys.argv
-    sys.exit(audit_repository(target, check_staged_only=staged_only))
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Security Shield: scan staged (default) or all tracked files.")
+    parser.add_argument("path", nargs="?", default=".", help="repository path (default: current directory)")
+    parser.add_argument("--all", action="store_true", help="scan all tracked files instead of staged ones")
+    args = parser.parse_args()  # unknown flags exit with code 2 (fail-closed), never treated as a path
+    sys.exit(audit_repository(Path(args.path).resolve(), check_staged_only=not args.all))
