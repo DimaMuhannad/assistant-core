@@ -13,7 +13,7 @@
 - [ ] **GATE-02**: Тесты assistant-core не могут открыть боевую БД `data/assistant.db`: путь к БД в тестах изолирован, и `load_dotenv(..., override=True)` в `src/config.py` его не перебивает (доказывается тестом). Гейт дополнительно сверяет SHA-256 боевой БД до и после прогона, без изменения её содержимого.
 - [x] **GATE-03** (WR-11): У `/opt/assistant-shared` есть собственные pytest-тесты (мигратор, HITL-примитив, библиотека безопасности) и воспроизводимо установленный pre-commit hook. Гейт assistant-core запускает эти тесты отдельной строкой.
 - [x] **GATE-04**: Гейт assistant-core не слабее общего `/opt/chat-app/scripts/gate.py` по части assistant-core. Сохранены проверка дрейфа `tests/synthetic_persona.py` и `tests/persona_tokens.py` с копиями chat-app (только чтение) и замороженный список известных ложных срабатываний shield (записи только удаляются).
-- [ ] **GATE-05**: Адаптер cross-AI (`agy_cross_ai.sh --repo /opt/assistant-core`) и правила `CLAUDE.md` используют гейт assistant-core вместо общего. Правки на стороне chat-app — только мелкой задачей `/gsd-quick` в chat-app. Пробный прогон адаптера даёт ЗЕЛЁНЫЙ.
+- [x] **GATE-05**: Адаптер cross-AI (`agy_cross_ai.sh --repo /opt/assistant-core`) и правила `CLAUDE.md` используют гейт assistant-core вместо общего. Правки на стороне chat-app — только мелкой задачей `/gsd-quick` в chat-app. Пробный прогон адаптера даёт ЗЕЛЁНЫЙ.
 - [ ] **OPS-01**: Описана и автоматизирована процедура выкатки. После фазы с изменениями рантайма — рестарт `assistant-worker.service` только по явному разрешению владельца, затем смоук-проверка: сервис active, в журнале старта нет ошибок, планировщик зарегистрировал задачи, бот отвечает на команду. Смоук-проверка не пишет в боевую БД.
 
 ### Безопасность и приватность (SECF, SAFE, PRIV)
@@ -132,7 +132,7 @@
 | GATE-02 | Phase 1 | Pending |
 | GATE-03 | Phase 1 | Complete |
 | GATE-04 | Phase 1 | Complete |
-| GATE-05 | Phase 1 | Pending |
+| GATE-05 | Phase 1 | Complete |
 | OPS-01 | Phase 1 | Pending |
 | SECF-01 | Phase 2 | Pending |
 | SECF-02 | Phase 2 | Pending |
