@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-10-09T17:29:17.426Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-10-09T17:43:46.303Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: b4782c71856efb3eb3286d8245d10119367f2760
+state_head: b0fb5f0f885c4af34f118a25fb53415b96afa1ea
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 25 min | 3 tasks | 7 files |
+| Phase 01 P02 | 12 min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,8 @@ Progress: [░░░░░░░░░░] 0%
 - [Process]: Исполнение механических планов — через `agy_cross_ai.sh`, без автокоммита; Claude читает патч целиком, гоняет гейт и коммитит сам.
 - [Phase 01]: 01-01: страж боевой БД на sys.addaudithook в tests/conftest.py плюс ASSISTANT_DB_PATH_OVERRIDE, захваченный в src/config.py до load_dotenv(override=True)
 - [Phase 01]: 01-01: тайминговые пороги проверяются по минимуму из LATENCY_SAMPLES=5 замеров, без skip/xfail
+- [Phase 01]: 01-02: tests of assistant-shared run only in /opt/assistant-core/.venv (D-03); CR-02 CLI tests use the assistant-core security_shield.py wrapper
+- [Phase 01]: 01-02: shared hitl.decorators imports fastapi which is not in shared pyproject dependencies (hidden defect, left for owner/next plan)
 
 ### Pending Todos
 
@@ -96,6 +99,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T17:29:17.336Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-10-09T17:43:46.160Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
