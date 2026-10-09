@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-05-PLAN.md
-last_updated: "2026-10-09T20:10:04.796Z"
+stopped_at: Completed 01-08-PLAN.md
+last_updated: "2026-10-09T20:25:18.461Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: 14262f23aa3d489d24012098c95e837273d7d193
+state_head: fffc1703ec45ce2d10f8d6bd3baa1a3d4e27a90d
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 7
+  completed_plans: 8
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 8 of 10
+Plan: 9 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -64,6 +64,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P04 | 19 min | 3 tasks | 2 files |
 | Phase 01 P07 | 21 min | 3 tasks | 3 files |
 | Phase 01 P05 | 10 min | 3 tasks | 3 files |
+| Phase 01 P08 | 9 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -89,6 +90,7 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-07: после рестарта выдерживается окно старта 60 с перед смоуком (строгий D-08)
 - [Phase 01]: 01-05: решение владельца 2026-10-09 «Повтор при записи сервиса»: при расхождении хеша боевой БД, активном assistant-worker и mtime БД внутри окна измерения гейт делает ОДИН повторный замер в тихом окне (два хеша через 5 с); совпали - строка зелёная с пометкой в info, иначе КРАСНЫЙ как раньше (fail-closed); основная защита остаётся tests/live_db_guard.py
 - [Phase 01]: 01-05: чтение боевой БД mode=ro оставляет пустые assistant.db-wal и -shm в data/ (допущение A7 подтверждено, вреда нет); вопрос чистки вынесен в deferred-items.md
+- [Phase 01]: 01-08: общий гейт chat-app упомянут в правилах как неизменяемый гейт потребителя (D-15), способом проверки assistant-core назван python3 scripts/gate.py; страж-тест tests/test_claude_md_gate_pointer.py против возврата прежней команды
 
 ### Pending Todos
 
@@ -113,6 +115,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T20:09:56.122Z
-Stopped at: Completed 01-05-PLAN.md
+Last session: 2026-10-09T20:25:11.723Z
+Stopped at: Completed 01-08-PLAN.md
 Resume file: None
