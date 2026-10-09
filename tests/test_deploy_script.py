@@ -564,10 +564,26 @@ def _code_lines() -> list[str]:
     ]
 
 
-def test_script_does_not_import_src_and_does_not_open_database():
+def test_script_does_not_import_src_and_opens_sqlite_only_in_make_db_copy():
+    """Скрипт не импортирует src; соединения SQLite открывает только make_db_copy (по --backup, D-11)."""
     source = "\n".join(_code_lines())
     assert not re.search(r"^\s*(from|import)\s+src\b", source, re.MULTILINE)
-    assert "sqlite3" not in source and "aiosqlite" not in source
+    assert "aiosqlite" not in source
+    tree = ast.parse(DEPLOY_PATH.read_text(encoding="utf-8"))
+    owners: set[str] = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "connect"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "sqlite3"
+            ):
+                owners.add(func.name)
+    assert owners == {"make_db_copy"}
+    assert 1 <= source.count("sqlite3.connect") <= 2
 
 
 def test_script_is_executable_python3_with_shebang():
@@ -1365,3 +1381,287 @@ def test_cli_help_lists_all_five_options():
     assert proc.returncode == 0
     for option in ("--state-file", "--report", "--await-help", "--await-timeout", "--confirm-help"):
         assert option in proc.stdout
+
+
+# ================================================================ Task 1 (план 01-07): резервная копия --backup
+
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import sqlite3  # noqa: E402
+import stat  # noqa: E402
+
+
+def _make_wal_db(path: Path, rows: int = 5) -> sqlite3.Connection:
+    """Временная WAL-БД; соединение остаётся открытым, чтобы sidecar-файлы WAL существовали."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+    conn.executemany("INSERT INTO notes (body) VALUES (?)", [(f"row-{i}",) for i in range(rows)])
+    conn.commit()
+    return conn
+
+
+def _logical_dump_hash(path: Path) -> str:
+    conn = sqlite3.connect(path)
+    try:
+        digest = hashlib.sha256()
+        for line in conn.iterdump():
+            digest.update(line.encode("utf-8"))
+        return digest.hexdigest()
+    finally:
+        conn.close()
+
+
+class ForbiddenRunner:
+    """Раннер, который не должен вызываться вообще (ветка --backup не трогает systemd и журнал)."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd, timeout):
+        self.calls.append(list(cmd))
+        raise AssertionError(f"раннер не должен вызываться: {cmd}")
+
+
+def test_build_parser_has_all_flags():
+    parser = deploy.build_parser()
+    flags = {opt for action in parser._actions for opt in action.option_strings if opt.startswith("--")}
+    assert {
+        "--state-file", "--report", "--await-help", "--await-timeout", "--confirm-help",
+        "--backup", "--backup-dir",
+    } <= flags
+
+
+def test_build_parser_backup_defaults():
+    args = deploy.build_parser().parse_args([])
+    assert args.backup is False
+    assert args.backup_dir == deploy.BACKUP_DIR_DEFAULT
+
+
+def test_backup_dir_default_is_outside_git_tree():
+    assert deploy.BACKUP_DIR_DEFAULT == Path("/var/backups/assistant-core")
+    resolved = deploy.BACKUP_DIR_DEFAULT.resolve()
+    assert deploy.CORE_DIR != resolved and deploy.CORE_DIR not in resolved.parents
+
+
+def test_backup_creates_checked_copy_with_private_modes(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        dst_dir = tmp_path / "backups"
+        copy = deploy.make_db_copy(live, dst_dir, NOW)
+    finally:
+        writer.close()
+    assert copy.parent == dst_dir
+    assert copy.name == "assistant-20261009-120000.db"
+    assert stat.S_IMODE(copy.stat().st_mode) == 0o600
+    assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o700
+    conn = sqlite3.connect(copy)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+        assert conn.execute("SELECT count(*) FROM notes").fetchone() == (5,)
+    finally:
+        conn.close()
+    assert sorted(os.listdir(dst_dir)) == [copy.name]  # без sidecar-файлов: копия самодостаточна
+
+
+def test_backup_includes_rows_still_in_wal(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live, rows=3)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO notes (body) VALUES ('tail')")
+        writer.commit()
+        copy = deploy.make_db_copy(live, tmp_path / "backups", NOW)
+    finally:
+        writer.close()
+    conn = sqlite3.connect(copy)
+    try:
+        assert conn.execute("SELECT count(*) FROM notes").fetchone() == (4,)
+    finally:
+        conn.close()
+
+
+def test_backup_does_not_change_source_database(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        before_hash = _logical_dump_hash(live)
+        before_files = sorted(os.listdir(tmp_path))
+        deploy.make_db_copy(live, tmp_path / "backups", NOW)
+        after_files = sorted(p for p in os.listdir(tmp_path) if p != "backups")
+        after_hash = _logical_dump_hash(live)
+    finally:
+        writer.close()
+    assert after_hash == before_hash
+    assert after_files == before_files  # в каталоге источника не появилось лишних файлов
+
+
+def test_backup_opens_source_read_only(tmp_path, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    seen: list[tuple] = []
+    real_connect = sqlite3.connect
+
+    def spy(*args, **kwargs):
+        seen.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", spy)
+    try:
+        deploy.make_db_copy(live, tmp_path / "backups", NOW)
+    finally:
+        monkeypatch.undo()
+        writer.close()
+    uri_calls = [(a, k) for a, k in seen if str(a[0]).startswith("file:")]
+    assert len(uri_calls) == 1
+    assert uri_calls[0][0][0].endswith("?mode=ro")
+    assert uri_calls[0][1].get("uri") is True
+    assert len(seen) == 2  # источник и приёмник, других соединений нет
+
+
+def test_backup_tightens_permissions_of_existing_directory(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst_dir = tmp_path / "wide"
+    dst_dir.mkdir()
+    dst_dir.chmod(0o755)
+    try:
+        deploy.make_db_copy(live, dst_dir, NOW)
+    finally:
+        writer.close()
+    assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o700
+
+
+def test_backup_rejects_directory_inside_repo_before_creating_it(tmp_path, monkeypatch):
+    fake_core = tmp_path / "repo"
+    fake_core.mkdir()
+    monkeypatch.setattr(deploy, "CORE_DIR", fake_core.resolve())
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        for inside in (fake_core / "backups", fake_core / "a" / "b", fake_core):
+            with pytest.raises(ValueError):
+                deploy.make_db_copy(live, inside, NOW)
+            assert not (fake_core / "backups").exists()
+            assert not (fake_core / "a").exists()
+        # путь через символическую ссылку тоже внутри репозитория
+        link = tmp_path / "link"
+        link.symlink_to(fake_core)
+        with pytest.raises(ValueError):
+            deploy.make_db_copy(live, link / "backups", NOW)
+        assert not (fake_core / "backups").exists()
+    finally:
+        writer.close()
+    assert os.listdir(fake_core) == []
+
+
+def test_backup_removes_copy_and_raises_when_integrity_check_fails(tmp_path, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    monkeypatch.setattr(deploy, "_integrity_ok", lambda conn: False)
+    try:
+        with pytest.raises(deploy.BackupError):
+            deploy.make_db_copy(live, tmp_path / "backups", NOW)
+    finally:
+        writer.close()
+    assert os.listdir(tmp_path / "backups") == []
+
+
+def test_backup_removes_partial_file_when_source_is_missing(tmp_path):
+    with pytest.raises(Exception):
+        deploy.make_db_copy(tmp_path / "absent.db", tmp_path / "backups", NOW)
+    assert not (tmp_path / "absent.db").exists()  # источник не создаётся режимом mode=ro
+    assert os.listdir(tmp_path / "backups") == []
+
+
+def test_backup_refuses_to_overwrite_existing_copy(tmp_path):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        first = deploy.make_db_copy(live, tmp_path / "backups", NOW)
+        before = first.read_bytes()
+        with pytest.raises(FileExistsError):
+            deploy.make_db_copy(live, tmp_path / "backups", NOW)
+    finally:
+        writer.close()
+    assert first.read_bytes() == before
+
+
+def test_main_backup_creates_copy_prints_path_and_size_and_never_calls_runner(tmp_path, capsys):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    runner = ForbiddenRunner()
+    dst_dir = tmp_path / "backups"
+    try:
+        rc = deploy.main(
+            ["--backup", "--backup-dir", str(dst_dir), "--state-file", str(tmp_path / "state.json")],
+            runner=runner,
+            now=lambda: NOW,
+            live_db=live,
+        )
+    finally:
+        writer.close()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert runner.calls == []
+    copy = dst_dir / "assistant-20261009-120000.db"
+    assert copy.is_file()
+    assert str(copy) in out
+    assert str(copy.stat().st_size) in out
+    assert "содержимое не печатается" in out
+    assert "row-" not in out
+    assert not (tmp_path / "state.json").exists()  # смоук не запускался
+
+
+def test_main_backup_failure_prints_only_exception_class_and_returns_one(tmp_path, capsys):
+    runner = ForbiddenRunner()
+    rc = deploy.main(
+        ["--backup", "--backup-dir", str(tmp_path / "backups")],
+        runner=runner,
+        now=lambda: NOW,
+        live_db=tmp_path / "absent.db",
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert runner.calls == []
+    text = captured.out + captured.err
+    assert "OperationalError" in text
+    assert str(tmp_path / "absent.db") not in text  # текст исключения (с путём) не печатается
+
+
+def test_main_backup_dir_inside_repo_returns_one_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    fake_core = tmp_path / "repo"
+    fake_core.mkdir()
+    monkeypatch.setattr(deploy, "CORE_DIR", fake_core.resolve())
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        rc = deploy.main(
+            ["--backup", "--backup-dir", str(fake_core / "backups")],
+            runner=ForbiddenRunner(),
+            now=lambda: NOW,
+            live_db=live,
+        )
+    finally:
+        writer.close()
+    assert rc == 1
+    assert "BackupPathError" in capsys.readouterr().out
+    assert os.listdir(fake_core) == []
+
+
+def test_main_backup_dir_without_backup_flag_is_usage_error(tmp_path, capsys):
+    runner = ForbiddenRunner()
+    rc = deploy.main(["--backup-dir", str(tmp_path / "b")], runner=runner, now=lambda: NOW)
+    assert rc == 2
+    assert runner.calls == []
+    assert "--backup" in capsys.readouterr().err
+
+
+def test_main_backup_cannot_be_combined_with_phase_flags(tmp_path, capsys):
+    runner = ForbiddenRunner()
+    for phase in (["--await-help"], ["--confirm-help", "yes"]):
+        rc = deploy.main(["--backup", *phase], runner=runner, now=lambda: NOW, live_db=tmp_path / "x.db")
+        assert rc == 2
+    assert runner.calls == []
+    assert "--backup" in capsys.readouterr().err

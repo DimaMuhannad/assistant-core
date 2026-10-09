@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Скрипт выкатки assistant-core: read-only смоук работающего сервиса (OPS-01).
+"""Скрипт выкатки assistant-core: смоук сервиса, резервная копия БД, рестарт по флагу (OPS-01).
 
 Запуск (из /opt/assistant-core):  python3 scripts/deploy.py
 
@@ -9,10 +9,16 @@
   - исходник ``src/main.py`` (разбор ast, без импорта);
   - из ``.env`` только ключ ``TELEGRAM_BOT_TOKEN``, его значение нигде не печатается.
 
-Чего скрипт не делает: не пишет в БД и не открывает её, не импортирует ``src``, не запрашивает у
-Telegram накопленные обновления бота, не открывает пользовательские сессии, не перезапускает и не
-останавливает сервис. Печатает только имена логгеров, очищенные усечённые сообщения об ошибках и
-счётчики: сырые строки журнала, e-mail и токены в вывод и в файлы не попадают.
+Изменяющие действия возможны только по явным флагам (D-10, D-11):
+  - ``--backup``: консистентная копия боевой БД через sqlite3 backup API, источник открыт в режиме
+    ``mode=ro``, копия вне дерева git (D-11). Это единственное место, где скрипт открывает SQLite;
+  - ``--restart``: рестарт assistant-worker с ожиданием готовности и тем же смоуком (D-10).
+    Откат скрипт никогда не выполняет: при красном исходе он только печатает команды (D-12).
+
+Чего скрипт не делает: не пишет в боевую БД, не импортирует ``src``, не запрашивает у Telegram
+накопленные обновления бота, не открывает пользовательские сессии. Печатает только имена логгеров,
+очищенные усечённые сообщения об ошибках и счётчики: сырые строки журнала, e-mail и токены в вывод
+и в файлы не попадают.
 
 Только стандартная библиотека.
 """
@@ -25,6 +31,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -56,6 +63,9 @@ MAX_STORED_ERRORS = 50
 BOT_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 ENV_FILE_DEFAULT = CORE_DIR / ".env"
 MAIN_PY_DEFAULT = CORE_DIR / "src" / "main.py"
+# Резервные копии лежат вне дерева git (D-11). Каталог выбран планировщиком, меняется --backup-dir.
+BACKUP_DIR_DEFAULT = Path("/var/backups/assistant-core")
+LIVE_DB = CORE_DIR / "data" / "assistant.db"
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess]
 Opener = Callable[..., object]
@@ -118,6 +128,14 @@ class CommandError(Exception):
 
 class StateError(Exception):
     """Файл состояния смоука отсутствует или повреждён; текст пригоден для вывода."""
+
+
+class BackupError(Exception):
+    """Резервная копия не прошла проверку целостности; копия удалена."""
+
+
+class BackupPathError(ValueError):
+    """Каталог резервных копий внутри дерева git: копия БД с данными не должна попасть в репозиторий."""
 
 
 # --------------------------------------------------------------------------- подпроцессы
@@ -848,6 +866,68 @@ def run_smoke(
     return SmokeResult(rows, errors, warnings, state.invocation_id, records)
 
 
+# --------------------------------------------------------------------------- резервная копия (D-11)
+
+_DB_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _integrity_ok(conn: sqlite3.Connection) -> bool:
+    return conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+def _inside_core(path: Path) -> bool:
+    core = CORE_DIR.resolve()
+    return path == core or core in path.parents
+
+
+def make_db_copy(live_db: Path, dst_dir: Path, now: datetime) -> Path:
+    """Консистентная копия БД через sqlite3 backup API (источник только на чтение, D-11).
+
+    Единственное место, где скрипт открывает SQLite. Каталог ``dst_dir`` должен быть выделенным
+    под копии: его права сужаются до 0700. Копия создаётся с правами 0600 и не перезаписывает
+    существующий файл. Проверка целостности (``PRAGMA integrity_check``) идёт на копии; при
+    любом сбое неполная копия удаляется.
+    """
+    target_dir = Path(dst_dir).expanduser().resolve()
+    if _inside_core(target_dir):
+        raise BackupPathError("каталог резервных копий внутри дерева git")
+    os.makedirs(target_dir, mode=0o700, exist_ok=True)
+    os.chmod(target_dir, 0o700)
+    stamp = now.astimezone(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    copy_path = target_dir / f"assistant-{stamp}.db"
+    fd = os.open(copy_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+    src: sqlite3.Connection | None = None
+    out: sqlite3.Connection | None = None
+    try:
+        src = sqlite3.connect(Path(live_db).resolve().as_uri() + "?mode=ro", uri=True)
+        out = sqlite3.connect(copy_path)
+        src.backup(out)
+        # Копия самодостаточна: без WAL и sidecar-файлов её можно восстановить одним cp.
+        out.execute("PRAGMA journal_mode=DELETE").fetchall()
+        if not _integrity_ok(out):
+            raise BackupError("копия не прошла PRAGMA integrity_check")
+    except BaseException:
+        for conn in (out, src):
+            if conn is not None:
+                conn.close()
+        out = src = None
+        for suffix in ("", *_DB_SIDECARS):
+            try:
+                os.unlink(str(copy_path) + suffix)
+            except FileNotFoundError:
+                pass
+        raise
+    finally:
+        for conn in (out, src):
+            if conn is not None:
+                conn.close()
+    return copy_path
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -880,6 +960,21 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="PATH",
         help="записать markdown-отчёт в PATH (каталог должен существовать, не внутри .git)",
+    )
+    parser.add_argument(
+        "--backup",
+        action="store_true",
+        help=(
+            "сделать резервную копию боевой БД (backup API, источник mode=ro) вне дерева git, "
+            "права 0600 в каталоге 0700; без других флагов больше ничего не делает"
+        ),
+    )
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        default=BACKUP_DIR_DEFAULT,
+        metavar="PATH",
+        help=f"каталог резервных копий, только с --backup (по умолчанию {BACKUP_DIR_DEFAULT})",
     )
     phase = parser.add_mutually_exclusive_group()
     phase.add_argument(
@@ -977,6 +1072,23 @@ def _run_phase(
     return 0 if verdict == "ЗЕЛЁНЫЙ" else 1
 
 
+def _make_backup(args: argparse.Namespace, clock: Callable[[], datetime], live_db: Path) -> Path | None:
+    """Резервная копия по --backup. Печатает путь и размер, но не содержимое; None при сбое."""
+    try:
+        copy_path = make_db_copy(live_db, args.backup_dir, clock())
+        size = copy_path.stat().st_size
+    except Exception as exc:  # noqa: BLE001 - граница ввода-вывода: наружу только имя класса
+        print(f"Резервная копия не создана: {type(exc).__name__}")
+        return None
+    print(f"Резервная копия создана: {copy_path} ({size} байт); содержимое не печатается.")
+    return copy_path
+
+
+def _run_backup(args: argparse.Namespace, clock: Callable[[], datetime], live_db: Path) -> int:
+    """Режим «только копия»: раннер, systemd и журнал не используются."""
+    return 0 if _make_backup(args, clock, live_db) is not None else 1
+
+
 def main(
     argv: Sequence[str] | None = None,
     runner: Runner = run_cmd,
@@ -985,6 +1097,7 @@ def main(
     env_path: Path | None = None,
     main_py_path: Path | None = None,
     sleep: Callable[[float], None] | None = None,
+    live_db: Path | None = None,
 ) -> int:
     parser = build_parser()
     try:
@@ -993,6 +1106,14 @@ def main(
         return int(exc.code or 0)
     clock = now or (lambda: datetime.now(timezone.utc))
     sleep_fn = sleep or time.sleep
+
+    if args.backup_dir != BACKUP_DIR_DEFAULT and not args.backup:
+        print("--backup-dir имеет смысл только вместе с --backup", file=sys.stderr)
+        return 2
+
+    if (args.await_help or args.confirm_help) and args.backup:
+        print("--backup нельзя сочетать с фазами --await-help и --confirm-help", file=sys.stderr)
+        return 2
 
     report_path: Path | None = None
     if args.report is not None:
@@ -1004,6 +1125,9 @@ def main(
 
     if args.await_help or args.confirm_help:
         return _run_phase(args, runner, clock, sleep_fn, report_path)
+
+    if args.backup:
+        return _run_backup(args, clock, live_db or LIVE_DB)
 
     result = run_smoke(
         runner,
