@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, AsyncGenerator
 import aiosqlite
-from assistant_shared.db.connection import get_async_connection
+from assistant_shared.db.connection import get_async_connection, sqlite_lower
 from assistant_shared.db.migrator import run_migrations
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class Database:
             if self._shared_conn is None:
                 self._shared_conn = await aiosqlite.connect(":memory:", check_same_thread=False)
                 self._shared_conn.row_factory = aiosqlite.Row
-                await self._shared_conn.create_function("lower", 1, lambda s: s.lower() if s is not None else None)
+                await self._shared_conn.create_function("lower", 1, sqlite_lower, deterministic=True)
                 await self._shared_conn.execute("PRAGMA foreign_keys = ON;")
             yield self._shared_conn
         else:
