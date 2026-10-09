@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-06-PLAN.md
-last_updated: "2026-10-09T17:59:47.248Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-10-09T18:06:50.504Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: a9a546f468529f9a817eb14e3c88092b3570150e
+state_head: 808fe17614fc68332b895eaf00530f8ca85ed369
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01 | 25 min | 3 tasks | 7 files |
 | Phase 01 P02 | 12 min | 3 tasks | 6 files |
 | Phase 01 P06 | 35 min | 3 tasks | 2 files |
+| Phase 01 P03 | 2 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,7 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-02: shared hitl.decorators imports fastapi which is not in shared pyproject dependencies (hidden defect, left for owner/next plan)
 - [Phase 01]: 01-06: окно ошибок старта смоука = до «Run polling for bot» плюс 60 с (STARTUP_TAIL_SECONDS); белого списка внешних ошибок нет
 - [Phase 01]: 01-06: scripts/deploy.py допускает только белый список команд (systemctl show, journalctl, git rev-parse HEAD); фазы без TTY сверяют InvocationID
+- [Phase 01]: 01-03: shared scripts/security_shield.py is a small copy of the assistant-core wrapper (OQ5); drift between copies is not checked
 
 ### Pending Todos
 
@@ -102,6 +104,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T17:59:47.079Z
-Stopped at: Completed 01-06-PLAN.md
+Last session: 2026-10-09T18:06:50.369Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None
