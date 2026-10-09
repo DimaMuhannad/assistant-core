@@ -96,3 +96,12 @@ Filled by the planner per task; requirement-level map:
 - [x] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** approved 2026-10-09 (validate-phase audit: 18/18 rows green; manual-only: live smoke ЗЕЛЁНЫЙ — 01-SMOKE-REPORT.md, adapter trial ЗЕЛЁНЫЙ — 01-09-SUMMARY.md)
+
+## Validation Audit 2026-10-09
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Map commands corrected | 2 |
