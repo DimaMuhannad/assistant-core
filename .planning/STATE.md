@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-03-PLAN.md
-last_updated: "2026-10-09T18:06:50.504Z"
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-10-09T18:28:45.418Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: 808fe17614fc68332b895eaf00530f8ca85ed369
+state_head: 1ea58fcb3eecb6e9182a5fee329e161175cf0ab6
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P02 | 12 min | 3 tasks | 6 files |
 | Phase 01 P06 | 35 min | 3 tasks | 2 files |
 | Phase 01 P03 | 2 min | 2 tasks | 5 files |
+| Phase 01 P04 | 19 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,7 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-06: окно ошибок старта смоука = до «Run polling for bot» плюс 60 с (STARTUP_TAIL_SECONDS); белого списка внешних ошибок нет
 - [Phase 01]: 01-06: scripts/deploy.py допускает только белый список команд (systemctl show, journalctl, git rev-parse HEAD); фазы без TTY сверяют InvocationID
 - [Phase 01]: 01-03: shared scripts/security_shield.py is a small copy of the assistant-core wrapper (OQ5); drift between copies is not checked
+- [Phase 01]: 01-04: gate row «боевая БД не изменена» может краснеть из-за записи живого assistant-worker в окне pytest; вердикт не смягчается, стратегию решает 01-05/владелец
 
 ### Pending Todos
 
@@ -104,6 +106,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T18:06:50.369Z
-Stopped at: Completed 01-03-PLAN.md
+Last session: 2026-10-09T18:28:45.281Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None
