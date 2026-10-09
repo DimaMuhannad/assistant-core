@@ -4,17 +4,17 @@ milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
-status: executing
-stopped_at: Completed 01-09-PLAN.md
-last_updated: "2026-10-09T22:33:46.156Z"
+status: verifying
+stopped_at: Completed 01-10-PLAN.md
+last_updated: "2026-10-09T22:48:38.963Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: d99b7b89b56f5bb22f26bc5c52ad96ff1a2c5dca
+state_head: 64d00f1a224cf976191da23a3a4ae1d578f39d7f
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 9
+  completed_plans: 10
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-09 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -66,6 +66,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P05 | 10 min | 3 tasks | 3 files |
 | Phase 01 P08 | 9 min | 3 tasks | 8 files |
 | Phase 01 P09 | 126 min | 3 tasks | 3 files |
+| Phase 01 P10 | 15 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,7 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-05: чтение боевой БД mode=ro оставляет пустые assistant.db-wal и -shm в data/ (допущение A7 подтверждено, вреда нет); вопрос чистки вынесен в deferred-items.md
 - [Phase 01]: 01-08: общий гейт chat-app упомянут в правилах как неизменяемый гейт потребителя (D-15), способом проверки assistant-core назван python3 scripts/gate.py; страж-тест tests/test_claude_md_gate_pointer.py против возврата прежней команды
 - [Phase 01]: 01-09: adapter cross-AI uses the target repo scripts/gate.py (chat-app commit 6b3b2ac); cross_ai_timeout stays 1200 (trial 271 s)
+- [Phase 01]: 01-10: серия гейта прошла с первой попытки (3 из 6), смоук на живом сервисе ЗЕЛЁНЫЙ без рестарта
 
 ### Pending Todos
 
@@ -117,6 +119,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T22:33:45.993Z
-Stopped at: Completed 01-09-PLAN.md
+Last session: 2026-10-09T22:48:38.809Z
+Stopped at: Completed 01-10-PLAN.md
 Resume file: None

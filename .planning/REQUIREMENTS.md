@@ -9,12 +9,12 @@
 
 ### Гейт качества и эксплуатация (GATE, OPS)
 
-- [ ] **GATE-01**: Одна команда `python3 scripts/gate.py` в `/opt/assistant-core` запускает pytest assistant-core, `lint-imports` и `security_shield --all`. Она печатает по-русски таблицу «проверка → ✓/✗» и «ИТОГ: ЗЕЛЁНЫЙ» (rc 0) или «ИТОГ: КРАСНЫЙ» (rc ≠ 0). Ноль собранных тестов, skip, xfail, xpass или deselected — красный. Гейт не обрывается на первой ошибке.
-- [ ] **GATE-02**: Тесты assistant-core не могут открыть боевую БД `data/assistant.db`: путь к БД в тестах изолирован, и `load_dotenv(..., override=True)` в `src/config.py` его не перебивает (доказывается тестом). Гейт дополнительно сверяет SHA-256 боевой БД до и после прогона, без изменения её содержимого.
+- [x] **GATE-01**: Одна команда `python3 scripts/gate.py` в `/opt/assistant-core` запускает pytest assistant-core, `lint-imports` и `security_shield --all`. Она печатает по-русски таблицу «проверка → ✓/✗» и «ИТОГ: ЗЕЛЁНЫЙ» (rc 0) или «ИТОГ: КРАСНЫЙ» (rc ≠ 0). Ноль собранных тестов, skip, xfail, xpass или deselected — красный. Гейт не обрывается на первой ошибке.
+- [x] **GATE-02**: Тесты assistant-core не могут открыть боевую БД `data/assistant.db`: путь к БД в тестах изолирован, и `load_dotenv(..., override=True)` в `src/config.py` его не перебивает (доказывается тестом). Гейт дополнительно сверяет SHA-256 боевой БД до и после прогона, без изменения её содержимого.
 - [x] **GATE-03** (WR-11): У `/opt/assistant-shared` есть собственные pytest-тесты (мигратор, HITL-примитив, библиотека безопасности) и воспроизводимо установленный pre-commit hook. Гейт assistant-core запускает эти тесты отдельной строкой.
 - [x] **GATE-04**: Гейт assistant-core не слабее общего `/opt/chat-app/scripts/gate.py` по части assistant-core. Сохранены проверка дрейфа `tests/synthetic_persona.py` и `tests/persona_tokens.py` с копиями chat-app (только чтение) и замороженный список известных ложных срабатываний shield (записи только удаляются).
 - [x] **GATE-05**: Адаптер cross-AI (`agy_cross_ai.sh --repo /opt/assistant-core`) и правила `CLAUDE.md` используют гейт assistant-core вместо общего. Правки на стороне chat-app — только мелкой задачей `/gsd-quick` в chat-app. Пробный прогон адаптера даёт ЗЕЛЁНЫЙ.
-- [ ] **OPS-01**: Описана и автоматизирована процедура выкатки. После фазы с изменениями рантайма — рестарт `assistant-worker.service` только по явному разрешению владельца, затем смоук-проверка: сервис active, в журнале старта нет ошибок, планировщик зарегистрировал задачи, бот отвечает на команду. Смоук-проверка не пишет в боевую БД.
+- [x] **OPS-01**: Описана и автоматизирована процедура выкатки. После фазы с изменениями рантайма — рестарт `assistant-worker.service` только по явному разрешению владельца, затем смоук-проверка: сервис active, в журнале старта нет ошибок, планировщик зарегистрировал задачи, бот отвечает на команду. Смоук-проверка не пишет в боевую БД.
 
 ### Безопасность и приватность (SECF, SAFE, PRIV)
 
@@ -128,12 +128,12 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| GATE-01 | Phase 1 | Pending |
-| GATE-02 | Phase 1 | Pending |
+| GATE-01 | Phase 1 | Complete |
+| GATE-02 | Phase 1 | Complete |
 | GATE-03 | Phase 1 | Complete |
 | GATE-04 | Phase 1 | Complete |
 | GATE-05 | Phase 1 | Complete |
-| OPS-01 | Phase 1 | Pending |
+| OPS-01 | Phase 1 | Complete |
 | SECF-01 | Phase 2 | Pending |
 | SECF-02 | Phase 2 | Pending |
 | SAFE-01 | Phase 2 | Pending |
