@@ -2204,3 +2204,85 @@ def test_cli_help_lists_backup_and_restart_options():
     assert proc.returncode == 0
     for option in ("--backup", "--backup-dir", "--restart"):
         assert option in proc.stdout
+
+
+# ================================================================ Task 3 (план 01-07): docs/OPS_DEPLOY.md
+
+DOC_PATH = Path(__file__).resolve().parents[1] / "docs" / "OPS_DEPLOY.md"
+
+
+def _cli_long_flags() -> list[str]:
+    parser = deploy.build_parser()
+    flags = [
+        opt
+        for action in parser._actions
+        for opt in action.option_strings
+        if opt.startswith("--") and opt != "--help"
+    ]
+    assert flags, "парсер не отдал ни одного флага: тест не может быть пустым"
+    return sorted(flags)
+
+
+def _missing_flags(text: str) -> list[str]:
+    return [flag for flag in _cli_long_flags() if flag not in text]
+
+
+def test_docs_cover_all_cli_flags():
+    assert DOC_PATH.is_file()
+    assert _missing_flags(DOC_PATH.read_text(encoding="utf-8")) == []
+
+
+def test_docs_flag_check_detects_a_missing_flag():
+    text = DOC_PATH.read_text(encoding="utf-8").replace("--confirm-help", "--x-confirm")
+    assert _missing_flags(text) == ["--confirm-help"]
+
+
+def test_docs_have_all_numbered_sections_in_order():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    headers = re.findall(r"^## (\d+)\. (.+)$", text, re.MULTILINE)
+    assert [int(number) for number, _ in headers] == list(range(1, 13))
+    titles = {number: title for number, title in headers}
+    for number, word in {
+        "1": "Назначение", "2": "Правила", "3": "Команды", "4": "смоук", "5": "Окно ошибок",
+        "6": "Фазы без TTY", "7": "Резервная копия", "8": "Рестарт", "9": "Откат",
+        "10": "Отчёт", "11": "не делает", "12": "ограничения",
+    }.items():
+        assert word.lower() in titles[number].lower(), (number, titles[number])
+
+
+def test_docs_is_long_enough_and_in_russian():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert len(text.splitlines()) >= 80
+    assert len(re.findall(r"[а-яёА-ЯЁ]", text)) > 2000
+
+
+def test_docs_phase3_backup_duty_before_migration_0003_in_one_paragraph():
+    paragraphs = re.split(r"\n\s*\n", DOC_PATH.read_text(encoding="utf-8"))
+    assert any("Phase 3" in p and "--backup" in p and "0003" in p for p in paragraphs)
+
+
+def test_docs_contain_no_emails_tokens_or_secret_values():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert "@" not in text
+    assert not re.search(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b", text)
+    assert not re.search(r"\b[0-9a-fA-F]{32,}\b", text)
+    assert not re.search(r"(?i)(password|passwd|secret)\s*[=:]\s*\S+", text)
+    assert not re.search(r"(?i)\b(TELEGRAM_BOT_TOKEN|GEMINI_API_KEYS?)\s*=\s*\S+", text)
+
+
+def test_docs_numbers_match_script_constants():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert str(deploy.BACKUP_DIR_DEFAULT) in text
+    assert str(deploy.STATE_FILE_DEFAULT) in text
+    assert f"{deploy.RESTART_TIMEOUT_S} секунд" in text
+    assert f"{deploy.READY_TIMEOUT_S} секунд" in text
+    assert f"{deploy.STARTUP_TAIL_SECONDS} секунд" in text
+    assert str(deploy.DEFAULT_AWAIT_TIMEOUT_S) in text
+    assert f"{deploy.POLL_INTERVAL_S} секунд" in text
+
+
+def test_docs_state_that_rollback_is_never_automatic_and_restart_needs_owner_yes():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert "Автоотката нет" in text
+    assert "ТОЛЬКО печатаются" in text
+    assert "только после ответа «да» владельца" in text
