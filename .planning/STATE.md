@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-04-PLAN.md
-last_updated: "2026-10-09T18:28:45.418Z"
+stopped_at: Completed 01-07-PLAN.md
+last_updated: "2026-10-09T18:53:59.604Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: 1ea58fcb3eecb6e9182a5fee329e161175cf0ab6
+state_head: 786a88be7b374378208561a8fc83548f1fbd571c
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -62,6 +62,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P06 | 35 min | 3 tasks | 2 files |
 | Phase 01 P03 | 2 min | 2 tasks | 5 files |
 | Phase 01 P04 | 19 min | 3 tasks | 2 files |
+| Phase 01 P07 | 21 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,9 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-06: scripts/deploy.py допускает только белый список команд (systemctl show, journalctl, git rev-parse HEAD); фазы без TTY сверяют InvocationID
 - [Phase 01]: 01-03: shared scripts/security_shield.py is a small copy of the assistant-core wrapper (OQ5); drift between copies is not checked
 - [Phase 01]: 01-04: gate row «боевая БД не изменена» может краснеть из-за записи живого assistant-worker в окне pytest; вердикт не смягчается, стратегию решает 01-05/владелец
+- [Phase 01]: 01-07: команда рестарта формируется только в restart_service и недоступна без --restart; откат только печатается (D-12)
+- [Phase 01]: 01-07: копия БД самодостаточна (journal_mode=DELETE), Phase 3 обязана вызвать выкатку с --backup перед миграцией 0003 (docs/OPS_DEPLOY.md)
+- [Phase 01]: 01-07: после рестарта выдерживается окно старта 60 с перед смоуком (строгий D-08)
 
 ### Pending Todos
 
@@ -106,6 +110,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T18:28:45.281Z
-Stopped at: Completed 01-04-PLAN.md
+Last session: 2026-10-09T18:53:59.428Z
+Stopped at: Completed 01-07-PLAN.md
 Resume file: None
