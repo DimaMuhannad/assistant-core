@@ -62,11 +62,61 @@ def _show(active: str = "active", sub: str = "running", invocation: str = INVOCA
     )
 
 
+SYNTHETIC_MAIN = """
+async def main():
+    scheduler.add_job(run_a_cycle, "interval", hours=1, id="a_job", replace_existing=True)
+    scheduler.add_job(run_b_cycle, "cron", hour=8, id="b_job")
+    if feature_enabled:
+        scheduler.add_job(run_c_cycle, "cron", hour=9, id="c_job")
+"""
+
+BOT_TOKEN = "123456789" + ":" + "AAH" + "q" * 32
+
+
+def _job_lines(offset_s: float = 10, functions=("run_a_cycle", "run_b_cycle")) -> list[str]:
+    lines = [
+        _app(offset_s, "INFO", "apscheduler.scheduler", f'Added job "{name}" to job store "default"')
+        for name in functions
+    ]
+    lines.append(_app(offset_s + 1, "INFO", "apscheduler.scheduler", "Scheduler started"))
+    return lines
+
+
 GREEN_JOURNAL = _journal(
     _app(0, "INFO", "assistant-worker", "Assistant Worker starting up..."),
     _app(5, "WARNING", "src.collector.mail", "slow response"),
+    *_job_lines(10),
     _app(30, "INFO", "aiogram.dispatcher", "Run polling for bot id=1 - 'name'"),
 )
+
+
+class FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class FakeOpener:
+    """Подмена urlopen: записывает URL и отдаёт ответ или бросает исключение."""
+
+    def __init__(self, body: bytes = b'{"ok": true, "result": {}}', raises=None) -> None:
+        self.body = body
+        self.raises = raises
+        self.urls: list[str] = []
+
+    def __call__(self, url, timeout=15):
+        self.urls.append(url)
+        if self.raises is not None:
+            raise self.raises
+        return FakeResponse(self.body)
 
 
 class FakeRunner:
@@ -100,9 +150,28 @@ class FakeRunner:
         return subprocess.CompletedProcess(cmd, self.rc, stdout=out, stderr=self.stderr)
 
 
-def _run_main(tmp_path: Path, runner: FakeRunner, *extra: str) -> int:
+def _run_main(
+    tmp_path: Path,
+    runner: FakeRunner,
+    *extra: str,
+    opener: FakeOpener | None = None,
+    env_text: str | None = None,
+) -> int:
     state = tmp_path / "state.json"
-    return deploy.main(["--state-file", str(state), *extra], runner=runner, now=lambda: NOW)
+    env_path = tmp_path / ".env.test"
+    env_path.write_text(
+        f"TELEGRAM_BOT_TOKEN={BOT_TOKEN}\n" if env_text is None else env_text, encoding="utf-8"
+    )
+    main_py = tmp_path / "main_synthetic.py"
+    main_py.write_text(SYNTHETIC_MAIN, encoding="utf-8")
+    return deploy.main(
+        ["--state-file", str(state), *extra],
+        runner=runner,
+        now=lambda: NOW,
+        opener=opener or FakeOpener(),
+        env_path=env_path,
+        main_py_path=main_py,
+    )
 
 
 # ---------------------------------------------------------------- состояние сервиса
@@ -371,6 +440,7 @@ def test_main_error_in_startup_window_is_red_without_allowlist(tmp_path, capsys)
     journal = _journal(
         _app(0, "INFO", "assistant-worker", "start"),
         _app(5, "ERROR", "src.collector.mail", "IMAP timed out"),
+        *_job_lines(10),
         _app(30, "INFO", "aiogram.dispatcher", "Run polling for bot id=1 - 'n'"),
     )
     rc = _run_main(tmp_path, FakeRunner(journal=journal))
@@ -383,6 +453,7 @@ def test_main_error_in_startup_window_is_red_without_allowlist(tmp_path, capsys)
 def test_main_error_after_tail_does_not_redden(tmp_path):
     journal = _journal(
         _app(0, "INFO", "assistant-worker", "start"),
+        *_job_lines(10),
         _app(30, "INFO", "aiogram.dispatcher", "Run polling for bot id=1 - 'n'"),
         _app(500, "ERROR", "src.collector.mail", "late failure"),
     )
@@ -426,7 +497,7 @@ def test_main_missing_binary_gives_red_row_not_traceback(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "не найдена" in out
-    assert "Traceback" not in out
+    assert "Traceback (most recent" not in out
 
 
 def test_main_timeout_gives_red_row(tmp_path, capsys):
@@ -449,7 +520,7 @@ def test_main_usage_error_returns_two(tmp_path):
 def test_main_saves_state_file_outside_repo_with_owner_only_mode(tmp_path):
     runner = FakeRunner()
     state = tmp_path / "state.json"
-    deploy.main(["--state-file", str(state)], runner=runner, now=lambda: NOW)
+    _run_main(tmp_path, runner)
     assert state.exists()
     assert (state.stat().st_mode & 0o777) == 0o600
     data = state.read_text(encoding="utf-8")
@@ -502,3 +573,261 @@ def test_script_does_not_import_src_and_does_not_open_database():
 def test_script_is_executable_python3_with_shebang():
     first = DEPLOY_PATH.read_text(encoding="utf-8").splitlines()[0]
     assert first.startswith("#!") and "python3" in first
+
+
+# ================================================================ Task 2: планировщик и getMe
+
+import urllib.error  # noqa: E402
+
+REAL_MAIN_PY = Path(__file__).resolve().parents[1] / "src" / "main.py"
+
+KNOWN_JOBS = {
+    ("run_sentinel_cycle", "schedule_sentinel_job"),
+    ("run_telegram_collector_cycle", "telegram_collector_job"),
+    ("run_email_collector_cycle", "email_collector_job"),
+    ("run_lms_monitor_cycle", "lms_monitor_job"),
+    ("run_morning_brief_cycle", "morning_brief_job"),
+    ("run_evening_digest_cycle", "evening_digest_job"),
+    ("run_aadhk_gdrive_sync_cycle", "aadhk_gdrive_sync_job"),
+    ("run_nightly_reset_and_priming_cycle", "nightly_reset_and_priming_job"),
+    ("run_weekly_memory_review_cycle", "weekly_memory_review_job"),
+    ("run_live_ticker_refresh_cycle", "live_ticker_refresh_job"),
+}
+
+
+def test_expected_jobs_on_real_main_contains_ten_known_pairs():
+    jobs = deploy.expected_jobs(REAL_MAIN_PY.read_text(encoding="utf-8"))
+    pairs = {(job.func, job.job_id) for job in jobs}
+    assert KNOWN_JOBS <= pairs
+
+
+def test_expected_jobs_marks_conditional_calls_under_if():
+    jobs = {job.job_id: job for job in deploy.expected_jobs(SYNTHETIC_MAIN)}
+    assert jobs["a_job"].conditional is False
+    assert jobs["b_job"].conditional is False
+    assert jobs["c_job"].conditional is True
+    assert jobs["c_job"].func == "run_c_cycle"
+
+
+def test_expected_jobs_ignores_calls_without_function_name_argument():
+    source = (
+        "scheduler.add_job('text', id='x')\n"
+        "scheduler.add_job(obj.method, id='y')\n"
+        "scheduler.add_job(real_fn, id='z')\n"
+        "other.run(real_fn, id='w')\n"
+    )
+    assert [(j.func, j.job_id) for j in deploy.expected_jobs(source)] == [("real_fn", "z")]
+
+
+def test_load_expected_jobs_reads_file(tmp_path):
+    path = tmp_path / "m.py"
+    path.write_text(SYNTHETIC_MAIN, encoding="utf-8")
+    assert {j.job_id for j in deploy.load_expected_jobs(path)} == {"a_job", "b_job", "c_job"}
+
+
+def test_parse_added_jobs_extracts_function_names_and_started_flag():
+    records = deploy.parse_journal(_journal(*_job_lines(0, ("run_a_cycle", "run_b_cycle"))))
+    added, started = deploy.parse_added_jobs(records)
+    assert added == {"run_a_cycle", "run_b_cycle"}
+    assert started is True
+
+
+def test_parse_added_jobs_ignores_other_loggers_and_missing_start():
+    records = deploy.parse_journal(
+        _journal(
+            _app(0, "INFO", "src.other", 'Added job "run_a_cycle" to job store "default"'),
+            _app(1, "INFO", "src.other", "Scheduler started"),
+        )
+    )
+    assert deploy.parse_added_jobs(records) == (set(), False)
+
+
+def _expected():
+    return deploy.expected_jobs(SYNTHETIC_MAIN)
+
+
+def test_check_scheduler_jobs_green_when_all_unconditional_registered():
+    result = deploy.check_scheduler_jobs(_expected(), {"run_a_cycle", "run_b_cycle"}, True)
+    assert result.ok
+    assert "2 из 2" in result.name
+    assert "условная" in result.detail and "c_job" in result.detail
+
+
+def test_check_scheduler_jobs_conditional_job_does_not_redden():
+    result = deploy.check_scheduler_jobs(
+        _expected(), {"run_a_cycle", "run_b_cycle", "run_c_cycle"}, True
+    )
+    assert result.ok
+
+
+def test_check_scheduler_jobs_red_lists_missing_ids_with_rotation_hint():
+    result = deploy.check_scheduler_jobs(_expected(), {"run_a_cycle"}, True)
+    assert not result.ok
+    assert "b_job" in result.detail and "a_job" not in result.detail.split("не зарегистрированы")[-1]
+    assert "ротация" in result.detail
+    assert "1 из 2" in result.name
+
+
+def test_check_scheduler_jobs_red_when_scheduler_not_started():
+    result = deploy.check_scheduler_jobs(_expected(), {"run_a_cycle", "run_b_cycle"}, False)
+    assert not result.ok
+    assert "Scheduler started" in result.detail
+
+
+def test_check_scheduler_jobs_red_when_nothing_expected():
+    assert not deploy.check_scheduler_jobs([], set(), True).ok
+
+
+def test_read_env_key_handles_quotes_comments_and_export(tmp_path):
+    env = tmp_path / "e"
+    env.write_text(
+        "# comment\n\nOTHER=1\nexport TELEGRAM_BOT_TOKEN='quoted-value'  \nTAIL=2\n",
+        encoding="utf-8",
+    )
+    assert deploy.read_env_key(env, "TELEGRAM_BOT_TOKEN") == "quoted-value"
+    env.write_text('TELEGRAM_BOT_TOKEN="dq-value"\n', encoding="utf-8")
+    assert deploy.read_env_key(env, "TELEGRAM_BOT_TOKEN") == "dq-value"
+    env.write_text("TELEGRAM_BOT_TOKEN=plain # trailing comment\n", encoding="utf-8")
+    assert deploy.read_env_key(env, "TELEGRAM_BOT_TOKEN") == "plain"
+
+
+def test_read_env_key_missing_key_or_file_gives_none(tmp_path):
+    env = tmp_path / "e"
+    env.write_text("OTHER=1\n#TELEGRAM_BOT_TOKEN=commented\n", encoding="utf-8")
+    assert deploy.read_env_key(env, "TELEGRAM_BOT_TOKEN") is None
+    assert deploy.read_env_key(tmp_path / "absent", "TELEGRAM_BOT_TOKEN") is None
+
+
+def test_read_env_key_empty_value_gives_none(tmp_path):
+    env = tmp_path / "e"
+    env.write_text("TELEGRAM_BOT_TOKEN=\n", encoding="utf-8")
+    assert deploy.read_env_key(env, "TELEGRAM_BOT_TOKEN") is None
+
+
+def test_telegram_get_me_ok_true():
+    opener = FakeOpener()
+    ok, detail = deploy.telegram_get_me(BOT_TOKEN, opener)
+    assert ok is True and detail == "getMe: токен жив"
+    assert opener.urls == [f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"]
+
+
+def test_telegram_get_me_ok_false_in_json():
+    ok, detail = deploy.telegram_get_me(BOT_TOKEN, FakeOpener(body=b'{"ok": false}'))
+    assert ok is False and BOT_TOKEN not in detail
+
+
+def test_telegram_get_me_http_error_reports_code_only():
+    err = urllib.error.HTTPError(f"https://x/bot{BOT_TOKEN}/getMe", 401, "Unauthorized", {}, None)
+    ok, detail = deploy.telegram_get_me(BOT_TOKEN, FakeOpener(raises=err))
+    assert (ok, detail) == (False, "getMe: HTTP 401")
+
+
+def test_telegram_get_me_other_exception_reports_class_only_without_token():
+    boom = RuntimeError(f"failed https://api.telegram.org/bot{BOT_TOKEN}/getMe")
+    ok, detail = deploy.telegram_get_me(BOT_TOKEN, FakeOpener(raises=boom))
+    assert (ok, detail) == (False, "getMe: RuntimeError")
+    assert BOT_TOKEN not in detail
+
+
+def test_telegram_get_me_invalid_json_reports_class_only():
+    ok, detail = deploy.telegram_get_me(BOT_TOKEN, FakeOpener(body=b"not json"))
+    assert ok is False and BOT_TOKEN not in detail
+
+
+def test_check_get_me_missing_token_names_key_without_value(tmp_path):
+    env = tmp_path / "e"
+    env.write_text("OTHER=1\n", encoding="utf-8")
+    result = deploy.check_get_me(env, FakeOpener())
+    assert not result.ok
+    assert result.name == "getMe: токен бота жив"
+    assert "TELEGRAM_BOT_TOKEN" in result.detail
+
+
+def test_check_get_me_never_leaks_token_through_exception(tmp_path):
+    env = tmp_path / "e"
+    env.write_text(f"TELEGRAM_BOT_TOKEN={BOT_TOKEN}\n", encoding="utf-8")
+    boom = urllib.error.URLError(f"cannot reach bot{BOT_TOKEN}")
+    result = deploy.check_get_me(env, FakeOpener(raises=boom))
+    assert not result.ok
+    assert BOT_TOKEN not in result.name + result.detail
+    assert BOT_TOKEN.split(":")[0] not in result.detail
+
+
+def test_main_prints_scheduler_and_get_me_rows_in_order(tmp_path, capsys):
+    rc = _run_main(tmp_path, FakeRunner())
+    out = capsys.readouterr().out
+    assert rc == 0
+    names = [
+        "сервис active",
+        "журнал текущего запуска доступен",
+        "в окне старта нет ERROR/CRITICAL/Traceback",
+        "polling бота запущен (запись в журнале)",
+        "планировщик: задачи зарегистрированы (2 из 2)",
+        "getMe: токен бота жив",
+    ]
+    positions = [out.index(name) for name in names]
+    assert positions == sorted(positions)
+
+
+def test_main_red_when_job_missing_in_journal(tmp_path, capsys):
+    journal = _journal(
+        _app(0, "INFO", "assistant-worker", "start"),
+        *_job_lines(10, ("run_a_cycle",)),
+        _app(30, "INFO", "aiogram.dispatcher", "Run polling for bot id=1 - 'n'"),
+    )
+    rc = _run_main(tmp_path, FakeRunner(journal=journal))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "b_job" in out
+
+
+def test_main_get_me_failure_is_red_and_token_never_printed(tmp_path, capsys):
+    opener = FakeOpener(raises=RuntimeError(f"bad bot{BOT_TOKEN}"))
+    rc = _run_main(tmp_path, FakeRunner(), opener=opener)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "getMe: RuntimeError" in captured.out
+    assert BOT_TOKEN not in captured.out + captured.err
+    assert BOT_TOKEN not in (tmp_path / "state.json").read_text(encoding="utf-8")
+
+
+def test_main_missing_token_is_red(tmp_path, capsys):
+    rc = _run_main(tmp_path, FakeRunner(), env_text="OTHER=1\n")
+    assert rc == 1
+    assert "TELEGRAM_BOT_TOKEN" in capsys.readouterr().out
+
+
+def test_main_unreadable_main_py_gives_red_row(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    rc = deploy.main(
+        ["--state-file", str(state)],
+        runner=FakeRunner(),
+        now=lambda: NOW,
+        opener=FakeOpener(),
+        env_path=tmp_path / "absent.env",
+        main_py_path=tmp_path / "no_such_main.py",
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "планировщик" in out and "Traceback (most recent" not in out
+
+
+def test_main_does_not_call_network_when_service_is_down(tmp_path):
+    opener = FakeOpener()
+    runner = FakeRunner(show=_show(active="inactive", sub="dead", invocation=""))
+    assert _run_main(tmp_path, runner, opener=opener) == 1
+    assert opener.urls == []
+
+
+def test_script_has_no_get_updates_or_user_session_access():
+    source = DEPLOY_PATH.read_text(encoding="utf-8")
+    assert "getUpdates" not in source
+    code = "\n".join(_code_lines()).lower()
+    assert "telethon" not in code and ".session" not in code
+
+
+def test_read_env_key_is_called_only_with_bot_token_key():
+    code = "\n".join(line for line in _code_lines() if not line.lstrip().startswith("def "))
+    keys = re.findall(r"read_env_key\([^,()]+,\s*([^)]+)\)", code)
+    assert keys and all(key.strip() in {"BOT_TOKEN_KEY", '"TELEGRAM_BOT_TOKEN"'} for key in keys)
+    assert deploy.BOT_TOKEN_KEY == "TELEGRAM_BOT_TOKEN"

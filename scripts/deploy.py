@@ -20,11 +20,14 @@ Telegram накопленные обновления бота, не открыв
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -43,8 +46,14 @@ JOURNAL_TIMEOUT_S = 120
 STATE_FILE_DEFAULT = Path("/var/tmp/assistant-core-smoke-state.json")
 MESSAGE_LIMIT = 160
 MAX_LISTED_FINDINGS = 10
+GET_ME_TIMEOUT_S = 15
+# Единственный ключ .env, который читает скрипт; значение нигде не печатается и не сохраняется.
+BOT_TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
+ENV_FILE_DEFAULT = CORE_DIR / ".env"
+MAIN_PY_DEFAULT = CORE_DIR / "src" / "main.py"
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess]
+Opener = Callable[..., object]
 
 _INVOCATION_RE = re.compile(r"[0-9a-fA-F]{32}")
 
@@ -78,6 +87,13 @@ class Finding:
     level: str
     logger: str
     message: str
+
+
+@dataclass(frozen=True)
+class ExpectedJob:
+    func: str
+    job_id: str
+    conditional: bool
 
 
 @dataclass(frozen=True)
@@ -374,6 +390,149 @@ def render_table(rows: Sequence[CheckResult], warnings: Sequence[Finding] = ()) 
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- планировщик (D-14)
+
+_RE_ADDED_JOB = re.compile(r'^Added job "(?P<func>[^"]+)" to job store')
+SCHEDULER_LOGGER = "apscheduler.scheduler"
+
+
+class _JobVisitor(ast.NodeVisitor):
+    """Собирает вызовы ``<что-то>.add_job(функция, ..., id="...")`` с признаком «под if»."""
+
+    def __init__(self) -> None:
+        self.jobs: list[ExpectedJob] = []
+        self._if_depth = 0
+
+    def visit_If(self, node: ast.If) -> None:
+        self._if_depth += 1
+        self.generic_visit(node)
+        self._if_depth -= 1
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_job"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+        ):
+            job_id = next(
+                (
+                    kw.value.value
+                    for kw in node.keywords
+                    if kw.arg == "id"
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                ),
+                "",
+            )
+            self.jobs.append(ExpectedJob(node.args[0].id, job_id, self._if_depth > 0))
+        self.generic_visit(node)
+
+
+def expected_jobs(main_py_text: str) -> list[ExpectedJob]:
+    """Ожидаемые задачи планировщика из текста src/main.py (ast, без импорта и запуска)."""
+    visitor = _JobVisitor()
+    visitor.visit(ast.parse(main_py_text))
+    return visitor.jobs
+
+
+def load_expected_jobs(path: Path = MAIN_PY_DEFAULT) -> list[ExpectedJob]:
+    return expected_jobs(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_added_jobs(records: Sequence[JournalRecord]) -> tuple[set[str], bool]:
+    """Имена функций из «Added job» и признак «Scheduler started» (по всему журналу инвокации)."""
+    added: set[str] = set()
+    started = False
+    for record in records:
+        if record.logger != SCHEDULER_LOGGER:
+            continue
+        first_line = record.text.splitlines()[0] if record.text else ""
+        match = _RE_ADDED_JOB.match(first_line)
+        if match:
+            added.add(match.group("func"))
+        elif first_line.strip() == "Scheduler started":
+            started = True
+    return added, started
+
+
+def check_scheduler_jobs(
+    expected: Sequence[ExpectedJob], added: set[str], started: bool
+) -> CheckResult:
+    required = [job for job in expected if not job.conditional]
+    registered = [job for job in required if job.func in added]
+    name = f"планировщик: задачи зарегистрированы ({len(registered)} из {len(required)})"
+    missing = [job.job_id or job.func for job in required if job.func not in added]
+    lines: list[str] = []
+    if not required:
+        lines.append("в src/main.py не найдено ни одного вызова add_job")
+    if not started:
+        lines.append("планировщик не стартовал: записи «Scheduler started» нет")
+    if missing:
+        lines.append("не зарегистрированы: " + ", ".join(missing))
+    if (missing or not started) and required:
+        lines.append("возможна ротация журнала")
+    for job in expected:
+        if job.conditional:
+            state = "зарегистрирована" if job.func in added else "не зарегистрирована"
+            lines.append(f"условная: {job.job_id or job.func} ({state})")
+    ok = bool(required) and started and not missing
+    return CheckResult(name, ok, "\n".join(lines))
+
+
+# --------------------------------------------------------------------------- бот: getMe (D-06)
+
+
+def read_env_key(env_path: Path, key: str) -> str | None:
+    """Значение одного ключа из .env (кавычки, ``export``, комментарии) или None."""
+    try:
+        text = Path(env_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, sep, value = line.partition("=")
+        if not sep or name.strip() != key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+        return value or None
+    return None
+
+
+def telegram_get_me(
+    token: str, opener: Opener = urllib.request.urlopen, timeout: int = GET_ME_TIMEOUT_S
+) -> tuple[bool, str]:
+    """GET getMe. Тело ответа (имя бота) и текст исключений не печатаются: токен есть в URL."""
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    try:
+        with opener(url, timeout=timeout) as response:
+            payload = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        return False, f"getMe: HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001 - граница ввода-вывода: наружу только имя класса
+        return False, f"getMe: {type(exc).__name__}"
+    if isinstance(payload, dict) and payload.get("ok") is True:
+        return True, "getMe: токен жив"
+    return False, "getMe: ответ без ok=true"
+
+
+def check_get_me(env_path: Path, opener: Opener = urllib.request.urlopen) -> CheckResult:
+    name = "getMe: токен бота жив"
+    token = read_env_key(env_path, BOT_TOKEN_KEY)
+    if token is None:
+        return CheckResult(name, False, f"токен не найден (ключ {BOT_TOKEN_KEY} в .env)")
+    ok, detail = telegram_get_me(token, opener)
+    return CheckResult(name, ok, "" if ok else detail)
+
+
 # --------------------------------------------------------------------------- состояние смоука
 
 
@@ -396,8 +555,13 @@ def save_state(path: Path, data: dict) -> None:
 # --------------------------------------------------------------------------- автоматическая часть
 
 
-def run_smoke(runner: Runner) -> SmokeResult:
-    """Read-only автоматическая часть: сервис, журнал инвокации, окно ошибок, polling."""
+def run_smoke(
+    runner: Runner,
+    opener: Opener = urllib.request.urlopen,
+    env_path: Path = ENV_FILE_DEFAULT,
+    main_py_path: Path = MAIN_PY_DEFAULT,
+) -> SmokeResult:
+    """Read-only автоматическая часть: сервис, журнал, окно ошибок, polling, задачи, getMe."""
     rows: list[CheckResult] = []
     try:
         state = get_service_state(runner)
@@ -423,6 +587,21 @@ def run_smoke(runner: Runner) -> SmokeResult:
     errors, warnings = scan_window(window)
     rows.append(check_startup_errors(errors))
     rows.append(check_polling_started(polling_ts))
+
+    try:
+        expected = load_expected_jobs(main_py_path)
+    except (OSError, SyntaxError, ValueError) as exc:
+        rows.append(
+            CheckResult(
+                "планировщик: задачи зарегистрированы",
+                False,
+                f"не удалось разобрать src/main.py: {type(exc).__name__}",
+            )
+        )
+    else:
+        added, started = parse_added_jobs(records)
+        rows.append(check_scheduler_jobs(expected, added, started))
+    rows.append(check_get_me(env_path, opener))
     return SmokeResult(rows, errors, warnings, state.invocation_id, records)
 
 
@@ -447,6 +626,9 @@ def main(
     argv: Sequence[str] | None = None,
     runner: Runner = run_cmd,
     now: Callable[[], datetime] | None = None,
+    opener: Opener | None = None,
+    env_path: Path | None = None,
+    main_py_path: Path | None = None,
 ) -> int:
     parser = build_parser()
     try:
@@ -455,7 +637,12 @@ def main(
         return int(exc.code or 0)
     clock = now or (lambda: datetime.now(timezone.utc))
 
-    result = run_smoke(runner)
+    result = run_smoke(
+        runner,
+        opener=opener or urllib.request.urlopen,
+        env_path=env_path or ENV_FILE_DEFAULT,
+        main_py_path=main_py_path or MAIN_PY_DEFAULT,
+    )
     print(render_table(result.rows, result.warnings))
 
     state = {
