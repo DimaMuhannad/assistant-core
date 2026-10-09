@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-10-09T17:43:46.303Z"
+stopped_at: Completed 01-06-PLAN.md
+last_updated: "2026-10-09T17:59:47.248Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: b0fb5f0f885c4af34f118a25fb53415b96afa1ea
+state_head: a9a546f468529f9a817eb14e3c88092b3570150e
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 10
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-09)
 ## Current Position
 
 Phase: 01 (Собственный гейт качества assistant-core) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-10-09 — Phase 01 execution started
 
@@ -59,6 +59,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 01 P01 | 25 min | 3 tasks | 7 files |
 | Phase 01 P02 | 12 min | 3 tasks | 6 files |
+| Phase 01 P06 | 35 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,8 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-01: тайминговые пороги проверяются по минимуму из LATENCY_SAMPLES=5 замеров, без skip/xfail
 - [Phase 01]: 01-02: tests of assistant-shared run only in /opt/assistant-core/.venv (D-03); CR-02 CLI tests use the assistant-core security_shield.py wrapper
 - [Phase 01]: 01-02: shared hitl.decorators imports fastapi which is not in shared pyproject dependencies (hidden defect, left for owner/next plan)
+- [Phase 01]: 01-06: окно ошибок старта смоука = до «Run polling for bot» плюс 60 с (STARTUP_TAIL_SECONDS); белого списка внешних ошибок нет
+- [Phase 01]: 01-06: scripts/deploy.py допускает только белый список команд (systemctl show, journalctl, git rev-parse HEAD); фазы без TTY сверяют InvocationID
 
 ### Pending Todos
 
@@ -99,6 +102,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T17:43:46.160Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-10-09T17:59:47.079Z
+Stopped at: Completed 01-06-PLAN.md
 Resume file: None

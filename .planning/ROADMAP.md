@@ -51,13 +51,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Гейт не слабее общего `/opt/chat-app/scripts/gate.py` по части assistant-core: сохранены проверка дрейфа `tests/synthetic_persona.py` и `tests/persona_tokens.py` с копиями chat-app (только чтение) и замороженный список ложных срабатываний shield (записи только удаляются). Пробный прогон `agy_cross_ai.sh --repo /opt/assistant-core` и правила `CLAUDE.md` используют новый гейт и дают ЗЕЛЁНЫЙ (GATE-04, GATE-05).
   5. Процедура выкатки описана и автоматизирована скриптом: рестарт `assistant-worker.service` только по явному разрешению владельца, затем смоук-проверка (сервис active, в журнале старта нет ошибок, планировщик зарегистрировал задачи, бот отвечает на команду). Смоук-проверка не пишет в боевую БД, её read-only часть запускается на текущем сервисе без рестарта, и результат записан в VERIFICATION.md (OPS-01).
 
-**Plans:** 2/10 plans executed
+**Plans:** 3/10 plans executed
 
 Plans:
 **Wave 1**
 - [x] 01-01-PLAN.md — Изоляция боевой БД в тестах core (страж, приоритет пути в config), параметр core_dir у архива, устойчивые тайминговые пороги (GATE-02, GATE-01)
 - [x] 01-02-PLAN.md — Собственные тесты assistant-shared: мигратор, HITL-примитив, библиотека безопасности (GATE-03)
-- [ ] 01-06-PLAN.md — scripts/deploy.py: read-only смоук, ошибки старта, задачи планировщика, getMe, фазы без TTY, отчёт (OPS-01)
+- [x] 01-06-PLAN.md — scripts/deploy.py: read-only смоук, ошибки старта, задачи планировщика, getMe, фазы без TTY, отчёт (OPS-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-03-PLAN.md — pre-commit hook assistant-shared: hook, установщик, обёртка shield, тест блокировки секрета (GATE-03)
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 1. Собственный гейт качества assistant-core | v3.0 | 2/10 | In Progress|  |
+| 1. Собственный гейт качества assistant-core | v3.0 | 3/10 | In Progress|  |
 | 2. Безопасность, приватность и находки ревью | v3.0 | 0/TBD | Not started | - |
 | 3. Владение схемой БД | v3.0 | 0/TBD | Not started | - |
 | 4. Цепочка Git → оценка → HITL → Notion | v3.0 | 0/TBD | Not started | - |
