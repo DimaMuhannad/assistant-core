@@ -6,10 +6,10 @@ current_phase: 01
 current_phase_name: Собственный гейт качества assistant-core
 status: verifying
 stopped_at: Completed 01-10-PLAN.md
-last_updated: "2026-10-09T22:48:38.963Z"
+last_updated: "2026-10-09T22:49:23.924Z"
 last_activity: 2026-10-09
 last_activity_desc: Phase 01 execution started
-state_head: 64d00f1a224cf976191da23a3a4ae1d578f39d7f
+state_head: 4aa9075201b23dda00433829ea038a7b2a4c8cf2
 progress:
   total_phases: 9
   completed_phases: 0
@@ -95,6 +95,10 @@ Progress: [░░░░░░░░░░] 0%
 - [Phase 01]: 01-08: общий гейт chat-app упомянут в правилах как неизменяемый гейт потребителя (D-15), способом проверки assistant-core назван python3 scripts/gate.py; страж-тест tests/test_claude_md_gate_pointer.py против возврата прежней команды
 - [Phase 01]: 01-09: adapter cross-AI uses the target repo scripts/gate.py (chat-app commit 6b3b2ac); cross_ai_timeout stays 1200 (trial 271 s)
 - [Phase 01]: 01-10: серия гейта прошла с первой попытки (3 из 6), смоук на живом сервисе ЗЕЛЁНЫЙ без рестарта
+- [Phase 01]: [Owner 2026-10-09]: fastapi missing in assistant-shared deps (hitl.decorators) — task for Phase 2/3 (optional dep or move decorator out of shared).
+- [Phase 01]: [Owner 2026-10-09]: empty assistant.db-wal/-shm left in data/ by mode=ro reads — resolve in Phase 3 (read method + cleanup).
+- [Phase 01]: [Owner 2026-10-09]: cross-AI adapter residual risk T-uo4-02 (scripts symlink in repo without tracked scripts/) — add refusal + test in Phase 2.
+- [Phase 01]: [Owner 2026-10-09]: ASSISTANT_DB_PATH_OVERRIDE absence in live .env unverified (secret-read hook forbids reading .env; owner has no shell). Proposed: deploy.py --restart refuses if the key is present — before first restart (Phase 3), pending owner confirmation.
 
 ### Pending Todos
 
