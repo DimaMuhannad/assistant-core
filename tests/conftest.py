@@ -3,14 +3,27 @@
 Файл ничего не трогает в приложении и базе данных.
 """
 
+import atexit
 import copy
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
-from src.persona.loader import PERSONA_CONFIG_ENV, load_persona
+from . import live_db_guard
 
-from .synthetic_persona import SYNTHETIC_PERSONA
+# GATE-02: страж и изолированный путь БД ставятся ДО первого импорта src (src.config читает окружение при импорте).
+# Страж нельзя снять до конца процесса; setdefault не затирает путь, который передал гейт.
+live_db_guard.install()
+_ISOLATED_DB_DIR = tempfile.mkdtemp(prefix="assistant-core-tests-")
+atexit.register(shutil.rmtree, _ISOLATED_DB_DIR, ignore_errors=True)
+os.environ.setdefault("ASSISTANT_DB_PATH_OVERRIDE", str(Path(_ISOLATED_DB_DIR) / "test.db"))
+
+from src.persona.loader import PERSONA_CONFIG_ENV, load_persona  # noqa: E402
+
+from .synthetic_persona import SYNTHETIC_PERSONA  # noqa: E402
 
 
 @pytest.fixture

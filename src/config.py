@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# GATE-02: явный путь БД захватывается ДО load_dotenv, иначе override=True из .env перебьёт его.
+# В боевом запуске переменной нет, и путь вычисляется как раньше.
+_DB_PATH_OVERRIDE = os.environ.get("ASSISTANT_DB_PATH_OVERRIDE", "").strip()
+
 # Load .env file with override
 load_dotenv(BASE_DIR / ".env", override=True)
 
@@ -14,6 +18,10 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/assistant.d
 SQLITE_DB_PATH = DATABASE_URL.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
 if not os.path.isabs(SQLITE_DB_PATH):
     SQLITE_DB_PATH = str(BASE_DIR / SQLITE_DB_PATH)
+# GATE-02: изолированный путь (тесты, гейт) сильнее DATABASE_URL из окружения и .env.
+if _DB_PATH_OVERRIDE:
+    SQLITE_DB_PATH = _DB_PATH_OVERRIDE
+    DATABASE_URL = "sqlite+aiosqlite:///" + _DB_PATH_OVERRIDE
 
 # Пусто = адрес из привязки schedule_source персоны (src.composition.schedule_site_url); непустое окружение сильнее персоны.
 SCHEDULE_URL = os.getenv("SCHEDULE_URL", "")
