@@ -1,0 +1,118 @@
+# Assistant Core — персональный ассистент-секретарь
+
+## What This Is
+
+`assistant-core` — демон персонального ассистента (`assistant-worker.service`). Он работает круглосуточно: собирает почту, расписание, табель, LMS и Telegram, готовит брифинги и дайджесты, а через Telegram-бота ведёт диалог секретаря с реальными инструментами (календарь, напоминания, черновики писем). Сейчас платформа настроена на одного владельца (преподаватель-физик ГУАП и исследователь в Тидекс). Цель — превратить её в универсальную, настраиваемую данными платформу для любого специалиста. Профиль владельца уже вынесен в `config/persona.yaml`.
+
+## Core Value
+
+Ассистент надёжно выполняет ежедневную работу секретаря. При этом **ни одно содержимое NDA-пространств не уходит во внешнюю LLM** и **ни одно необратимое действие не выполняется без подтверждения человека (HITL)**.
+
+## Requirements
+
+### Validated
+
+<!-- Выполнено в цикле v2.0 «Универсальная платформа» (общий .planning chat-app, тег v2.0) и подтверждено аудитом v2.0. -->
+
+- ✓ Локальная страховочная сеть: baseline тестов, контракты import-linter (`core-is-pure`, `brain-no-adapters`, `live-ticker-no-adapters`), вторая синтетическая персона, единая команда-гейт — v2.0 (FND-01..04)
+- ✓ Порты и домен: неизменяемые сущности в `src/core/domain`, async-порты `BaseConnector`/`BaseTimesheetProvider`/`BaseScheduleProvider`/`BaseCalendarSink`/`BaseLMSProvider`, адаптеры, корень композиции `src/composition.py`, конструкторная инъекция, внутрипроцессный `EventBus` — v2.0 (PRT-01..05)
+- ✓ Персона как данные: `config/persona.yaml` (Pydantic, `extra=forbid`), таблицы `personas`/`workspaces`/`connector_bindings`, NDA-правила как данные рабочих пространств, Jinja2-промпты с побайтовыми эталонами, сканер хардкода с сокращаемым baseline, `test_persona_config.py` — v2.0 (PER-01..09)
+- ✓ Обратная совместимость: персона `popov-da-default` воспроизводит прежнее поведение 1:1 — v2.0 (BCK-01..02)
+- ✓ Существующие возможности демона: сборщики почты/Telegram/расписания/LMS/табеля AADHk, утренний и вечерний дайджест, методист, голосовой ввод (Groq Whisper), живое табло `/ticker`, ротация ключей Gemini — existing
+
+### Active
+
+<!-- Цикл v3.0. Требования с ID — в REQUIREMENTS.md. -->
+
+**Собственный гейт качества**
+- [ ] Гейт assistant-core проверяет assistant-core и assistant-shared без участия общего `gate.py` chat-app; ИТОГ «ЗЕЛЁНЫЙ»/«КРАСНЫЙ» по-русски
+
+**Безопасность NDA и находки ревью фазы 4**
+- [ ] Метаданные NDA-писем (тема, отправитель, дата) не попадают в LLM и ответы через `search_emails` (ISO-02)
+- [ ] WR-03: NDA-правила CLI берутся из данных рабочих пространств, без личных литералов в общей библиотеке
+- [ ] WR-04: паритет Web- и CLI-аудита безопасности
+- [ ] Решение по «очисти диалог» без HITL зафиксировано и реализовано
+
+**Владение схемой БД**
+- [ ] Миграция `0003` в `/opt/assistant-shared` для `bot_command_settings`, `bot_custom_aliases`, `dialog_feedback_log`; инлайн-DDL удалён (WR-07, DAT-01)
+- [ ] WR-06 закрыт полностью: ветка `:memory:` не блокирует event loop
+
+**Сквозные цепочки в рантайме**
+- [ ] Git → оценка → HITL → Notion достижимо из рантайма: `GitProgressEvaluator` создаётся в планировщике или по команде бота (GIT-01..04, NTN-01..02)
+- [ ] Web-карточки HITL доставляются в Telegram: поллер `ConfirmationChannel.WEB` + `send_web_hitl_card` (HIT-02..04)
+
+**Ретро-верификация v2.0**
+- [ ] VERIFICATION фаз 4–9 v2.0 по факту: DAT, SEC, HIT-01, ISO-01/03/04, FIN-01, ACT-01..04, UXQ-01/02/04
+
+**Интерфейс**
+- [ ] UXQ-03 (план 09-03 в новом виде): быстрые действия с учётом времени суток без постоянной Reply-клавиатуры
+
+**Онбординг (ONB-CON)**
+- [ ] ONB-01: мастер первого запуска создаёт персону
+- [ ] ONB-02: подключение и отключение коннекторов из диалога с `health_check`
+- [ ] ONB-03: настройка брифингов и дайджестов через диалог
+
+### Out of Scope
+
+- **GSD-AGENT** (обучение chat-app стандарту GSD, фоновые субагенты в web-чате): целиком на стороне chat-app, а его планирование заморожено (решение владельца 2026-10-09).
+- **Правки chat-app** сверх мелких `/gsd-quick` в его собственном репозитории: chat-app — потребитель схемы, отдельно не развивается.
+- **ONB-04/05** (проактивный секретарь, поэтапное раскрытие функций): следующий цикл, после того как заработают ONB-01..03.
+- **RUS-LOC, SPEC-AGENTS, CHAT-BUILDER (BLD-01..08)**: крупные инициативы следующих циклов. Первый цикл стабилизирует платформу.
+- **Постоянная экранная Reply-клавиатура** (исходный 09-03): загромождает экран смартфона; отклонена владельцем 2026-10-07.
+- **CORS и аутентификация Web API (OPS-05)**: это chat-app.
+- **Разделение `bot_handler.py`/`db.py` (>3000 строк)**: важный долг, но рефакторинг ради рефакторинга вне цикла. Касаемся только по месту правок.
+
+## Context
+
+- **Brownfield.** Python, асинхронный демон в одном процессе: aiogram + APScheduler, хранилище — aiosqlite поверх `assistant_shared.db`. LLM — Gemini (`google-genai`) с ротацией ключей по персоне; Telethon для сбора Telegram; OAuth Google Calendar/Drive/Gmail; Notion API; IMAP/SMTP. Подробно — в `.planning/codebase/`.
+- **Тесты:** 421 теста pytest (`asyncio_mode = auto`) в плоском `tests/`, эталоны промптов в `tests/fixtures/prompts_snapshot/`. Покрытие не измеряется, ruff/mypy не настроены.
+- **Гейт сейчас общий:** `python3 /opt/chat-app/scripts/gate.py` — оба pytest, import-linter, `security_shield --all`, дрейф `synthetic_persona.py` между репозиториями, хеш боевой БД до и после. ЗЕЛЁНЫЙ на 2026-10-09. `src/config.py` вызывает `load_dotenv(..., override=True)`, поэтому БД тестов assistant-core нельзя переопределить окружением: сейчас защиту даёт только хеш.
+- **Общий код:** `/opt/assistant-shared` — владелец схемы БД (мигратор, миграции `0001`, `0002`), HITL-примитив `pending_confirmations` и библиотека безопасности. assistant-core — сторона владельца схемы, chat-app — потребитель. У assistant-shared нет своих тестов (WR-11).
+- **История:** цикл v2.0 закрыт с оговоркой (override closeout): 20 из 42 требований подтверждено, у фаз 4–9 нет VERIFICATION.md. Справка (только чтение): `/opt/chat-app/.planning/MILESTONES.md`, `RETROSPECTIVE.md`, `milestones/v2.0-*`, `BACKLOG.md`.
+- **Уроки v2.0:** юнит-тесты не доказывают, что функция достижима из рантайма (две цепочки оказались «сиротами»). SUMMARY пишется в том же прогоне, что и код. Тесты-ловушки пишутся до правки. Security-логика только ужесточается (fail-closed).
+- **Найдено при онбординге (карта кода):** импортируются, но не объявлены в `requirements.txt` пакеты `imapclient`, `pypdf`, `html2text`, `requests`, `assistant-shared`. Dockerfile на Python 3.11 при целевом 3.12. В корне лежит неотслеживаемый каталог-артефакт `sqlite+aiosqlite:/`. Синхронный sqlite3 в `src/connectors/aadhk/parser.py`. 77 широких `except`.
+- **Делегирование:** рутина — агентам Antigravity только через `/opt/chat-app/scripts/agy_task.sh`, а исполнение механических планов — через cross-AI адаптер `/opt/chat-app/scripts/agy_cross_ai.sh --repo /opt/assistant-core`. Пробный прогон 2026-10-09: rc 0, гейт ЗЕЛЁНЫЙ, патч без коммита. Claude читает патч целиком, гоняет гейт и коммитит сам.
+
+## Constraints
+
+- **Боевая БД**: `/opt/assistant-core/data/assistant.db` не открывать и не менять при разработке и тестах — живые данные владельца.
+- **Сервисы**: `assistant-worker.service` и `chat-app.service` заморожены. Рестарт assistant-worker — только после фазы с изменениями рантайма, по явному разрешению владельца, со смоук-проверкой.
+- **Качество**: тесты проходят на 100%. Пропуски, xfail и deselected делают гейт красным.
+- **Безопасность**: HITL для любого необратимого действия; Air-Gap NDA (содержимое `restricted_nda` не уходит во внешнюю LLM); security-проверки только ужесточаются, fail-closed.
+- **Стек**: Python 3.12, async-first (aiosqlite, httpx/aiohttp), Pydantic/dataclass. Новые зависимости — только с одобрения владельца.
+- **Ресурсы VPS**: 2 ГБ RAM + 4,5 ГБ swap. Для Node — `NODE_OPTIONS="--max-old-space-size=1536"`.
+- **Язык**: всё, что видит пользователь, — по-русски. Код и коммиты — по-английски или по-русски.
+- **Git**: коммиты прямо в `main` разрешены, без worktree.
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| Отдельный GSD-проект assistant-core, планирование chat-app заморожено | Один `.planning/` на два репозитория связывал сервисы и раздувал гейт (урок v2.0) | ✓ Good |
+| Первый цикл — v3.0, фазы с 1 | Продолжение истории после v2.0 | — Pending |
+| Порядок: гейт → NDA → схема → проводка → ретро-верификация → UXQ-03 → онбординг | Сначала инструмент проверки, затем безопасность и целостность, потом функции | — Pending |
+| Собственный гейт проверяет assistant-core и assistant-shared | Закрывает WR-11; общий gate.py тестирует оба сервиса | — Pending |
+| В v3.0 из инициатив — только ONB-01..03 | Цикл стабилизации плюс один шаг к универсальной платформе | — Pending |
+| UXQ-03 переосмыслен: без постоянной Reply-клавиатуры | Владелец отклонил загромождение экрана 2026-10-07 | — Pending |
+| Рестарт сервиса — после фазы, по запросу, со смоук-проверкой | Проверка «достижимо из рантайма» без бесконтрольной разморозки | — Pending |
+| cross-AI исполнение через agy_cross_ai.sh, без автокоммита | agy сообщает SUCCESS на неполной работе — результат проверяет Claude | ✓ Good |
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-10-09 after initialization*
