@@ -52,17 +52,26 @@ REMEASURE_WAIT_S = 5
 REPO_CORE = "assistant-core"
 REPO_SHARED = "assistant-shared"
 
-# Известные ложные срабатывания эвристик shield (решение D-17). Записи только удаляются:
+# Известные ложные срабатывания эвристик shield (решения D-09, D-17). Записи только удаляются:
 # новая запись не добавляется, устаревшая запись (находки больше нет) краснит гейт, чтобы
-# исключение не пережило причину. Ключ: (путь в posix, вид находки) -> число находок; без
-# номеров строк и без текста ключевых слов. Для assistant-shared список пуст; chat-app
-# в словаре нет: его shield гоняет собственный гейт.
-KNOWN_SHIELD_FALSE_POSITIVES: dict[str, dict[tuple[str, str], int]] = {
+# исключение не пережило причину. Ключ: (путь в posix, вид находки) -> {отпечаток строки файла:
+# число находок} (WR-04). Отпечаток это line_fingerprint(путь, точный текст строки файла): слово
+# NDA в списке не раскрывается, а перенос находки на другую строку или замена текста строки
+# даёт «новую находку» и «устаревшую запись» даже при том же числе находок. Правка строки со
+# словами в config/persona.yaml владельцем требует осознанного обновления отпечатка. Для
+# assistant-shared список пуст; chat-app в словаре нет: его shield гоняет собственный гейт.
+KNOWN_SHIELD_FALSE_POSITIVES: dict[str, dict[tuple[str, str], dict[str, int]]] = {
     REPO_CORE: {
-        ("config/persona.yaml", "nda-keyword"): 3,
+        ("config/persona.yaml", "nda-keyword"): {
+            "5eee60bcfe69e973b3382fea3358ef0fe42b1eb90a41d2d21160d3ef99228d69": 3,
+        },
     },
     REPO_SHARED: {},
 }
+
+# Метка находки, строку файла которой не удалось прочитать: такая находка не покрывается
+# никакой записью списка (fail-closed).
+UNREADABLE_FINGERPRINT = "unreadable"
 
 _SUMMARY_WORDS = frozenset(
     {"failed", "error", "errors", "skipped", "deselected", "xfailed", "xpassed"}
@@ -321,14 +330,54 @@ def _relative_posix(raw_path: str, repo_dir: Path) -> str:
         return raw_path
 
 
+def line_fingerprint(path_posix: str, line_text: str) -> str:
+    """Отпечаток строки файла: sha256 от «путь, нулевой байт, точный текст строки».
+
+    Текст строки не восстанавливается из отпечатка и нигде не печатается (WR-04).
+    """
+    payload = f"{path_posix}\0{line_text}".encode("utf-8", "surrogatepass")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _read_file_lines(repo_dir: Path, path_posix: str) -> list[str] | None:
+    """Строки файла репозитория так же, как их нумерует shield (UTF-8, универсальные переводы строк).
+
+    Путь вне репозитория (абсолютный, с «..», через ссылку наружу) и любой сбой чтения дают None.
+    """
+    try:
+        if Path(path_posix).is_absolute():
+            return None
+        root = repo_dir.resolve()
+        full = (root / path_posix).resolve()
+        if root != full and root not in full.parents:
+            return None
+        with open(full, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read().split("\n")
+    except (OSError, ValueError):
+        return None
+
+
 def parse_shield_findings(output: str, repo_dir: Path) -> collections.Counter:
-    """Нормализует вывод shield в Counter {(путь, вид): число}.
+    """Нормализует вывод shield в Counter {(путь, вид, отпечаток строки): число}.
 
     Рассматриваются ТОЛЬКО строки находок («пробелы, значок, пробел, тело»). Заголовок shield
-    (адрес remote, e-mail автора), текст NDA-слов и номера строк отбрасываются и не попадают
-    в результат: гейт ничего из этого не печатает и не сохраняет (T-01-09).
+    (адрес remote, e-mail автора) и текст NDA-слов отбрасываются и не попадают в результат:
+    гейт ничего из этого не печатает и не сохраняет (T-01-09). Для находок с номером строки
+    (секрет, слово NDA) строка файла читается по номеру из вывода shield и превращается в
+    отпечаток; нечитаемая строка получает метку UNREADABLE_FINGERPRINT. Для остальных видов
+    отпечаток пустой. Сам текст строки наружу не отдаётся (WR-04).
     """
     found: collections.Counter = collections.Counter()
+    cache: dict[str, list[str] | None] = {}
+
+    def fingerprint(path: str, line_no: int) -> str:
+        if path not in cache:
+            cache[path] = _read_file_lines(repo_dir, path)
+        lines = cache[path]
+        if lines is None or not 1 <= line_no <= len(lines):
+            return UNREADABLE_FINGERPRINT
+        return line_fingerprint(path, lines[line_no - 1])
+
     for line in output.splitlines():
         match = _SHIELD_LINE_RE.match(line)
         if not match:
@@ -336,43 +385,64 @@ def parse_shield_findings(output: str, repo_dir: Path) -> collections.Counter:
         body = match.group("body").strip()
         if body.startswith("Forbidden file pattern committed:"):
             name = body.split(":", 1)[1].strip()
-            found[(name, "forbidden-file")] += 1
+            found[(name, "forbidden-file", "")] += 1
             continue
         if body.startswith("CRITICAL"):
-            found[("(remote)", "remote")] += 1
+            found[("(remote)", "remote", "")] += 1
             continue
         at_line = _SHIELD_AT_LINE_RE.match(body)
         if at_line:
             path = _relative_posix(at_line.group("path"), repo_dir)
             msg = at_line.group("msg")
+            line_no = int(at_line.group("line"))
             if msg.startswith("Found potential "):
-                found[(path, "secret:" + msg[len("Found potential ") :].strip())] += 1
+                kind = "secret:" + msg[len("Found potential ") :].strip()
+                found[(path, kind, fingerprint(path, line_no))] += 1
                 continue
             if msg.startswith("Found proprietary corporate keyword"):
-                found[(path, "nda-keyword")] += 1
+                found[(path, "nda-keyword", fingerprint(path, line_no))] += 1
                 continue
         read_error = body.split(" - Read error", 1)
         if len(read_error) == 2:
-            found[(_relative_posix(read_error[0].strip(), repo_dir), "read-error")] += 1
+            found[(_relative_posix(read_error[0].strip(), repo_dir), "read-error", "")] += 1
             continue
-        found[("(нераспознано)", "unparsed")] += 1
+        found[("(нераспознано)", "unparsed", "")] += 1
     return found
 
 
 def compare_shield_findings(
-    found: collections.Counter, allowed: dict[tuple[str, str], int]
+    found: collections.Counter, allowed: dict[tuple[str, str], dict[str, int]]
 ) -> tuple[list[str], list[str]]:
-    """(новые находки, устаревшие записи замороженного списка), оба списка отсортированы."""
-    new = [
-        f"новая находка: {path} [{kind}] ×{count}"
-        for (path, kind), count in sorted(found.items())
-        if count > allowed.get((path, kind), 0)
-    ]
-    stale = [
-        f"устаревшая запись (удалите из KNOWN_SHIELD_FALSE_POSITIVES): {path} [{kind}]"
-        for (path, kind), count in sorted(allowed.items())
-        if found.get((path, kind), 0) < count
-    ]
+    """(новые находки, устаревшие записи замороженного списка), оба списка отсортированы.
+
+    Сравниваются тройки (путь, вид, отпечаток). Метка UNREADABLE_FINGERPRINT никогда не
+    покрывается записью, а запись с такой меткой всегда устаревшая. Сообщения содержат путь,
+    вид и число, но не отпечаток и не текст строки.
+    """
+    allowed_flat = {
+        (path, kind, fp): count
+        for (path, kind), by_fp in allowed.items()
+        for fp, count in by_fp.items()
+        if fp != UNREADABLE_FINGERPRINT
+    }
+    allowed_pairs = {(path, kind) for (path, kind, _fp) in allowed_flat}
+    new = []
+    for (path, kind, fp), count in sorted(found.items()):
+        if count <= allowed_flat.get((path, kind, fp), 0):
+            continue
+        note = ""
+        if fp == UNREADABLE_FINGERPRINT:
+            note = " (строка файла не прочитана)"
+        elif (path, kind) in allowed_pairs:
+            note = " (строка файла изменилась, обновите запись осознанно)"
+        new.append(f"новая находка: {path} [{kind}] ×{count}{note}")
+    stale = []
+    for (path, kind), by_fp in sorted(allowed.items()):
+        for fp, count in sorted(by_fp.items()):
+            if fp == UNREADABLE_FINGERPRINT or found.get((path, kind, fp), 0) < count:
+                stale.append(
+                    f"устаревшая запись (удалите из KNOWN_SHIELD_FALSE_POSITIVES): {path} [{kind}]"
+                )
     return new, stale
 
 

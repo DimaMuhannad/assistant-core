@@ -774,14 +774,42 @@ def _synthetic_shield_output(repo: Path) -> str:
     )
 
 
+def _file_with_lines(root, rel, lines):
+    """Файл репозитория из строк; возвращает путь. Нужен, чтобы гейт мог прочитать строку находки."""
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_line_fingerprint_is_stable_and_depends_on_path_and_text():
+    base = gate.line_fingerprint("a.md", "строка один")
+    assert base == gate.line_fingerprint("a.md", "строка один")
+    assert len(base) == 64 and set(base) <= set("0123456789abcdef")
+    assert base != gate.line_fingerprint("b.md", "строка один")
+    assert base != gate.line_fingerprint("a.md", "строка два")
+    assert "строка" not in base
+
+
+def test_line_fingerprint_matches_documented_formula():
+    expected = hashlib.sha256("a.md\0текст".encode("utf-8")).hexdigest()
+    assert gate.line_fingerprint("a.md", "текст") == expected
+
+
 def test_parse_shield_findings_normalizes_and_drops_sensitive_text(tmp_path):
+    _file_with_lines(tmp_path, "docs/a.md", [f"a{i}" for i in range(1, 12)])
+    _file_with_lines(tmp_path, "tests/t.py", [f"t{i}" for i in range(1, 15)])
     found = gate.parse_shield_findings(_synthetic_shield_output(tmp_path), tmp_path)
+    fp_a3 = gate.line_fingerprint("docs/a.md", "a3")
+    fp_a9 = gate.line_fingerprint("docs/a.md", "a9")
+    fp_t12 = gate.line_fingerprint("tests/t.py", "t12")
     assert found == {
-        ("docs/a.md", "nda-keyword"): 2,
-        ("tests/t.py", "secret:Generic Bearer Secret"): 1,
-        ("(нераспознано)", "unparsed"): 1,
+        ("docs/a.md", "nda-keyword", fp_a3): 1,
+        ("docs/a.md", "nda-keyword", fp_a9): 1,
+        ("tests/t.py", "secret:Generic Bearer Secret", fp_t12): 1,
+        ("(нераспознано)", "unparsed", ""): 1,
     }
-    flat = " ".join(f"{path} {kind} {count}" for (path, kind), count in found.items())
+    flat = " ".join(f"{path} {kind} {fp} {count}" for (path, kind, fp), count in found.items())
     assert NDA_WORD not in flat and AUTHOR_MAIL not in flat and REMOTE_URL not in flat
     assert "Origin" not in flat
 
@@ -793,9 +821,9 @@ def test_parse_shield_findings_special_kinds(tmp_path):
         f"   {ALERT} {tmp_path}/x.bin - Read error: boom\n"
     )
     assert gate.parse_shield_findings(output, tmp_path) == {
-        ("credentials.json", "forbidden-file"): 1,
-        ("(remote)", "remote"): 1,
-        ("x.bin", "read-error"): 1,
+        ("credentials.json", "forbidden-file", ""): 1,
+        ("(remote)", "remote", ""): 1,
+        ("x.bin", "read-error", ""): 1,
     }
 
 
@@ -808,50 +836,153 @@ def test_parse_shield_findings_ignores_lines_without_alert_prefix(tmp_path):
     assert not gate.parse_shield_findings(output, tmp_path)
 
 
-def test_parse_shield_findings_returns_counter_without_line_numbers(tmp_path):
+def test_parse_shield_findings_same_line_findings_share_a_fingerprint(tmp_path):
+    _file_with_lines(tmp_path, "a.md", ["один", "два"])
     output = (
-        f"   {ALERT} {tmp_path}/a.md:1 - Found proprietary corporate keyword 'x'\n"
-        f"   {ALERT} {tmp_path}/a.md:99 - Found proprietary corporate keyword 'y'\n"
+        f"   {ALERT} {tmp_path}/a.md:2 - Found proprietary corporate keyword 'x'\n"
+        f"   {ALERT} {tmp_path}/a.md:2 - Found proprietary corporate keyword 'y'\n"
     )
     found = gate.parse_shield_findings(output, tmp_path)
     assert isinstance(found, collections.Counter)
-    assert found == {("a.md", "nda-keyword"): 2}
+    assert found == {("a.md", "nda-keyword", gate.line_fingerprint("a.md", "два")): 2}
+
+
+def test_parse_shield_findings_unreadable_line_gets_unreadable_label(tmp_path):
+    _file_with_lines(tmp_path, "short.md", ["один"])
+    output = (
+        f"   {ALERT} {tmp_path}/short.md:99 - Found proprietary corporate keyword 'x'\n"
+        f"   {ALERT} {tmp_path}/missing.md:1 - Found potential Generic Bearer Secret\n"
+        f"   {ALERT} /outside/elsewhere.md:1 - Found proprietary corporate keyword 'x'\n"
+        f"   {ALERT} {tmp_path}/short.md:0 - Found proprietary corporate keyword 'x'\n"
+    )
+    found = gate.parse_shield_findings(output, tmp_path)
+    assert set(fp for (_p, _k, fp) in found) == {gate.UNREADABLE_FINGERPRINT}
+    assert sum(found.values()) == 4
+
+
+def test_parse_shield_findings_refuses_to_read_outside_the_repo(tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("секретная строка\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "link.md").symlink_to(outside)
+    output = (
+        f"   {ALERT} {repo}/link.md:1 - Found proprietary corporate keyword 'x'\n"
+        f"   {ALERT} {repo}/../outside.md:1 - Found proprietary corporate keyword 'x'\n"
+    )
+    found = gate.parse_shield_findings(output, repo)
+    assert {fp for (_p, _k, fp) in found} == {gate.UNREADABLE_FINGERPRINT}
+
+
+def test_parse_shield_findings_numbers_lines_like_shield_with_universal_newlines(tmp_path):
+    (tmp_path / "w.txt").write_bytes("первая\r\nвторая\r\nтретья".encode("utf-8"))
+    output = f"   {ALERT} {tmp_path}/w.txt:3 - Found proprietary corporate keyword 'x'\n"
+    found = gate.parse_shield_findings(output, tmp_path)
+    assert found == {("w.txt", "nda-keyword", gate.line_fingerprint("w.txt", "третья")): 1}
+
+
+FP1 = "1" * 64
+FP2 = "2" * 64
+KEY = ("docs/a.md", "nda-keyword")
 
 
 def test_compare_shield_findings_equal_sets_no_problems():
-    found = collections.Counter({("docs/a.md", "nda-keyword"): 2})
-    assert gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2}) == ([], [])
+    found = collections.Counter({(*KEY, FP1): 2})
+    assert gate.compare_shield_findings(found, {KEY: {FP1: 2}}) == ([], [])
 
 
 def test_compare_shield_findings_extra_finding_is_new():
-    found = collections.Counter({("docs/a.md", "nda-keyword"): 3})
-    new, stale = gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2})
+    found = collections.Counter({(*KEY, FP1): 3})
+    new, stale = gate.compare_shield_findings(found, {KEY: {FP1: 2}})
     assert new and not stale
     assert "docs/a.md" in new[0]
 
 
 def test_compare_shield_findings_missing_finding_is_stale():
-    found = collections.Counter({("docs/a.md", "nda-keyword"): 1})
-    new, stale = gate.compare_shield_findings(found, {("docs/a.md", "nda-keyword"): 2})
+    found = collections.Counter({(*KEY, FP1): 1})
+    new, stale = gate.compare_shield_findings(found, {KEY: {FP1: 2}})
     assert stale and not new
+
+
+def test_compare_shield_findings_same_count_on_another_line_is_new_and_stale():
+    found = collections.Counter({(*KEY, FP2): 3})
+    new, stale = gate.compare_shield_findings(found, {KEY: {FP1: 3}})
+    assert len(new) == 1 and len(stale) == 1
+    assert "строка файла изменилась" in new[0]
+    assert FP1 not in new[0] + stale[0] and FP2 not in new[0] + stale[0]
+
+
+def test_compare_shield_findings_unreadable_is_never_covered():
+    unreadable = gate.UNREADABLE_FINGERPRINT
+    found = collections.Counter({(*KEY, unreadable): 1})
+    for allowed in ({KEY: {unreadable: 1}}, {KEY: {unreadable: 5}}):
+        new, stale = gate.compare_shield_findings(found, allowed)
+        assert new and "не прочитана" in new[0]
+        assert stale  # запись с меткой unreadable всегда устаревшая
 
 
 def test_compare_shield_findings_results_are_sorted_by_path_and_kind():
     found = collections.Counter(
-        {("z.md", "nda-keyword"): 1, ("a.md", "nda-keyword"): 1, ("a.md", "forbidden-file"): 1}
+        {
+            ("z.md", "nda-keyword", FP1): 1,
+            ("a.md", "nda-keyword", FP1): 1,
+            ("a.md", "forbidden-file", ""): 1,
+        }
     )
-    allowed = {("y.md", "nda-keyword"): 1, ("b.md", "nda-keyword"): 1}
+    allowed = {("y.md", "nda-keyword"): {FP1: 1}, ("b.md", "nda-keyword"): {FP1: 1}}
     new, stale = gate.compare_shield_findings(found, allowed)
     assert [line.split(": ", 1)[1].split(" [")[0] for line in new] == ["a.md", "a.md", "z.md"]
     assert "[forbidden-file]" in new[0] and "[nda-keyword]" in new[1]
     assert [line.split(": ", 1)[1].split(" [")[0] for line in stale] == ["b.md", "y.md"]
 
 
-def test_known_shield_false_positives_frozen_list_is_exact():
-    assert gate.KNOWN_SHIELD_FALSE_POSITIVES == {
-        gate.REPO_CORE: {("config/persona.yaml", "nda-keyword"): 3},
-        gate.REPO_SHARED: {},
-    }
+_PERSONA_REL = "config/persona.yaml"
+
+
+def _declared_nda_words() -> list[str]:
+    """Объявленные слова NDA, прочитанные из данных персоны во время теста (не печатаются)."""
+    from src.persona.loader import load_persona
+
+    words = []
+    for workspace in load_persona().workspaces:
+        words.extend(w for w in workspace.forbidden_keywords if w.strip())
+    return words
+
+
+def _persona_word_lines() -> list[tuple[int, str]]:
+    """[(номер строки, строка файла)] для каждой пары (строка, слово), как её считает shield."""
+    text = (gate.CORE_DIR / _PERSONA_REL).read_text(encoding="utf-8", errors="ignore")
+    words = sorted({w.strip().casefold() for w in _declared_nda_words()})
+    pairs = []
+    for number, line in enumerate(text.split("\n"), 1):
+        folded = line.casefold()
+        pairs.extend((number, line) for word in words if word in folded)
+    return pairs
+
+
+def test_known_shield_false_positives_core_entry_matches_real_persona_file():
+    core = gate.KNOWN_SHIELD_FALSE_POSITIVES[gate.REPO_CORE]
+    assert set(core) == {(_PERSONA_REL, "nda-keyword")}
+    pairs = _persona_word_lines()
+    assert pairs, "в файле персоны не найдено строк с объявленными словами"
+    expected = collections.Counter(gate.line_fingerprint(_PERSONA_REL, line) for _n, line in pairs)
+    assert core[(_PERSONA_REL, "nda-keyword")] == dict(expected)
+    assert gate.UNREADABLE_FINGERPRINT not in core[(_PERSONA_REL, "nda-keyword")]
+    assert sum(expected.values()) == len(pairs)
+
+
+def test_known_shield_false_positives_shared_is_empty():
+    assert gate.KNOWN_SHIELD_FALSE_POSITIVES[gate.REPO_SHARED] == {}
+    assert set(gate.KNOWN_SHIELD_FALSE_POSITIVES) == {gate.REPO_CORE, gate.REPO_SHARED}
+
+
+def test_known_shield_false_positives_values_are_fingerprints_with_positive_counts():
+    for entries in gate.KNOWN_SHIELD_FALSE_POSITIVES.values():
+        for by_fp in entries.values():
+            assert by_fp
+            for fp, count in by_fp.items():
+                assert len(fp) == 64 and set(fp) <= set("0123456789abcdef")
+                assert isinstance(count, int) and count > 0
 
 
 def test_known_shield_false_positives_has_no_chat_app_key():
@@ -959,30 +1090,46 @@ def test_run_shield_step_falls_back_to_current_interpreter_without_core_venv(tmp
     assert seen["python"] == sys.executable
 
 
-def _core_persona_output(repo: Path, count: int) -> str:
+def _core_repo_with_persona(tmp_path):
+    """Временный репозиторий с копией настоящего файла персоны (чтение; исходный файл не меняется)."""
+    repo = _fake_repo(tmp_path)
+    target = repo / _PERSONA_REL
+    target.parent.mkdir()
+    target.write_bytes((gate.CORE_DIR / _PERSONA_REL).read_bytes())
+    return repo
+
+
+def _persona_shield_output(repo: Path, numbers: list[int]) -> str:
+    # Слово в синтетическом выводе заменено заглушкой: гейт его всё равно отбрасывает
     lines = "".join(
-        f"   {ALERT} {repo}/config/persona.yaml:{40 + i} - Found proprietary corporate keyword '{NDA_WORD}{i}' in public repository!\n"
-        for i in range(count)
+        f"   {ALERT} {repo}/{_PERSONA_REL}:{n} - Found proprietary corporate keyword 'w' in public repository!\n"
+        for n in numbers
     )
     return "   • Scanning 9 files...\n\n❌ SECURITY VIOLATIONS DETECTED:\n" + lines
 
 
+def _real_numbers() -> list[int]:
+    return [n for n, _line in _persona_word_lines()]
+
+
 def test_run_shield_step_core_frozen_entry_matches_exactly_is_green(tmp_path, monkeypatch):
-    repo = _fake_repo(tmp_path)
-    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 3), 1))
+    repo = _core_repo_with_persona(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, _real_numbers()), 1))
     assert gate.run_shield_step(gate.REPO_CORE, repo).ok is True
 
 
 def test_run_shield_step_core_one_extra_finding_is_red(tmp_path, monkeypatch):
-    repo = _fake_repo(tmp_path)
-    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 4), 1))
+    repo = _core_repo_with_persona(tmp_path)
+    numbers = _real_numbers() + [_real_numbers()[0]]
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, numbers), 1))
     result = gate.run_shield_step(gate.REPO_CORE, repo)
     assert result.ok is False and "новая находка" in result.detail
 
 
 def test_run_shield_step_core_stale_frozen_entry_is_red(tmp_path, monkeypatch):
-    repo = _fake_repo(tmp_path)
-    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 2), 1))
+    repo = _core_repo_with_persona(tmp_path)
+    numbers = _real_numbers()[:-1]
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, numbers), 1))
     result = gate.run_shield_step(gate.REPO_CORE, repo)
     assert result.ok is False and "устаревшая запись" in result.detail
 
@@ -994,9 +1141,56 @@ def test_run_shield_step_core_clean_run_makes_frozen_entry_stale(tmp_path, monke
     assert result.ok is False and "устаревшая запись" in result.detail
 
 
+def test_run_shield_step_core_same_count_on_a_replaced_line_is_red(tmp_path, monkeypatch):
+    """WR-04: три находки того же вида на другой строке не прячутся за замороженной записью."""
+    repo = _core_repo_with_persona(tmp_path)
+    numbers = _real_numbers()
+    text = (repo / _PERSONA_REL).read_text(encoding="utf-8").split("\n")
+    text[numbers[0] - 1] += " # правка"
+    (repo / _PERSONA_REL).write_text("\n".join(text), encoding="utf-8")
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, numbers), 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "новая находка" in result.detail and "устаревшая запись" in result.detail
+    assert "строка файла изменилась" in result.detail
+
+
+def test_run_shield_step_core_same_count_moved_to_another_line_is_red(tmp_path, monkeypatch):
+    repo = _core_repo_with_persona(tmp_path)
+    real = _real_numbers()
+    other = next(n for n in range(1, 30) if n not in real)
+    moved = [other] * len(real)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, moved), 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False
+    assert "новая находка" in result.detail and "устаревшая запись" in result.detail
+
+
+def test_run_shield_step_core_unreadable_line_is_red(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)  # файла персоны в репозитории нет
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, _real_numbers()), 1))
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    assert result.ok is False and "не прочитана" in result.detail
+
+
+def test_run_shield_step_result_never_contains_fingerprints_or_line_text(tmp_path, monkeypatch):
+    repo = _core_repo_with_persona(tmp_path)
+    numbers = _real_numbers()
+    monkeypatch.setattr(
+        gate, "run_cmd", _shield_proc(_persona_shield_output(repo, numbers + numbers[:1]), 1)
+    )
+    result = gate.run_shield_step(gate.REPO_CORE, repo)
+    report = gate.render_report([result])
+    for _n, line in _persona_word_lines():
+        assert line.strip() not in report
+        assert gate.line_fingerprint(_PERSONA_REL, line) not in report
+    for word in _declared_nda_words():
+        assert word not in report
+
+
 def test_run_shield_step_shared_has_no_allowance_for_any_finding(tmp_path, monkeypatch):
-    repo = _fake_repo(tmp_path)
-    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_core_persona_output(repo, 3), 1))
+    repo = _core_repo_with_persona(tmp_path)
+    monkeypatch.setattr(gate, "run_cmd", _shield_proc(_persona_shield_output(repo, _real_numbers()), 1))
     result = gate.run_shield_step(gate.REPO_SHARED, repo)
     assert result.ok is False and "новая находка" in result.detail
 
