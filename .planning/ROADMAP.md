@@ -27,7 +27,7 @@
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Собственный гейт качества assistant-core** - Одна команда проверяет assistant-core и assistant-shared и выдаёт по-русски ЗЕЛЁНЫЙ/КРАСНЫЙ; описана процедура выкатки
+- [x] **Phase 1: Собственный гейт качества assistant-core** - Одна команда проверяет assistant-core и assistant-shared и выдаёт по-русски ЗЕЛЁНЫЙ/КРАСНЫЙ; описана процедура выкатки (completed 2026-10-10)
 - [ ] **Phase 2: Безопасность, приватность и находки ревью** - NDA-режим аудита из данных, паритет Web/CLI-аудита, «очисти диалог» с защитой, предупреждение об обработке почты ИИ
 - [ ] **Phase 3: Владение схемой БД** - Три таблицы переезжают в миграцию `0003` в assistant-shared, `:memory:` и файловая БД идут одним неблокирующим путём
 - [ ] **Phase 4: Цепочка Git → оценка → HITL → Notion** - Оценка хода проектов по git достижима из планировщика и бота, запись в Notion только после подтверждения
@@ -51,7 +51,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Гейт не слабее общего `/opt/chat-app/scripts/gate.py` по части assistant-core: сохранены проверка дрейфа `tests/synthetic_persona.py` и `tests/persona_tokens.py` с копиями chat-app (только чтение) и замороженный список ложных срабатываний shield (записи только удаляются). Пробный прогон `agy_cross_ai.sh --repo /opt/assistant-core` и правила `CLAUDE.md` используют новый гейт и дают ЗЕЛЁНЫЙ (GATE-04, GATE-05).
   5. Процедура выкатки описана и автоматизирована скриптом: рестарт `assistant-worker.service` только по явному разрешению владельца, затем смоук-проверка (сервис active, в журнале старта нет ошибок, планировщик зарегистрировал задачи, бот отвечает на команду). Смоук-проверка не пишет в боевую БД, её read-only часть запускается на текущем сервисе без рестарта, и результат записан в VERIFICATION.md (OPS-01).
 
-**Plans:** 10/10 plans executed
+**Plans:** 10/10 plans complete
 
 Plans:
 **Wave 1**
@@ -206,7 +206,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 1. Собственный гейт качества assistant-core | v3.0 | 10/10 | In Progress|  |
+| 1. Собственный гейт качества assistant-core | v3.0 | 10/10 | Complete    | 2026-10-10 |
 | 2. Безопасность, приватность и находки ревью | v3.0 | 0/TBD | Not started | - |
 | 3. Владение схемой БД | v3.0 | 0/TBD | Not started | - |
 | 4. Цепочка Git → оценка → HITL → Notion | v3.0 | 0/TBD | Not started | - |
