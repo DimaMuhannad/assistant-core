@@ -5,11 +5,11 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-10-PLAN.md
-last_updated: "2026-10-10T15:23:17.360Z"
+stopped_at: Completed 02-09-PLAN.md
+last_updated: "2026-10-10T15:43:46.944Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: e4ac82268e356499fb8662ab64ebaea869f2bb4a
+state_head: 04f55a2ce679fe54a12af5f9a471c5ab38fed7dc
 progress:
   total_phases: 9
   completed_phases: 1
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 10 of 15
+Plan: 11 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -76,6 +76,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P07 | 90min | 3 tasks | 1 files |
 | Phase 02 P08 | 45min | 3 tasks | 4 files |
 | Phase 02 P10 | 30 min | 3 tasks | 9 files |
+| Phase 02 P09 | 35min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,7 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: 02-07: chat-app переведён на данные пространств через /gsd-quick (568ecf2); обёртка chat-app - делегатор в assistant-core, fail-closed
 - [Phase 02]: 02-08: shield wrapper loads workspaces from persona in main(); fail-closed rc=1 without values; no keyword allowance in commit or --all mode (D-21)
 - [Phase 02]: 02-10: audit_repository(repo_path, check_staged_only, *, workspaces=None): None даёт rc=1 (D-20), слов по умолчанию нет (D-09), допуска слов нет (D-21); shield shared стал делегатором в assistant-core (D-18)
+- [Phase 02]: 02-09: chat-app adapter PROTECTED extended by 8 gate-environment paths, ancestor dirs protected, exit 17 on symlinked scripts/gate.py, GATE_KIND labels fallback gate (chat-app 27886b3)
 
 ### Pending Todos
 
@@ -145,6 +147,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T15:23:17.103Z
-Stopped at: Completed 02-10-PLAN.md
+Last session: 2026-10-10T15:43:46.687Z
+Stopped at: Completed 02-09-PLAN.md
 Resume file: None

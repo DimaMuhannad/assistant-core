@@ -78,7 +78,7 @@ created: "2026-10-09"
 | AR-01-01 | T-01-06 | Shared tests that pin Phase-2 behaviour ported unchanged with SECF-01 markers; rewritten in Phase 2 | plan 01-02 (owner-approved plan) | 2026-10-09 |
 | AR-01-02 | T-01-08 | Hook interpreter selected via VIRTUAL_ENV with a fixed lookup order; environment is owner-local | plan 01-03 (owner-approved plan) | 2026-10-09 |
 | AR-01-03 | T-01-15 (residual) | Empty `assistant.db-wal`/`-shm` in `data/` after ro reads (also produced by the daemon's own WAL mode); harmless, gitignored; handling deferred to Phase 3 | owner (poll) | 2026-10-09 |
-| AR-01-04 | T-uo4-02 (chat-app quick 261009-uo4) | Adapter: a `scripts` symlink could substitute gate.py only in a repo with no tracked `scripts/`; not applicable to chat-app/assistant-core/assistant-shared (rc 12); refusal + test scheduled for Phase 2 | owner (poll) | 2026-10-09 |
+| AR-01-04 | T-uo4-02 (chat-app quick 261009-uo4) | Adapter: a `scripts` symlink could substitute gate.py only in a repo with no tracked `scripts/`; not applicable to chat-app/assistant-core/assistant-shared (rc 12); refusal + test scheduled for Phase 2. **Closed in Phase 2 by plan 02-09** (chat-app commit 27886b3: exit 17 on a symlinked `scripts` or `scripts/gate.py` before the agent and before the gate, ancestor dirs of protected files are protected, 16 new adapter tests) | owner (poll) | 2026-10-09 |
 
 *Accepted risks do not resurface in future audit runs.*
 
