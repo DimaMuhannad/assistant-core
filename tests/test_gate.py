@@ -22,6 +22,26 @@ _spec.loader.exec_module(gate)
 
 CheckResult = gate.CheckResult
 
+# Настоящие функции гейта и путь боевой БД, запомненные ДО подмены автофикстурой: тесты самих
+# функций берут их явно, остальные тесты не обращаются ни к systemctl, ни к файлу боевой БД.
+_REAL_SERVICE_STATE = gate._service_state
+_REAL_DB_DIAGNOSTICS = gate._db_diagnostics
+_REAL_LIVE_DB = gate.LIVE_DB
+_STUB_DIAGNOSTICS = "ДИАГНОСТИКА-ЗАГЛУШКА (герметичный тест)"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_live_db_and_service(tmp_path, monkeypatch):
+    """Герметичность (WR-10): ни настоящего systemctl, ни stat боевой БД в тестах гейта.
+
+    Подмена LIVE_DB указывает на несуществующий файл в tmp_path; тесты, которым нужен свой
+    путь или настоящее чтение состояния сервиса, подменяют это сами (monkeypatch внутри теста
+    применяется позже и побеждает).
+    """
+    monkeypatch.setattr(gate, "_db_diagnostics", lambda: _STUB_DIAGNOSTICS)
+    monkeypatch.setattr(gate, "_service_state", lambda: "inactive")
+    monkeypatch.setattr(gate, "LIVE_DB", tmp_path / "нет-боевой-бд" / "assistant.db")
+
 
 # --- overall_green и render_report ---
 
@@ -333,7 +353,7 @@ def test_core_pytest_env_normal_path_sets_override_and_clears_addopts(tmp_path):
 
 def test_core_pytest_env_refuses_live_db():
     with pytest.raises(ValueError):
-        gate.core_pytest_env(gate.LIVE_DB)
+        gate.core_pytest_env(_REAL_LIVE_DB)
 
 
 def test_core_pytest_env_refuses_root_assistant_db():
@@ -433,10 +453,11 @@ def test_db_diagnostics_reports_service_state_and_mtime(tmp_path, monkeypatch):
     fake_db = tmp_path / "live-stand-in.db"
     fake_db.write_bytes(b"x")
     monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    monkeypatch.setattr(gate, "_service_state", _REAL_SERVICE_STATE)
     monkeypatch.setattr(
         gate, "run_cmd", lambda *a, **k: subprocess.CompletedProcess(a, 0, "active\n", "")
     )
-    text = gate._db_diagnostics()
+    text = _REAL_DB_DIAGNOSTICS()
     assert "active" in text and "UTC" in text
 
 
@@ -446,8 +467,9 @@ def test_db_diagnostics_without_systemctl_says_unknown(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise FileNotFoundError("systemctl")
 
+    monkeypatch.setattr(gate, "_service_state", _REAL_SERVICE_STATE)
     monkeypatch.setattr(gate, "run_cmd", boom)
-    assert "неизвестно" in gate._db_diagnostics()
+    assert "неизвестно" in _REAL_DB_DIAGNOSTICS()
 
 
 def test_db_diagnostics_never_calls_a_mutating_systemctl_verb(tmp_path, monkeypatch):
@@ -458,8 +480,9 @@ def test_db_diagnostics_never_calls_a_mutating_systemctl_verb(tmp_path, monkeypa
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "active", "")
 
+    monkeypatch.setattr(gate, "_service_state", _REAL_SERVICE_STATE)
     monkeypatch.setattr(gate, "run_cmd", spy)
-    gate._db_diagnostics()
+    _REAL_DB_DIAGNOSTICS()
     assert calls and all(cmd[:2] == ["systemctl", "is-active"] for cmd in calls)
 
 
@@ -1603,6 +1626,7 @@ def test_db_unchanged_check_has_no_loop_so_retry_is_single():
 
 
 def _fake_service(monkeypatch, state):
+    monkeypatch.setattr(gate, "_service_state", _REAL_SERVICE_STATE)
     monkeypatch.setattr(
         gate, "run_cmd", lambda *a, **k: subprocess.CompletedProcess(a, 0, state + "\n", "")
     )
@@ -1679,6 +1703,7 @@ def test_service_write_evidence_is_read_only_systemctl(tmp_path, monkeypatch):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "active", "")
 
+    monkeypatch.setattr(gate, "_service_state", _REAL_SERVICE_STATE)
     monkeypatch.setattr(gate, "run_cmd", spy)
     gate.service_write_evidence(WINDOW)
     assert calls and all(cmd[:2] == ["systemctl", "is-active"] for cmd in calls)
@@ -1940,3 +1965,60 @@ def test_run_all_source_passes_snapshots_keyword_to_db_unchanged_check():
         if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "db_unchanged_check"
     ]
     assert len(calls) == 1 and "snapshots" in {kw.arg for kw in calls[0].keywords}
+
+
+# ============ WR-10 (D-17): герметичные тесты проверки боевой БД ============
+
+
+def test_autouse_fixture_replaces_diagnostics_service_state_and_live_db_path():
+    assert gate._db_diagnostics() == _STUB_DIAGNOSTICS
+    assert gate._service_state() == "inactive"
+    assert gate.LIVE_DB != _REAL_LIVE_DB
+    assert not gate.LIVE_DB.exists() and not gate.LIVE_DB.with_name("assistant.db-wal").exists()
+    assert _REAL_LIVE_DB == gate.CORE_DIR / "data" / "assistant.db"
+
+
+def test_db_unchanged_check_default_diagnostics_is_the_stub():
+    result = gate.db_unchanged_check("a", "b")
+    assert result.ok is False and _STUB_DIAGNOSTICS in result.detail
+
+
+def _boom_subprocess(*args, **kwargs):
+    raise AssertionError("тест гейта запустил настоящий подпроцесс (systemctl)")
+
+
+def test_db_checks_run_without_any_real_subprocess(monkeypatch):
+    monkeypatch.setattr(gate.subprocess, "run", _boom_subprocess)
+    # без diagnostics_fn, evidence_fn и remeasure_fn: всё, что может, берётся из подмен
+    assert gate.db_unchanged_check("a", "b").ok is False
+    assert gate.db_unchanged_check("a", "b", window=WINDOW, snapshots=COMPAT).ok is False
+    assert gate.db_unchanged_check("a", "a").ok is True
+    consistent, text = gate.service_write_evidence(WINDOW)
+    assert consistent is False and "inactive" in text and "неизвестно" in text
+
+
+def test_db_checks_never_stat_the_real_live_db(monkeypatch):
+    real_stat = Path.stat
+    touched = []
+
+    def spy(self, *args, **kwargs):
+        if str(self).startswith(str(_REAL_LIVE_DB)):
+            touched.append(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", spy)
+    gate.db_unchanged_check("a", "b")
+    gate.service_write_evidence(WINDOW)
+    gate._db_latest_mtime()
+    assert touched == []
+
+
+def test_tests_with_own_live_db_path_still_override_the_fixture(tmp_path, monkeypatch):
+    fake_db = tmp_path / "own.db"
+    fake_db.write_bytes(b"x")
+    os.utime(fake_db, (1500.0, 1500.0))
+    monkeypatch.setattr(gate, "LIVE_DB", fake_db)
+    _fake_service(monkeypatch, "active")
+    assert gate.service_write_evidence(WINDOW)[0] is True
+    snap = gate.db_integrity_snapshot(_make_db(tmp_path / "snap.db"))
+    assert snap is not None and snap["rows"] == {"items": 3}
