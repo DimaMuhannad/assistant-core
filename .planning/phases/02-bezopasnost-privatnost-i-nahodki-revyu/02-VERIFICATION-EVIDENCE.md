@@ -1,6 +1,6 @@
 # Phase 2: доказательства для VERIFICATION.md (черновик плана 02-14)
 
-Собрано планом 02-14 до рестарта `assistant-worker`. Рестарт и живые проверки выполняет план 02-15 по разрешению владельца и заполняет разделы «Рестарт и смоук» и «Живые проверки». Файл `02-VERIFICATION.md` пишет верификатор GSD по этому файлу и перечню R1-R5. В файле нет адресов e-mail, токенов, слов NDA и сырых строк журнала: только счётчики, имена тестов и хеши коммитов.
+Собрано планом 02-14 до рестарта `assistant-worker`. Рестарт и живые проверки выполнены планом 02-15 по разрешению владельца; результаты в разделах «Рестарт и смоук» и «Живые проверки». Файл `02-VERIFICATION.md` пишет верификатор GSD по этому файлу и перечню R1-R5. В файле нет адресов e-mail, токенов, слов NDA и сырых строк журнала: только счётчики, имена тестов и хеши коммитов.
 
 ## Гейт и потребители
 
@@ -29,13 +29,13 @@ HEAD трёх репозиториев на момент прогонов:
 
 Новые функции доказаны без рестарта тестом `tests/test_phase2_reachability.py` (временные БД, `MagicMock` вместо бота, боевая БД не открывалась).
 
-| Критерий успеха | Чем доказано без рестарта | Что ожидает плана 02-15 |
+| Критерий успеха | Чем доказано без рестарта | Живая проверка (план 02-15) |
 |---|---|---|
-| 1. Режим NDA по данным `workspaces`, в библиотеке нет прежних имён (SECF-01) | `tests/test_nda_script_parity.py` (D-10: нет констант слов и токенов организаций в `assistant_shared/security`), тесты сопоставления пространств и паритета в assistant-shared (планы 02-06, 02-10), обёртка передаёт в `audit_repository` только `workspaces` (`test_shield_wrapper_passes_only_workspaces_to_audit_repository`) | рестарт не нужен для проверки кода; отметка требования после 02-15 |
+| 1. Режим NDA по данным `workspaces`, в библиотеке нет прежних имён (SECF-01) | `tests/test_nda_script_parity.py` (D-10: нет констант слов и токенов организаций в `assistant_shared/security`), тесты сопоставления пространств и паритета в assistant-shared (планы 02-06, 02-10), обёртка передаёт в `audit_repository` только `workspaces` (`test_shield_wrapper_passes_only_workspaces_to_audit_repository`) | рестарт не нужен для проверки кода; живого шага нет |
 | 2. Общая функция сканирования, web проверяет `forbidden_keywords` (SECF-02) | `tests/test_scan_file_content.py` и `tests/test_shield_parity.py` в assistant-shared (паритет на синтетических фикстурах), ASGI-тест web-аудита `test_security_audit_all` в chat-app (план 02-07, quick 261010-ivt) | живая проверка web-аудита требует рестарта `chat-app.service` (заморожен): в «Открытых пунктах» |
-| 3. «Очисти диалог» не стирает историю без защиты (SAFE-01) | `tests/test_clear_dialog_text_guard.py` (план 02-02); сквозной `test_text_clear_phrase_through_router_text_handler_warns_and_keeps_history`: обработчик берётся из роутера, история не меняется, ответ равен предупреждению с `/clear`, карточки нет; `test_router_registers_help_clear_text_and_voice_handlers`: в роутере есть `handle_cmd_help`, `handle_cmd_clear_dialog`, `handle_user_text`, `handle_user_voice` | текстовое сообщение боту после рестарта |
-| 4. Предупреждение при подключении почты и в `/help` (PRIV-01) | `tests/test_privacy_notice.py`, `tests/test_phase2_reachability.py::test_help_command_sends_privacy_block_from_default_persona` (обработчик `/help` из роутера, текст персоны по умолчанию), AST `main.py`: `email_collector_job` на `run_email_collector_cycle`, цикл вызывает `_announce_email_ai_notice` | живая команда `/help` после рестарта |
-| 5. Достижимость, fail-closed, гейт, рестарт только по разрешению, смоук OPS-01 | `tests/test_phase2_reachability.py` (8 тестов), гейт ЗЕЛЁНЫЙ, read-only смоук текущего сервиса (раздел «Перечень достижимости»), `InvocationID` сервиса не менялся | рестарт и смоук: ожидает плана 02-15 |
+| 3. «Очисти диалог» не стирает историю без защиты (SAFE-01) | `tests/test_clear_dialog_text_guard.py` (план 02-02); сквозной `test_text_clear_phrase_through_router_text_handler_warns_and_keeps_history`: обработчик берётся из роутера, история не меняется, ответ равен предупреждению с `/clear`, карточки нет; `test_router_registers_help_clear_text_and_voice_handlers`: в роутере есть `handle_cmd_help`, `handle_cmd_clear_dialog`, `handle_user_text`, `handle_user_voice` | passed: текстовое сообщение боту после рестарта, ответ владельца «Предупреждение с /clear, карточки нет» |
+| 4. Предупреждение при подключении почты и в `/help` (PRIV-01) | `tests/test_privacy_notice.py`, `tests/test_phase2_reachability.py::test_help_command_sends_privacy_block_from_default_persona` (обработчик `/help` из роутера, текст персоны по умолчанию), AST `main.py`: `email_collector_job` на `run_email_collector_cycle`, цикл вызывает `_announce_email_ai_notice` | passed: живая команда `/help` и одно сообщение о почте после рестарта (см. «Живые проверки») |
+| 5. Достижимость, fail-closed, гейт, рестарт только по разрешению, смоук OPS-01 | `tests/test_phase2_reachability.py` (8 тестов), гейт ЗЕЛЁНЫЙ, read-only смоук текущего сервиса (раздел «Перечень достижимости»), `InvocationID` сервиса не менялся | passed: рестарт по разрешению владельца, смоук OPS-01 ЗЕЛЁНЫЙ (см. «Рестарт и смоук») |
 
 Ссылки: `tests/test_phase2_reachability.py` (assistant-core); ASGI-тесты web-аудита chat-app `backend/tests/test_security_api.py` (`test_security_audit_all`, `test_security_audit_all_live_tree_has_only_frozen_findings`), прогнаны в составе 277 тестов chat-app в общем гейте.
 
@@ -78,13 +78,14 @@ HEAD трёх репозиториев на момент прогонов:
 
 ## Открытые пункты
 
-1. Рестарт `assistant-worker.service` только по явному разрешению владельца и смоук OPS-01 (план 02-15).
+1. ~~Рестарт `assistant-worker.service` по разрешению владельца и смоук OPS-01~~ выполнено планом 02-15 (см. «Рестарт и смоук»).
 2. DEBT-03: информационные находки IN-01..IN-06 ушли в бэклог (запись в `REQUIREMENTS.md`).
-3. Рестарт `chat-app.service` (заморожен) и решение владельца по находкам web-аудита (три известные находки в данных персоны).
-4. Перед рестартом подтвердить отсутствие ключа переопределения пути БД в живом `.env` (проверяется без печати значений).
+3. Рестарт `chat-app.service` (заморожен, в плане 02-15 не выполнялся) и решение владельца по находкам web-аудита: после его рестарта web-аудит chat-app покажет находки по запретным словам пространства в `config/persona.yaml` (три известные) и замороженные находки; решение про сохранение этих слов в публичном `config/persona.yaml` относится к Phase 8.
+4. ~~Подтвердить отсутствие ключа переопределения пути БД в живом `.env`~~ выполнено владельцем: `grep -c` дал 0 (см. «Рестарт и смоук»).
 5. Плавающий тест `test_concurrent_confirmations_isolation`: решение владельца, куда отнести исправление (`deferred-items.md`).
 6. Неотслеживаемый `.watchdog_disabled` в chat-app: убрать или занести в `.gitignore` chat-app малой задачей `/gsd-quick` (в этой фазе не трогался).
-7. Фаза подтверждения `/help` смоука OPS-01 (владелец отправляет `/help` боту) ожидает плана 02-15.
+7. ~~Фаза подтверждения `/help` смоука OPS-01~~ выполнена: обработанное обновление и ответ владельца «да», итог смоука ЗЕЛЁНЫЙ.
+8. Первая живая резервная копия сделана сейчас (`--backup`, файл `/var/backups/assistant-core/assistant-20261010-172727.db`, 8695808 байт, права 0600); процедура копирования после исправлений WR-08 и WR-09 подтверждена вживую. Перед миграцией `0003` в Phase 3 нужна новая копия с отдельным разрешением владельца.
 
 ## Перечень достижимости для VERIFICATION.md
 
@@ -92,16 +93,48 @@ HEAD трёх репозиториев на момент прогонов:
 
 | Пункт | Автоматическое доказательство (этот план) | Живое доказательство (план 02-15) | Статус |
 |---|---|---|---|
-| R1. `/help` с блоком приватности | `test_help_command_sends_privacy_block_from_default_persona` (обработчик `handle_cmd_help` берётся из роутера, текст оканчивается предупреждением персоны), `test_router_registers_help_clear_text_and_voice_handlers` (команды `start` и `help`), `tests/test_privacy_notice.py` | ожидает плана 02-15 | автоматически доказано |
-| R2. Точка подключения почты | AST `main.py`: `add_job(run_email_collector_cycle, ..., id="email_collector_job")` ровно один, цикл вызывает `_announce_email_ai_notice` с тремя аргументами, `main()` создаёт `EmailBotHandler` и подключает его роутер; `tests/test_privacy_notice.py` и план 02-12 (показ один раз, флаг после отправки) | ожидает плана 02-15 | автоматически доказано |
-| R3. Текстовое «очисти диалог» даёт предупреждение с `/clear` и не меняет историю | `test_text_clear_phrase_through_router_text_handler_warns_and_keeps_history`, `tests/test_clear_dialog_text_guard.py` | ожидает плана 02-15 | автоматически доказано |
-| R4. `scripts/security_shield.py` как точка входа аудита | hook вызывает обёртку одной строкой `exec` без флагов допуска (`test_pre_commit_hook_runs_security_shield_without_relaxing_flags`); AST обёртки: `audit_repository` только с `check_staged_only` и `workspaces`, констант слов нет; подпроцесс на временном репозитории: синтетический секрет даёт код 1 и значение не печатается, чистый репозиторий даёт код 0; гейт ЗЕЛЁНЫЙ; `--all` даёт 3 известные находки в данных персоны | ожидает плана 02-15 | автоматически доказано |
-| R5. Рестарт и смоук OPS-01 | read-only смоук текущего сервиса без `--restart` и `--backup` (`python3 scripts/deploy.py --state-file /var/tmp/gsd-phase02-verify/smoke-state.json`, вывод `/var/tmp/gsd-phase02-verify/smoke-run.txt`): автоматическая часть ЗЕЛЁНАЯ (сервис active, журнал доступен, нет ошибок старта, polling бота запущен, планировщик 10 из 10, `getMe` жив), итог «ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ» (фаза `/help` не выполнялась) | ожидает плана 02-15 (рестарт по разрешению владельца и смоук после него) | не доказано, только план 02-15 |
+| R1. `/help` с блоком приватности | `test_help_command_sends_privacy_block_from_default_persona` (обработчик `handle_cmd_help` берётся из роутера, текст оканчивается предупреждением персоны), `test_router_registers_help_clear_text_and_voice_handlers` (команды `start` и `help`), `tests/test_privacy_notice.py` | бот владельца ответил на `/help`, в конце справки есть блок «Приватность почты» (ответ владельца опросом: «Да, ответ пришёл, блок есть»; смоук: обработанное обновление после метки: да, ответ владельца на /help: да; `02-SMOKE-REPORT.md`) | passed |
+| R2. Точка подключения почты | AST `main.py`: `add_job(run_email_collector_cycle, ..., id="email_collector_job")` ровно один, цикл вызывает `_announce_email_ai_notice` с тремя аргументами, `main()` создаёт `EmailBotHandler` и подключает его роутер; `tests/test_privacy_notice.py` и план 02-12 (показ один раз, флаг после отправки) | после рестарта пришло ровно одно сообщение «Приватность почты» (ответ владельца: «Да, ровно одно»); записей `PRIV-01:` в журнале инвокации `25ff0740…`: 1 | passed |
+| R3. Текстовое «очисти диалог» даёт предупреждение с `/clear` и не меняет историю | `test_text_clear_phrase_through_router_text_handler_warns_and_keeps_history`, `tests/test_clear_dialog_text_guard.py` | владелец отправил боту «очисти диалог»: «Предупреждение с /clear, карточки нет» (ответ владельца опросом; память не стёрта, карточки подтверждения не было) | passed |
+| R4. `scripts/security_shield.py` как точка входа аудита | hook вызывает обёртку одной строкой `exec` без флагов допуска (`test_pre_commit_hook_runs_security_shield_without_relaxing_flags`); AST обёртки: `audit_repository` только с `check_staged_only` и `workspaces`, констант слов нет; подпроцесс на временном репозитории: синтетический секрет даёт код 1 и значение не печатается, чистый репозиторий даёт код 0; гейт ЗЕЛЁНЫЙ; `--all` даёт 3 известные находки в данных персоны | гейт ЗЕЛЁНЫЙ на момент рестарта (план 02-14, 11 строк ✓) и повторно после рестарта (см. «Живые проверки»); hook и обёртка shield в рантайм-службу не входят, живой шаг не нужен; `--all` даёт 3 известные находки в данных персоны | passed |
+| R5. Рестарт и смоук OPS-01 | read-only смоук текущего сервиса без `--restart` и `--backup` (`python3 scripts/deploy.py --state-file /var/tmp/gsd-phase02-verify/smoke-state.json`, вывод `/var/tmp/gsd-phase02-verify/smoke-run.txt`): автоматическая часть ЗЕЛЁНАЯ (сервис active, журнал доступен, нет ошибок старта, polling бота запущен, планировщик 10 из 10, `getMe` жив), итог «ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ» (фаза `/help` не выполнялась) | рестарт выполнил владелец командой `python3 scripts/deploy.py --restart --backup --report …/02-SMOKE-REPORT.md`, код возврата 0; InvocationID `40e9fe7aaf694e44974e2f7b55206f32` -> `25ff0740810d4783ae1ba7721b6f836c`, MainPID 295112 -> 893511, NRestarts 0; строка «ИТОГ СМОУКА: ЗЕЛЁНЫЙ» в `02-SMOKE-REPORT.md` после `--confirm-help yes` | passed |
+
+**Указание верификатору:** `02-VERIFICATION.md` пишется по этому перечню; каждый пункт R1-R5 попадает в него со статусом и источником (см. столбцы выше и раздел «Живые проверки»). Фаза без этого файла не закрывается; этот файл создаёт верификатор GSD, а не план 02-15.
 
 ## Рестарт и смоук
 
-Заготовка для плана 02-15: ожидает плана 02-15. Заполнить: разрешение владельца (дословно), `InvocationID` и `NRestarts` до и после, итог `deploy.py --restart`, фаза подтверждения `/help`.
+**Разрешение владельца** (опрос в чате, дословно): выбор «Рестарт с резервной копией --backup (Рекомендуется)» (restart-with-backup). Условие «ключа `ASSISTANT_DB_PATH_OVERRIDE` в живом `.env` нет»: первый ответ «Не знаю»; затем владелец сам выполнил в сессии `grep -c ASSISTANT_DB_PATH_OVERRIDE /opt/assistant-core/.env` и получил `0` (ключа нет). Содержимое `.env` исполнитель не читал. Запись: `/var/tmp/gsd-phase02-verify/restart-note.txt`.
+
+**Кто и как выполнил:** запуск рестарта агентом был заблокирован правилами прав Claude Code (блокировку никто не обходил); команду выполнил сам владелец в этой сессии: `python3 scripts/deploy.py --restart --backup --report .planning/phases/02-bezopasnost-privatnost-i-nahodki-revyu/02-SMOKE-REPORT.md`, код возврата 0. Один рестарт, без повторов.
+
+| Показатель | До | После |
+|---|---|---|
+| HEAD assistant-core на момент рестарта | `a115f334c6c963dab9092875bcae1d1748bca264` | то же |
+| InvocationID | `40e9fe7aaf694e44974e2f7b55206f32` | `25ff0740810d4783ae1ba7721b6f836c` |
+| MainPID | 295112 | 893511 |
+| NRestarts | 0 | 0 |
+| ActiveState | active | active |
+
+**Автоматическая часть смоука:** ЗЕЛЁНАЯ. Все семь строк ✓: рестарт (новая инвокация active, polling запущен), сервис active, журнал доступен, нет ERROR/CRITICAL/Traceback в окне старта (ошибок 0, WARNING 0), polling бота запущен, планировщик 10 из 10, `getMe` жив. Фаза `--await-help`: обработанное обновление после метки смоука получено. Ответ владельца опросом «Да, ответ пришёл, блок есть»; `deploy.py --confirm-help yes --report …` перезаписал отчёт. **ИТОГ СМОУКА: ЗЕЛЁНЫЙ.** Отчёт: `.planning/phases/02-bezopasnost-privatnost-i-nahodki-revyu/02-SMOKE-REPORT.md` (адресов e-mail и токенов нет).
+
+**Резервная копия:** была (первая живая). Файл `/var/backups/assistant-core/assistant-20261010-172727.db`, 8695808 байт, права 0600, каталог 0700 (вне деревьев git); содержимое не читалось. Это первая живая проверка исправлений WR-08 и WR-09: прошла.
+
+**Откат:** красного исхода не было, команды отката не печатались и не исполнялись (справка: порядок в `docs/OPS_DEPLOY.md`, раздел 9; новый откат потребует нового разрешения владельца).
+
+**chat-app.service не перезапускался.**
+
+**Побочные записи демона:** первый успешный цикл почты записал флаг показа `notice:email_ai` в боевую БД и отправил одно сообщение «Приватность почты» (штатная запись демона, не смоук).
 
 ## Живые проверки
 
-Заготовка для плана 02-15: ожидает плана 02-15. Заполнить: R1 (`/help` в Telegram), R2 (показ предупреждения при ближайшем цикле почты), R3 (текст «очисти диалог» боту), R4 (hook и shield на живом дереве), R5.
+Ответы владельца получены опросами в чате; запись оркестратора: `/var/tmp/gsd-phase02-verify/live-checks.txt`. Сырые строки журнала не читались и не вносятся.
+
+| Пункт | Что проверено | Ответ или результат | Статус | Источник |
+|---|---|---|---|---|
+| R1 | `/help` в Telegram, блок «Приватность почты» в конце справки | «Да, ответ пришёл, блок есть» | passed | ответ владельца, `02-SMOKE-REPORT.md` (подтверждение бота: да) |
+| R2 | сообщение «Приватность почты» после старта и записи PRIV-01 | «Да, ровно одно»; строк `PRIV-01:` в журнале текущей инвокации: 1 | passed | ответ владельца, счёт `grep -c` по журналу инвокации |
+| R3 | текст «очисти диалог» боту | «Предупреждение с /clear, карточки нет» (память не стёрта) | passed | ответ владельца; тесты `tests/test_clear_dialog_text_guard.py`, `tests/test_phase2_reachability.py` |
+| R4 | `scripts/security_shield.py` как точка входа аудита | hook и обёртка не входят в рантайм-службу; гейт ЗЕЛЁНЫЙ (план 02-14), повторный прогон после рестарта: см. строку ниже | passed | тесты `tests/test_phase2_reachability.py`, гейт |
+| R5 | рестарт только по разрешению владельца, смоук OPS-01 | рестарт по ответу «restart-with-backup», новая инвокация, ИТОГ СМОУКА ЗЕЛЁНЫЙ; ERROR/CRITICAL/Traceback в журнале инвокации: 0 | passed | `02-SMOKE-REPORT.md`, `restart-note.txt` |
+
+**Гейт после рестарта:** `python3 scripts/gate.py` после рестарта (вывод `/var/tmp/gsd-phase02-verify/gate-run-after-restart.txt`): **ИТОГ: ЗЕЛЁНЫЙ**, 11 строк ✓, assistant-core 977 тестов, assistant-shared 197; «SHA-256 до/после совпали» (гейт прошёл с первого раза, повтор не понадобился). Источник для R4.
