@@ -30,8 +30,42 @@ def test_is_live_db_path_true_for_live_files_and_sidecars(base: str, sidecar: st
     assert is_live_db_path(base + sidecar) is True
 
 
-def test_live_db_paths_constant_lists_both_live_files():
-    assert {str(p) for p in LIVE_DB_PATHS} == {LIVE_DATA_DB, LIVE_ROOT_DB}
+ABS_LIVE_DATA_DB = "/opt/assistant-core/data/assistant.db"
+ABS_LIVE_ROOT_DB = "/opt/assistant-core/assistant.db"
+
+
+def test_live_db_paths_constant_has_core_relative_and_absolute_live_files():
+    paths = {str(p) for p in LIVE_DB_PATHS}
+    # пути от CORE_DIR (текущий checkout) и абсолютные (любой checkout, WR-07)
+    assert {LIVE_DATA_DB, LIVE_ROOT_DB} <= paths
+    assert {ABS_LIVE_DATA_DB, ABS_LIVE_ROOT_DB} <= paths
+    assert len(paths) == len(LIVE_DB_PATHS)  # без дубликатов
+
+
+@pytest.mark.parametrize("sidecar", SIDECARS)
+@pytest.mark.parametrize("base", [ABS_LIVE_DATA_DB, ABS_LIVE_ROOT_DB])
+def test_absolute_live_path_is_blocked_regardless_of_core_dir(base: str, sidecar: str):
+    assert is_live_db_path(base + sidecar) is True
+
+
+def test_symlink_with_other_name_to_live_path_is_blocked(tmp_path: Path):
+    # Ссылка создаётся только как путь: цель не открывается, достаточно существования ссылки
+    # (realpath разрешает ссылку и без существующей цели).
+    link = tmp_path / "x.db"
+    link.symlink_to(ABS_LIVE_DATA_DB)
+    assert is_live_db_path(str(link)) is True
+
+
+def test_symlink_without_db_suffix_to_live_path_is_blocked(tmp_path: Path):
+    link = tmp_path / "snapshot"
+    link.symlink_to(LIVE_ROOT_DB)
+    assert is_live_db_path(str(link)) is True
+
+
+def test_regular_file_with_other_name_is_not_blocked(tmp_path: Path):
+    other = tmp_path / "other.db"
+    other.write_bytes(b"")  # обычный файл вне боевых путей; открывать его не нужно
+    assert is_live_db_path(str(other)) is False
 
 
 def test_is_live_db_path_true_for_file_uri_with_query():

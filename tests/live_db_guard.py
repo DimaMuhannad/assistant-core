@@ -19,9 +19,18 @@ from pathlib import Path
 CORE_DIR = Path(__file__).resolve().parent.parent
 
 # Боевая БД и корневой assistant.db (происхождение неизвестно, закрыт предохранительно).
-LIVE_DB_PATHS: tuple[Path, ...] = (
+# Пути от CORE_DIR защищают текущий checkout; абсолютные пути защищают боевые файлы и тогда,
+# когда тесты запущены из другого checkout, worktree или jail (WR-07, D-17).
+_LIVE_RELATIVE_PATHS: tuple[Path, ...] = (
     CORE_DIR / "data" / "assistant.db",
     CORE_DIR / "assistant.db",
+)
+_LIVE_ABSOLUTE_PATHS: tuple[Path, ...] = (
+    Path("/opt/assistant-core/data/assistant.db"),
+    Path("/opt/assistant-core/assistant.db"),
+)
+LIVE_DB_PATHS: tuple[Path, ...] = tuple(
+    dict.fromkeys(_LIVE_RELATIVE_PATHS + _LIVE_ABSOLUTE_PATHS)
 )
 
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
@@ -60,9 +69,15 @@ def _normalize(raw: object) -> str | None:
 
 
 def is_live_db_path(raw: object) -> bool:
-    """Истинно, если путь (в любой форме) указывает на боевую БД или её sidecar-файл."""
+    """Истинно, если путь (в любой форме) указывает на боевую БД или её sidecar-файл.
+
+    Символическая ссылка с произвольным именем (``x.db``) проверяется по realpath: иначе
+    префильтр по имени пропустил бы её, и open() открыл бы боевой файл через ссылку (WR-07).
+    """
     text = _normalize(raw)
-    if not text or not text.endswith(_BASENAMES):
+    if not text:
+        return False
+    if not (text.endswith(_BASENAMES) or os.path.islink(text)):
         return False
     return os.path.realpath(text) in BLOCKED_REALPATHS
 
