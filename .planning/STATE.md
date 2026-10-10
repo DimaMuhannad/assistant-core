@@ -2,19 +2,19 @@
 gsd_state_version: "1.0"
 milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
-current_phase: 2
+current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Phase 2 context gathered
-last_updated: "2026-10-10T10:50:25.232Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-10-10T11:34:04.687Z"
 last_activity: 2026-10-10
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
-state_head: 0ae18ae3bca8a1d51ef6a3ad4b21a59176591805
+last_activity_desc: Phase 02 execution started
+state_head: f107209a5ff0c9d5d28ff614bd7b70617acf3477
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 10
+  completed_plans: 11
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-10)
 
 **Core value:** Ассистент надёжно выполняет ежедневную работу секретаря. Ни одно содержимое NDA-пространств не уходит во внешнюю LLM, и ни одно необратимое действие не выполняется без подтверждения человека (HITL).
-**Current focus:** Phase 2 — Безопасность, приватность и находки ревью
+**Current focus:** Phase 02 — Безопасность, приватность и находки ревью
 
 ## Current Position
 
-Phase: 2 (Безопасность, приватность и находки ревью) — READY TO EXECUTE
-Plan: Not started
+Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
+Plan: 2 of 15
 Status: Ready to execute
-Last activity: 2026-10-10 — Phase 01 complete, transitioned to Phase 2
+Last activity: 2026-10-10 — Phase 02 execution started
 
 Progress: [█░░░░░░░░░] 11%
 
@@ -67,6 +67,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 01 P08 | 9 min | 3 tasks | 8 files |
 | Phase 01 P09 | 126 min | 3 tasks | 3 files |
 | Phase 01 P10 | 15 min | 3 tasks | 2 files |
+| Phase 02 P01 | 25min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -99,6 +100,8 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 01]: [Owner 2026-10-09]: empty assistant.db-wal/-shm left in data/ by mode=ro reads — resolve in Phase 3 (read method + cleanup).
 - [Phase 01]: [Owner 2026-10-09]: cross-AI adapter residual risk T-uo4-02 (scripts symlink in repo without tracked scripts/) — add refusal + test in Phase 2.
 - [Phase 01]: [Owner 2026-10-09]: ASSISTANT_DB_PATH_OVERRIDE absence in live .env unverified (secret-read hook forbids reading .env; owner has no shell). Proposed: deploy.py --restart refuses if the key is present — before first restart (Phase 3), pending owner confirmation.
+- [Phase 02]: 02-01: у проверки слов NDA нет механизма допуска для отдельного файла (D-21); сигнатуры закреплены тестами inspect.signature
+- [Phase 02]: 02-01: check_index_content приводит CRLF/CR к LF, чтобы номера строк индекса и рабочей копии совпадали
 
 ### Pending Todos
 
@@ -125,6 +128,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T06:04:18.432Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-bezopasnost-privatnost-i-nahodki-revyu/02-CONTEXT.md
+Last session: 2026-10-10T11:34:04.360Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None
