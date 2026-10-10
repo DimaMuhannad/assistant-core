@@ -1,10 +1,10 @@
-"""P01 (PER-04, D-15): правила scripts/security_shield.py совпадают с данными персоны.
+"""P01 (PER-04, SECF-01, D-10, D-21): обёртка scripts/security_shield.py не хранит слова NDA и передаёт данные персоны.
 
-NDA-слова нигде не печатаются: сравнение выносится в булеву переменную, сообщения без значений.
+Значения нигде не печатаются: сравнение выносится в булеву переменную, сообщения без значений.
+Литерал из исходника библиотеки не читается: проверку отсутствия литералов в библиотеке добавляет план 02-10.
 """
 
 import importlib.util
-import re
 from pathlib import Path
 
 from src.persona.loader import load_persona
@@ -19,22 +19,34 @@ def _shield_module():
     return module
 
 
-def _nda_workspace():
-    nda = [ws for ws in load_persona().workspaces if ws.clearance == "restricted_nda"]
-    assert len(nda) == 1, "в персоне по умолчанию ожидается ровно одно restricted_nda-пространство"
-    return nda[0]
+def test_p01_script_has_no_nda_word_constants():
+    module = _shield_module()
+    has_attribute = hasattr(module, "CORPORATE_NDA_KEYWORDS")
+    assert not has_attribute, "обёртка не должна экспортировать слова NDA"
+    in_source = "CORPORATE_NDA_KEYWORDS" in SHIELD_PATH.read_text(encoding="utf-8")
+    assert not in_source, "обёртка не должна упоминать константу слов NDA"
 
 
-def test_p01_script_keywords_match_persona_data():
-    ws = _nda_workspace()
-    same = set(_shield_module().CORPORATE_NDA_KEYWORDS) == set(ws.forbidden_keywords)
-    assert same, "NDA-слова скрипта и данных персоны расходятся"
+def test_p01_script_passes_persona_workspaces_and_nothing_else(tmp_path, monkeypatch):
+    monkeypatch.delenv("PERSONA_CONFIG_PATH", raising=False)
+    expected = [ws.model_dump() for ws in load_persona().workspaces]
+    assert expected, "в персоне по умолчанию ожидаются рабочие пространства"
+    module = _shield_module()
+    calls: list[tuple] = []
 
+    def strict_stub(repo_path, check_staged_only, *, workspaces):
+        # Любой лишний аргумент даёт TypeError: допусков и иных смягчений нет (D-21)
+        calls.append((repo_path, check_staged_only, workspaces))
+        return 0
 
-def test_p01_script_remote_rule_matches_persona_data():
-    ws = _nda_workspace()
-    auditor_path = Path("/opt/assistant-shared/assistant_shared/security/auditor.py")
-    source = auditor_path.read_text(encoding="utf-8") if auditor_path.is_file() else SHIELD_PATH.read_text(encoding="utf-8")
-    found = tuple(re.findall(r'"([^"]+)" in origin_norm', source)) or tuple(re.findall(r'"([^"]+)" in origin_url', source))
-    same = tuple(f.casefold() for f in found) == tuple(s.casefold() for s in ws.forbidden_remote_substrings)
-    assert same, "подстрока remote скрипта и данных персоны расходятся"
+    monkeypatch.setattr(module, "audit_repository", strict_stub)
+
+    assert module.main(["--all", str(tmp_path)]) == 0
+    assert module.main([str(tmp_path)]) == 0
+
+    assert len(calls) == 2
+    full_mode, commit_mode = calls
+    assert full_mode[1] is False and commit_mode[1] is True
+    same_data = full_mode[2] == expected and commit_mode[2] == expected
+    assert same_data, "обёртка передала в библиотеку не данные рабочих пространств персоны"
+    assert full_mode[0] == tmp_path.resolve() and commit_mode[0] == tmp_path.resolve()

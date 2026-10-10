@@ -8,8 +8,6 @@ default_persona_config): токены профиля и отличия вычи�
 Файл не зависит от репозитория: он лежит байт-в-байт в обоих тестовых наборах.
 """
 
-import importlib.util
-from pathlib import Path
 from urllib.parse import urlparse
 
 from .persona_tokens import owner_tokens
@@ -175,20 +173,13 @@ def test_reserved_synthetic_values(synthetic_persona):
     assert synthetic_persona["telegram"]["bot_username"].startswith("synthetic")
 
 
-def _load_shield():
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "scripts" / "security_shield.py"
-        if candidate.is_file():
-            spec = importlib.util.spec_from_file_location("_persona_security_shield", candidate)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-    raise AssertionError("scripts/security_shield.py не найден выше по дереву каталогов")
-
-
-def test_no_real_nda_keywords(synthetic_persona):
-    # Слова читаются во время теста: в этот файл они не копируются.
-    keywords = list(_load_shield().CORPORATE_NDA_KEYWORDS)
+def test_no_real_nda_keywords(synthetic_persona, default_persona_config):
+    # Слова NDA - данные пространств персоны по умолчанию (forbidden_keywords): в этот файл они не копируются.
+    keywords = [
+        word
+        for workspace in default_persona_config["workspaces"]
+        for word in (workspace.get("forbidden_keywords") or [])
+    ]
     assert keywords, "список NDA-слов пуст - проверка была бы бессмысленной"
     for text in _all_strings(synthetic_persona):
         low = text.lower()

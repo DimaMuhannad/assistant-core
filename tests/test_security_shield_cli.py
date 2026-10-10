@@ -147,3 +147,100 @@ def test_wrapper_has_no_nda_word_constants():
     assert not has_constant, "обёртка не должна экспортировать константу слов NDA"
     source_has_name = "CORPORATE_NDA_KEYWORDS" in SHIELD.read_text(encoding="utf-8")
     assert not source_has_name
+
+
+# ---- Сопоставление, слова NDA, файл персоны ----
+
+
+def test_unmatched_repo_passes_with_warning_without_alarm_marker(tmp_path):
+    _nda, _pub, persona = _setup(tmp_path)
+    repo = _make_repo(tmp_path / "elsewhere", {"a.txt": "ok\n"})
+    result = _run_shield(persona, str(repo), "--all")
+    assert result.returncode == 0, result.stdout
+    assert "⚠️" in result.stdout
+    assert "🚨" not in result.stdout
+
+
+def test_public_repo_with_nda_word_other_case_is_blocked_nda_repo_is_not(tmp_path):
+    nda_dir, pub_dir, persona = _setup(tmp_path)
+    body = f"line one\nvalue {WORD_A.upper()} here\n"
+    public_repo = _make_repo(pub_dir / "project", {"notes.txt": body})
+    nda_repo = _make_repo(nda_dir / "project", {"notes.txt": body}, origin=SAFE_ORIGIN)
+    blocked = _run_shield(persona, str(public_repo), "--all")
+    assert blocked.returncode == 1, blocked.stdout
+    assert "Found proprietary corporate keyword" in blocked.stdout
+    allowed = _run_shield(persona, str(nda_repo), "--all")
+    assert allowed.returncode == 0, allowed.stdout
+
+
+def test_fail_closed_on_unavailable_persona_without_echoing_file_content(tmp_path):
+    marker = "marker-" + "value-" + "4711"
+    repo = _make_repo(tmp_path / "repo_fc", {"a.txt": "ok\n"})
+    missing = tmp_path / "missing.yaml"
+    not_yaml = tmp_path / "not_yaml.yaml"
+    not_yaml.write_text(f"key: [{marker}\n  - : :\n", encoding="utf-8")
+    bad_schema = tmp_path / "bad_schema.yaml"
+    bad_schema.write_text(
+        MINIMAL_TEMPLATE.format(persona_id="x", extra=f"  unknown_field: {marker}\n"), encoding="utf-8"
+    )
+    for persona in (missing, not_yaml, bad_schema):
+        for mode in ((), ("--all",)):
+            result = _run_shield(persona, str(repo), *mode)
+            combined = result.stdout + result.stderr
+            assert result.returncode == 1, combined
+            assert "SECURITY SHIELD ERROR" in result.stdout
+            marker_leaked = marker in combined
+            assert not marker_leaked, "значение из файла персоны попало в вывод"
+            assert "Security Shield passed" not in result.stdout
+
+
+def test_remote_only_match_gives_restricted_mode_and_skips_words(tmp_path):
+    _nda, _pub, persona = _setup(tmp_path)
+    repo = _make_repo(
+        tmp_path / "outside_all_paths",
+        {"notes.txt": f"value {WORD_A} here\n"},
+        origin=NDA_WORKSPACE_REMOTE,
+    )
+    result = _run_shield(persona, str(repo), "--all")
+    assert result.returncode == 0, result.stdout
+    assert "RESTRICTED" in result.stdout
+    assert "Found proprietary corporate keyword" not in result.stdout
+
+
+def _persona_inside_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """Публичный репозиторий, в индексе которого лежит файл персоны с объявленными словами."""
+    nda_dir = (tmp_path / "ws_nda").resolve()
+    pub_dir = (tmp_path / "ws_pub").resolve()
+    nda_dir.mkdir()
+    pub_dir.mkdir()
+    text = _persona_text(nda_dir, pub_dir, words=(WORD_A, WORD_B, WORD_C))
+    repo = _make_repo(tmp_path / "persona_repo", {"config/persona.yaml": text})
+    return repo, repo / "config" / "persona.yaml"
+
+
+def _keyword_findings(output: str) -> int:
+    return sum(1 for line in output.splitlines() if "Found proprietary corporate keyword" in line)
+
+
+def test_persona_file_gives_findings_in_commit_mode_without_allowance(tmp_path):
+    repo, persona = _persona_inside_repo(tmp_path)
+    result = _run_shield(persona, str(repo))  # режим фиксации (его запускает hook)
+    assert result.returncode == 1, result.stdout
+    assert _keyword_findings(result.stdout) == 3
+
+
+def test_persona_file_gives_same_findings_in_full_audit(tmp_path):
+    repo, persona = _persona_inside_repo(tmp_path)
+    commit_mode = _run_shield(persona, str(repo))
+    full_audit = _run_shield(persona, str(repo), "--all")
+    assert full_audit.returncode == 1, full_audit.stdout
+    assert _keyword_findings(full_audit.stdout) == 3
+    assert _keyword_findings(full_audit.stdout) == _keyword_findings(commit_mode.stdout)
+
+
+def test_persona_outside_repo_and_no_words_in_repo_passes_in_both_modes(tmp_path):
+    _nda, _pub, persona = _setup(tmp_path)
+    repo = _make_repo(tmp_path / "clean_repo", {"readme.txt": "nothing special\n"})
+    for mode in ((), ("--all",)):
+        result = _run_shield(persona, str(repo), *mode)
+        assert result.returncode == 0, result.stdout
