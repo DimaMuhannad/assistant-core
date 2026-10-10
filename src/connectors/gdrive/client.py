@@ -1,13 +1,10 @@
-"""Google Drive client for off-server backup archiving and AADHk sync."""
+"""Google Drive client for file upload/download and AADHk sync."""
 
 import asyncio
 import io
 import json
 import logging
-import os
 import re
-import tarfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -215,69 +212,6 @@ class GoogleDriveClient:
         )
         logger.info("Uploaded %s to Google Drive (ID: %s)", p.name, uploaded.get("id"))
         return uploaded
-
-    @staticmethod
-    def create_server_backup_archive(
-        dest_dir: str | Path = "/opt/chat-app/uploads",
-        include_db: bool = True,
-        include_env: bool = True,
-        include_uploads: bool = False,
-        core_dir: str | Path = "/opt/assistant-core",
-    ) -> Path:
-        """Create a compressed .tar.gz archive of sensitive non-git server data.
-
-        core_dir: корень assistant-core; тесты передают поддельный каталог (GATE-02).
-        """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dest_folder = Path(dest_dir)
-        dest_folder.mkdir(parents=True, exist_ok=True)
-        archive_path = dest_folder / f"server_backup_{timestamp}.tar.gz"
-
-        core_root = Path(core_dir)
-        files_to_pack: list[tuple[str, str]] = []
-        if include_db:
-            db_path = core_root / "data" / "assistant.db"
-            if os.path.exists(db_path):
-                files_to_pack.append((str(db_path), "assistant.db"))
-            session_path = core_root / "data" / "assistant_worker.session"
-            if os.path.exists(session_path):
-                files_to_pack.append((str(session_path), "assistant_worker.session"))
-
-        if include_env:
-            env_core = core_root / ".env"
-            if os.path.exists(env_core):
-                files_to_pack.append((str(env_core), "assistant-core.env"))
-
-        with tarfile.open(archive_path, "w:gz") as tar:
-            for src_file, arc_name in files_to_pack:
-                tar.add(src_file, arcname=arc_name)
-                logger.debug("Added %s to archive as %s", src_file, arc_name)
-
-        logger.info("Created server backup archive: %s (size: %d bytes)", archive_path, archive_path.stat().st_size)
-        return archive_path
-
-    async def backup_server_data_to_drive(
-        self,
-        folder_name: str = "AI_Assistant_Backups",
-    ) -> dict[str, Any]:
-        """Full cycle: archive server data and upload to Google Drive."""
-        archive_path = self.create_server_backup_archive()
-        try:
-            uploaded = self.upload_file(archive_path, folder_name=folder_name)
-            return {
-                "archive_path": str(archive_path),
-                "drive_file_id": uploaded.get("id"),
-                "file_name": uploaded.get("name"),
-                "size_bytes": archive_path.stat().st_size,
-                "drive_link": uploaded.get("webViewLink", ""),
-            }
-        finally:
-            # Clean up local backup archive from uploads
-            if archive_path.exists():
-                try:
-                    archive_path.unlink()
-                except Exception:
-                    pass
 
     async def sync_aadhk_from_drive(self, db: Database) -> dict[str, Any]:
         """Find latest AADHk backup on Google Drive, download it, and run AadhkIngestionService."""
