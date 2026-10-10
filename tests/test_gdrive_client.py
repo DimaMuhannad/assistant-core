@@ -3,6 +3,7 @@
 import inspect
 import json
 import tarfile
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -80,9 +81,8 @@ def test_create_server_backup_archive_default_core_dir_is_runtime_path():
     assert str(default) == "/opt/assistant-core"
 
 
-@patch("src.connectors.gdrive.client.build")
-@patch("src.connectors.gdrive.client.Credentials")
-def test_gdrive_search_and_folder_operations(mock_creds_cls, mock_build, tmp_path: Path):
+def _drive_client(mock_build, mock_creds_cls, tmp_path: Path):
+    """Клиент Drive с подменённым сервисом: сеть не используется."""
     token_file = tmp_path / "token.json"
     token_file.write_text(json.dumps({"scopes": ["https://www.googleapis.com/auth/drive"]}))
 
@@ -93,31 +93,178 @@ def test_gdrive_search_and_folder_operations(mock_creds_cls, mock_build, tmp_pat
 
     mock_service = MagicMock()
     mock_build.return_value = mock_service
+    return GoogleDriveClient(token_path=token_file), mock_service
 
-    # Mock folder query: existing folder
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+BACKUP_FILE = {
+    "id": "file_456",
+    "name": "aadhk_timerecording_backup.db",
+    "mimeType": "application/x-sqlite3",
+    "modifiedTime": "2026-09-29T12:00:00Z",
+}
+
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_gdrive_get_or_create_folder_existing(mock_creds_cls, mock_build, tmp_path: Path):
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
     mock_service.files().list().execute.return_value = {
         "files": [{"id": "folder_123", "name": "AI_Assistant_Backups"}]
     }
 
-    client = GoogleDriveClient(token_path=token_file)
-    folder_id = client.get_or_create_folder("AI_Assistant_Backups")
-    assert folder_id == "folder_123"
+    assert client.get_or_create_folder("AI_Assistant_Backups") == "folder_123"
 
-    # Mock finding aadhk backup
-    mock_service.files().list().execute.return_value = {
-        "files": [
-            {
-                "id": "file_456",
-                "name": "aadhk_timerecording_backup.db",
-                "mimeType": "application/x-sqlite3",
-                "modifiedTime": "2026-09-29T12:00:00Z",
-            }
-        ]
-    }
-    latest_file = client.find_latest_aadhk_backup()
-    assert latest_file is not None
-    assert latest_file["id"] == "file_456"
-    assert "aadhk" in latest_file["name"]
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_find_backup_prefers_dedicated_folder(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: папка com.aadhk.time найдена, файл берётся из неё, общий поиск не запускается."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    folder_file = {**BACKUP_FILE, "id": "from_folder", "name": "backup_in_folder.db"}
+    mock_service.files().list().execute.side_effect = [
+        {"files": [{"id": "folder_1", "name": "com.aadhk.time"}]},
+        {"files": [folder_file]},
+    ]
+
+    latest = client.find_latest_aadhk_backup()
+
+    assert latest == folder_file
+    assert mock_service.files().list().execute.call_count == 2
+
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_find_backup_general_search_when_no_folder(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: папки нет, общий поиск идёт по запросам по порядку и останавливается на первом попадании."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    mock_service.files().list().execute.side_effect = [
+        {"files": []},  # запрос папки com.aadhk.time
+        {"files": []},  # name contains 'timetracker'
+        {"files": [BACKUP_FILE]},  # name contains 'aadhk'
+    ]
+
+    latest = client.find_latest_aadhk_backup()
+
+    assert latest is not None
+    assert latest["id"] == "file_456"
+    assert "aadhk" in latest["name"]
+    assert mock_service.files().list().execute.call_count == 3
+    queries = [c.kwargs["q"] for c in mock_service.files().list.call_args_list if "q" in c.kwargs]
+    assert "com.aadhk.time" in queries[0]
+    assert "timetracker" in queries[1]
+    assert "aadhk" in queries[2]
+
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_find_backup_general_search_when_folder_is_empty(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: папка есть, но пуста: поиск продолжается общим запросом."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    mock_service.files().list().execute.side_effect = [
+        {"files": [{"id": "folder_1", "name": "com.aadhk.time"}]},
+        {"files": []},  # файлов в папке нет
+        {"files": [BACKUP_FILE]},  # name contains 'timetracker'
+    ]
+
+    latest = client.find_latest_aadhk_backup()
+
+    assert latest is not None and latest["id"] == "file_456"
+    assert mock_service.files().list().execute.call_count == 3
+
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_find_backup_general_search_skips_folders(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: папки в результатах общего поиска не считаются бэкапом."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    mock_service.files().list().execute.side_effect = [
+        {"files": []},
+        {"files": [{"id": "dir_1", "name": "aadhk-dir", "mimeType": FOLDER_MIME}]},
+        {"files": [BACKUP_FILE]},
+    ]
+
+    latest = client.find_latest_aadhk_backup()
+
+    assert latest is not None and latest["id"] == "file_456"
+
+
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_find_backup_returns_none_when_nothing_found(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: ни папка, ни четыре общих запроса ничего не вернули."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    mock_service.files().list().execute.side_effect = [{"files": []}] * 5
+
+    assert client.find_latest_aadhk_backup() is None
+    assert mock_service.files().list().execute.call_count == 5
+
+
+class _FakeDownloader:
+    """Подмена MediaIoBaseDownload: пишет два фрагмента, второй завершает загрузку."""
+
+    def __init__(self, fh, request):
+        self._fh = fh
+        self._chunks = [b"synthetic-", b"bytes"]
+
+    def next_chunk(self):
+        self._fh.write(self._chunks.pop(0))
+        status = MagicMock()
+        status.progress.return_value = 0.5
+        return status, not self._chunks
+
+
+@patch("src.connectors.gdrive.client.MediaIoBaseDownload", _FakeDownloader)
+@patch("src.connectors.gdrive.client.build")
+@patch("src.connectors.gdrive.client.Credentials")
+def test_download_file_writes_collected_bytes(mock_creds_cls, mock_build, tmp_path: Path):
+    """WR-12: download_file собирает фрагменты и пишет их в целевой путь (каталог создаётся)."""
+    client, mock_service = _drive_client(mock_build, mock_creds_cls, tmp_path)
+    dest = tmp_path / "nested" / "dir" / "gdrive_backup.db"
+
+    result = client.download_file("file_456", dest)
+
+    assert result == dest
+    assert dest.read_bytes() == b"synthetic-bytes"
+    mock_service.files().get_media.assert_called_with(fileId="file_456")
+
+
+async def test_sync_runs_blocking_drive_calls_off_event_loop(monkeypatch, tmp_path: Path):
+    """WR-01 (T-02-08): find_latest_aadhk_backup и download_file идут не в потоке event loop."""
+    client, uploads, _ = _make_sync_client(monkeypatch, tmp_path, "aadhk_backup.db")
+    loop_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def fake_find():
+        seen["find"] = threading.get_ident()
+        return {"id": "file_1", "name": "aadhk_backup.db", "modifiedTime": "t"}
+
+    def fake_download(file_id, dest_path):
+        seen["download"] = threading.get_ident()
+        Path(dest_path).write_bytes(b"x")
+        return Path(dest_path)
+
+    client.find_latest_aadhk_backup = fake_find
+    client.download_file = fake_download
+
+    with patch("src.connectors.aadhk.parser.AadhkIngestionService") as service_cls:
+        service_cls.return_value.ingest_backup_file = AsyncMock(return_value={})
+        result = await client.sync_aadhk_from_drive(MagicMock())
+
+    assert result["status"] == "success"
+    assert seen["find"] != loop_thread
+    assert seen["download"] != loop_thread
+
+
+async def test_sync_returns_not_found_when_drive_has_no_backup(monkeypatch, tmp_path: Path):
+    """WR-12: пустой результат поиска даёт status not_found, download_file не вызывается."""
+    client, uploads, download_calls = _make_sync_client(monkeypatch, tmp_path, "unused")
+    client.find_latest_aadhk_backup = MagicMock(return_value=None)
+
+    result = await client.sync_aadhk_from_drive(MagicMock())
+
+    assert result["status"] == "not_found"
+    assert download_calls == []
 
 
 def _all_paths(root: Path) -> set[Path]:

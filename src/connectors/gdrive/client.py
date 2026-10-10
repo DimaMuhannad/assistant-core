@@ -1,5 +1,6 @@
 """Google Drive client for off-server backup archiving and AADHk sync."""
 
+import asyncio
 import io
 import json
 import logging
@@ -282,7 +283,8 @@ class GoogleDriveClient:
         """Find latest AADHk backup on Google Drive, download it, and run AadhkIngestionService."""
         from src.connectors.aadhk.parser import AadhkIngestionService
 
-        backup_file = self.find_latest_aadhk_backup()
+        # Блокирующие вызовы Google API уходят в поток, чтобы не замораживать event loop (WR-01).
+        backup_file = await asyncio.to_thread(self.find_latest_aadhk_backup)
         if not backup_file:
             logger.info("No AADHk backup found on Google Drive.")
             return {"status": "not_found", "message": "No backup file found on Google Drive"}
@@ -297,7 +299,7 @@ class GoogleDriveClient:
                 "message": "Недопустимое имя файла на Google Drive, загрузка отклонена",
             }
 
-        self.download_file(file_id, local_dest)
+        await asyncio.to_thread(self.download_file, file_id, local_dest)
         ingestion = AadhkIngestionService(db)
         res = await ingestion.ingest_backup_file(local_dest)
 
