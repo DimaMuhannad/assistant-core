@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-10-10T11:34:04.687Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-10-10T11:56:48.606Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: f107209a5ff0c9d5d28ff614bd7b70617acf3477
+state_head: 79e2a40c05e58dc591fbfbd38de9008d674358a2
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 11
+  completed_plans: 12
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 2 of 15
+Plan: 3 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -68,6 +68,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 01 P09 | 126 min | 3 tasks | 3 files |
 | Phase 01 P10 | 15 min | 3 tasks | 2 files |
 | Phase 02 P01 | 25min | 2 tasks | 5 files |
+| Phase 02 P02 | 40min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,7 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 01]: [Owner 2026-10-09]: ASSISTANT_DB_PATH_OVERRIDE absence in live .env unverified (secret-read hook forbids reading .env; owner has no shell). Proposed: deploy.py --restart refuses if the key is present — before first restart (Phase 3), pending owner confirmation.
 - [Phase 02]: 02-01: у проверки слов NDA нет механизма допуска для отдельного файла (D-21); сигнатуры закреплены тестами inspect.signature
 - [Phase 02]: 02-01: check_index_content приводит CRLF/CR к LF, чтобы номера строк индекса и рабочей копии совпадали
+- [Phase 02]: SAFE-01: очистка памяти диалога только через HITL-карточку /clear или /reset; текст, голос, LLM-маршрут и движок только предупреждают
 
 ### Pending Todos
 
@@ -128,6 +130,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T11:34:04.360Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-10-10T11:56:48.279Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
