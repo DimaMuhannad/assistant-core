@@ -26,6 +26,9 @@ async def test_fast_intent_router_aliases(tmp_path):
         ]
 
         for text, expected_action in test_cases:
+            # Прогрев без замера: первый вызов платит за холодный старт (поток aiosqlite, кэш).
+            warm = await router.route(user_id=1001, message_text=text)
+            assert warm.action == expected_action
             latencies = []
             for _ in range(LATENCY_SAMPLES):
                 res = await router.route(user_id=1001, message_text=text)
@@ -90,22 +93,31 @@ async def test_custom_alias_registration_and_routing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_menu_command_rendering(tmp_path):
-    """Test that menu rendering formats command statuses and aliases correctly."""
+    """Меню: lms есть в каталоге, отключение убирает его из меню, пользовательский алиас разрешается (WR-11)."""
     db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     await db.init_db()
     try:
         registry = CommandRegistry(db=db)
-        await db.set_command_setting("lms", is_enabled=False)
-        await db.set_custom_alias("карточки", "timesheet")
 
-        # Simulate bot handler menu inspection
         catalog = registry._build_default_catalog(registry.persona_getter())
-        settings = await db.get_command_settings()
-        custom_aliases = await db.get_custom_aliases()
+        assert any(c.name == "lms" for c in catalog)
 
-        assert "lms" in settings
-        assert settings["lms"]["is_enabled"] is False
-        assert custom_aliases.get("карточки") == "timesheet"
+        # До отключения lms входит и в список активных команд, и в меню бота
+        active_before = {c.name for c in await registry.get_active_commands()}
+        menu_before = {c.command for c in await registry.get_telegram_commands()}
+        assert "lms" in active_before
+        assert "lms" in menu_before
+
+        # После отключения lms исчезает из обоих представлений меню
+        await db.set_command_setting("lms", is_enabled=False)
+        active_after = {c.name for c in await registry.get_active_commands()}
+        menu_after = {c.command for c in await registry.get_telegram_commands()}
+        assert "lms" not in active_after
+        assert "lms" not in menu_after
+
+        # Пользовательский алиас разрешается в каноническую команду
+        await db.set_custom_alias("карточки", "timesheet")
+        assert await registry.resolve_command_or_alias("карточки") == "timesheet"
     finally:
         await db.close()
 
