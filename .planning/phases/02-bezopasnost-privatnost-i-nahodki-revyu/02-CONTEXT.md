@@ -44,6 +44,7 @@ NDA-режим и аудит безопасности определяются �
 - **D-18:** Обёртки shield в chat-app (`/opt/chat-app/scripts/security_shield.py` и т.п.) и в assistant-shared становятся тонкими делегаторами в `/opt/assistant-core/scripts/security_shield.py`, который загружает `persona.yaml` и передаёт `workspaces`. Если обёртка assistant-core недоступна — делегатор завершается с ошибкой (fail-closed). chat-app допускает зависимость от каталога `/opt/assistant-core`. Правки chat-app — только через `/gsd-quick` в chat-app, его pytest остаётся зелёным.
 - **D-19:** Флаг «предупреждение PRIV-01 о почте показано» хранится в существующей таблице `daily_primed_context` под зарезервированным ключом, за двумя методами `Database` (прочитать/поставить). Миграция не создаётся.
 - **D-20:** Библиотека аудита при `workspaces=None` даёт красный итог (rc=1, fail-closed). Тесты передают явный `workspaces=()`.
+- **D-21:** (опрос владельца 2026-10-10, после проверки планов) Hook/shield **не ослабляется**: никакого допуска объявленных слов персоны в режиме фиксации. Коммит `config/persona.yaml` в этой фазе делается разовым `git commit --no-verify` только после явного согласия владельца на каждый такой коммит (checkpoint, `autonomous: false`). Условия: в коммите только `config/persona.yaml`; перед коммитом `scripts/security_shield.py . --all` показывает ровно 3 известные находки в `persona.yaml` и ни одной новой; результат записывается в SUMMARY плана.
 
 ### Claude's Discretion
 - Точное устройство интерфейса `audit_repository` и передачи правил из wrapper; имена функций и модулей.
