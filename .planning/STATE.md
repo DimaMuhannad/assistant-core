@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-13-PLAN.md
-last_updated: "2026-10-10T16:30:53.595Z"
+stopped_at: Completed 02-14-PLAN.md
+last_updated: "2026-10-10T16:56:07.468Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: 9d6d0e85cf0d4327e6e19de125447646d3b15403
+state_head: 5f36fb81009307769446449b8191daa64c4769ab
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 23
+  completed_plans: 24
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 14 of 15
+Plan: 15 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -80,6 +80,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P11 | 25min | 4 tasks | 5 files |
 | Phase 02 P12 | 20min | 2 tasks | 6 files |
 | Phase 02 P13 | 40min | 3 tasks | 2 files |
+| Phase 02 P14 | 60min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,7 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: 02-12: флаг показа PRIV-01 хранится в daily_primed_context под ключом notice:email_ai (без миграции); флаг ставится только после непустого результата отправки
 - [Phase 02]: 02-13: смягчение проверки боевой БД допускается только при совместимых снимках схемы и числа строк (RUNTIME_DELETES_FROM), иначе КРАСНЫЙ (WR-03)
 - [Phase 02]: 02-13: замороженный список shield привязан к sha256 точной строки файла, unreadable не покрывается записью (WR-04)
+- [Phase 02]: 02-14: находки CR-01 и WR-01..WR-13 помечены fixed только после зелёного прогона 119 регрессионных тестов; IN-01..IN-06 в бэклог (DEBT-03)
 
 ### Pending Todos
 
@@ -154,6 +156,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T16:30:53.237Z
-Stopped at: Completed 02-13-PLAN.md
+Last session: 2026-10-10T16:56:06.449Z
+Stopped at: Completed 02-14-PLAN.md
 Resume file: None
