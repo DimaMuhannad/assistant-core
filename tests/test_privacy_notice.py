@@ -190,3 +190,195 @@ async def test_help_with_synthetic_persona_without_privacy_block_sends_fallback(
     sent = handler.notifier.send_message.await_args.args[0]
     assert sent.endswith(email_ai_notice(persona))
     assert "внешними ИИ-сервисами" in sent
+
+
+# ---------------------------------------------------------------- показ при старте сборщика (PRIV-01, план 02-12)
+
+import logging  # noqa: E402
+
+from src.persona.notices import EMAIL_AI_NOTICE_FLAG_KEY as _FLAG  # noqa: E402,F401
+from src.storage.db import Database  # noqa: E402
+
+CONNECTED = {
+    "mailru": {"account": "mailru", "checked": 3, "inserted": 1},
+    "reconciliation": {},
+    "aging": {},
+    "db_totals": {},
+    "active_actionable_count": 0,
+}
+ALL_SKIPPED = {
+    "mailru": {"account": "mailru", "status": "skipped_no_creds"},
+    "gmail": {"account": "gmail", "status": "skipped_no_token"},
+    "reconciliation": {},
+    "aging": {},
+    "db_totals": {},
+    "active_actionable_count": 0,
+}
+ERRORED = {
+    "mailru": {"account": "mailru", "checked": 0, "inserted": 0, "error": "login failed"},
+    "reconciliation": {},
+    "aging": {},
+    "db_totals": {},
+}
+NOTICE_TEXT = "Тестовое предупреждение из данных персоны."
+
+
+@pytest.fixture
+async def notice_db(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'notice.db'}")
+    await db.init_db()
+    yield db
+    await db.close()
+
+
+def _notice_persona(tmp_path) -> PersonaConfig:
+    return _persona(tmp_path, extra=f"  privacy:\n    email_ai_notice: {NOTICE_TEXT}\n")
+
+
+async def _run_cycle(db, results, notifier, persona):
+    from src.main import run_email_collector_cycle
+
+    collector = AsyncMock()
+    collector.sync_all_accounts.return_value = results
+    with use_persona(persona):
+        await run_email_collector_cycle(db, collector, notifier)
+
+
+def _notifier(side_effect=None) -> AsyncMock:
+    notifier = AsyncMock()
+    notifier.send_message.return_value = [101]
+    if side_effect is not None:
+        notifier.send_message.side_effect = side_effect
+    return notifier
+
+
+@pytest.mark.asyncio
+async def test_first_cycle_with_connected_mailbox_announces_once(notice_db, tmp_path, caplog):
+    persona = _notice_persona(tmp_path)
+    notifier = _notifier()
+    with caplog.at_level(logging.INFO, logger="assistant-worker"):
+        await _run_cycle(notice_db, CONNECTED, notifier, persona)
+    notifier.send_message.assert_awaited_once()
+    sent = notifier.send_message.await_args.args[0]
+    assert NOTICE_TEXT in sent
+    assert notifier.send_message.await_args.kwargs.get("chat_id") is None
+    assert any("PRIV-01" in r.getMessage() and NOTICE_TEXT in r.getMessage() for r in caplog.records)
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is True
+
+
+@pytest.mark.asyncio
+async def test_second_cycle_is_silent(notice_db, tmp_path):
+    persona = _notice_persona(tmp_path)
+    notifier = _notifier()
+    await _run_cycle(notice_db, CONNECTED, notifier, persona)
+    await _run_cycle(notice_db, CONNECTED, notifier, persona)
+    assert notifier.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_all_mailboxes_skipped_no_notice_no_flag(notice_db, tmp_path):
+    notifier = _notifier()
+    await _run_cycle(notice_db, ALL_SKIPPED, notifier, _notice_persona(tmp_path))
+    notifier.send_message.assert_not_awaited()
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is False
+
+
+@pytest.mark.asyncio
+async def test_mailbox_with_error_no_notice_no_flag(notice_db, tmp_path):
+    notifier = _notifier()
+    await _run_cycle(notice_db, ERRORED, notifier, _notice_persona(tmp_path))
+    notifier.send_message.assert_not_awaited()
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is False
+
+
+@pytest.mark.asyncio
+async def test_service_keys_alone_do_not_count_as_mailbox(notice_db, tmp_path):
+    notifier = _notifier()
+    results = {"reconciliation": {"inserted": 5}, "aging": {"x": 1}, "db_totals": {"y": 2}, "active_actionable_count": 3}
+    await _run_cycle(notice_db, results, notifier, _notice_persona(tmp_path))
+    notifier.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skipped_plus_connected_counts_as_connected(notice_db, tmp_path):
+    notifier = _notifier()
+    results = dict(ALL_SKIPPED)
+    results["gmail"] = {"account": "gmail", "checked": 2, "inserted": 0}
+    await _run_cycle(notice_db, results, notifier, _notice_persona(tmp_path))
+    notifier.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_send_keeps_flag_unset_and_does_not_break_cycle(notice_db, tmp_path, caplog):
+    persona = _notice_persona(tmp_path)
+    notifier = _notifier(side_effect=RuntimeError("telegram down"))
+    with caplog.at_level(logging.WARNING, logger="assistant-worker"):
+        await _run_cycle(notice_db, CONNECTED, notifier, persona)  # исключение наружу не выходит
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is False
+    assert any("PRIV-01" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    # после восстановления Telegram предупреждение уходит
+    notifier.send_message.side_effect = None
+    notifier.send_message.return_value = [7]
+    await _run_cycle(notice_db, CONNECTED, notifier, persona)
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is True
+
+
+@pytest.mark.asyncio
+async def test_empty_send_result_keeps_flag_unset(notice_db, tmp_path):
+    notifier = _notifier()
+    notifier.send_message.return_value = []
+    await _run_cycle(notice_db, CONNECTED, notifier, _notice_persona(tmp_path))
+    assert await notice_db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY) is False
+
+
+@pytest.mark.asyncio
+async def test_notice_failure_does_not_stop_email_cards(notice_db, tmp_path):
+    from datetime import datetime, timezone
+
+    await notice_db.upsert_email_message(
+        message_id="msg-priv-1@example.org",
+        account_id="mailru",
+        folder="INBOX",
+        sender_name="Отправитель",
+        sender_email="sender@example.org",
+        recipients_json="[]",
+        subject="Тема",
+        date_sent=datetime.now(timezone.utc),
+        body_plain="Текст",
+        body_html=None,
+        snippet="Текст",
+        has_attachments=False,
+        attachments_json=None,
+        in_reply_to=None,
+        references_text=None,
+        thread_id="th-priv-1",
+        category="guap_dept",
+        requires_action=True,
+    )
+    notifier = _notifier(side_effect=RuntimeError("telegram down"))
+    notifier.send_actionable_email_card.return_value = [9001]
+    await _run_cycle(notice_db, {"mailru": {"inserted": 1}}, notifier, _notice_persona(tmp_path))
+    notifier.send_actionable_email_card.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_notice_shown_rejects_key_without_prefix(notice_db):
+    with pytest.raises(ValueError):
+        await notice_db.mark_notice_shown("2026-10-10")
+    with pytest.raises(ValueError):
+        await notice_db.has_notice_shown("email_ai")
+    with pytest.raises(ValueError):
+        await notice_db.mark_notice_shown("notice:")
+
+
+@pytest.mark.asyncio
+async def test_notice_flag_independent_from_primed_context(notice_db):
+    await notice_db.mark_notice_shown("notice:email_ai")
+    assert await notice_db.get_primed_context("2026-10-10") is None
+    await notice_db.save_primed_context("2026-10-10", "контекст")
+    assert await notice_db.has_notice_shown("notice:email_ai") is True
+    assert (await notice_db.get_primed_context("2026-10-10"))["summary_text"] == "контекст"
+    assert await notice_db.has_notice_shown("notice:other") is False
+    # повторная отметка идемпотентна
+    await notice_db.mark_notice_shown("notice:email_ai")
+    assert await notice_db.has_notice_shown("notice:email_ai") is True

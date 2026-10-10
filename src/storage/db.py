@@ -2731,6 +2731,27 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    @staticmethod
+    def _check_notice_key(key: str) -> None:
+        # Префикс «notice:» отделяет флаги показа от ключей дат утреннего контекста (T-02-43).
+        if not isinstance(key, str) or not key.startswith("notice:") or key == "notice:":
+            raise ValueError("Ключ флага предупреждения должен начинаться с 'notice:'")
+
+    async def has_notice_shown(self, key: str) -> bool:
+        """Показано ли предупреждение с этим ключом (флаг в daily_primed_context, PRIV-01)."""
+        self._check_notice_key(key)
+        async with self.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT 1 FROM daily_primed_context WHERE date_key = ?;",
+                (key,),
+            )
+            return (await cursor.fetchone()) is not None
+
+    async def mark_notice_shown(self, key: str) -> None:
+        """Отметить предупреждение показанным (миграция не нужна: существующая таблица)."""
+        self._check_notice_key(key)
+        await self.save_primed_context(key, "shown", "{}")
+
     async def seed_initial_memory_facts(self) -> int:
         """Populate initial fundamental facts for current persona."""
         async with self.connection() as conn:

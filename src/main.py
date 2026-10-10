@@ -26,6 +26,7 @@ from src.composition import schedule_site_url
 from src.persona.bindings import lms_settings, timesheet_settings
 from src.persona.current import current_persona
 from src.persona.models import PersonaConfigError
+from src.persona.notices import EMAIL_AI_NOTICE_FLAG_KEY, email_ai_notice
 from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
 from src.detector.diff import ScheduleChangeDetector
@@ -196,6 +197,49 @@ async def run_telegram_collector_cycle(
         logger.exception("Error during Telegram collection cycle: %s", e)
 
 
+# Служебные ключи результата sync_all_accounts: это не ящики (PRIV-01).
+_NON_ACCOUNT_RESULT_KEYS = frozenset(
+    {"reconciliation", "aging", "db_totals", "active_actionable_count"}
+)
+
+
+def _has_connected_mailbox(results: dict[str, Any]) -> bool:
+    """Есть ли среди результатов ящик, который реально собирался (не пропущен и без ошибки)."""
+    for key, value in results.items():
+        if key in _NON_ACCOUNT_RESULT_KEYS or not isinstance(value, dict):
+            continue
+        if str(value.get("status", "")).startswith("skipped"):
+            continue
+        if "error" in value:
+            continue
+        return True
+    return False
+
+
+async def _announce_email_ai_notice(
+    db: Database,
+    notifier: TelegramNotifier,
+    results: dict[str, Any],
+) -> bool:
+    """Один раз показать предупреждение PRIV-01, когда почта реально начала собираться.
+
+    Только информирование (D-16). Флаг ставится после успешной отправки, чтобы сбой Telegram
+    не терял предупреждение, а повторные циклы молчали.
+    """
+    if not _has_connected_mailbox(results):
+        return False
+    if await db.has_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY):
+        return False
+    text = email_ai_notice(current_persona())
+    logger.info("PRIV-01: предупреждение о внешней обработке почты: %s", text)
+    sent = await notifier.send_message("🔒 **Приватность почты**\n\n" + text)
+    if not sent:
+        logger.warning("PRIV-01: сообщение не доставлено, флаг не ставится")
+        return False
+    await db.mark_notice_shown(EMAIL_AI_NOTICE_FLAG_KEY)
+    return True
+
+
 async def run_email_collector_cycle(
     db: Database,
     email_collector: EmailCollector,
@@ -207,6 +251,11 @@ async def run_email_collector_cycle(
         res = await email_collector.sync_all_accounts(days=3)
         total_new = sum(r.get("inserted", 0) for k, r in res.items() if isinstance(r, dict))
         logger.info("Email collection finished: %d new email(s) ingested.", total_new)
+
+        try:
+            await _announce_email_ai_notice(db, notifier, res)
+        except Exception as e:
+            logger.warning("Не удалось показать предупреждение PRIV-01: %s", e)
 
         # Notify if new student or department emails arrive (strictly deduplicated: 1 card per email)
         if total_new > 0:
