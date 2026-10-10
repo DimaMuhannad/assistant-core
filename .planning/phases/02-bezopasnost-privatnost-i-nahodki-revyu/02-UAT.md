@@ -3,38 +3,40 @@ status: complete
 phase: 02-bezopasnost-privatnost-i-nahodki-revyu
 source: [02-VERIFICATION.md]
 started: 2026-10-10T20:40:00Z
-updated: 2026-10-10T20:40:00Z
+updated: 2026-10-10T19:50:04.257Z
 ---
 
 ## Current Test
 
-number: 1
-name: Решение владельца по 6 предупреждениям ревью (WR-01..WR-06)
-expected: |
-  По каждому предупреждению в 02-REVIEW-DISPOSITION.md записано решение: исправить (малая задача /gsd-quick
-  или ближайшая фаза), отложить или принять риск. Для WR-01 и WR-02 верификатор рекомендует исправить до
-  Phase 8 (мастер персоны будет создавать такие данные из пользовательского ввода).
-awaiting: none (все пункты разобраны)
+[testing complete]
 
 ## Tests
 
 ### 1. Решение владельца по 6 предупреждениям ревью (WR-01..WR-06)
 expected: По каждой записано решение; disposition-файл обновлён (сейчас все 11 строк open)
-result: accepted-risk. Владелец 2026-10-10: «Принять риски, идти дальше». Все 11 строк disposition переведены в deferred.
+result: pass
+note: Владелец 2026-10-10: «Принять риски, идти дальше». Решение записано, все 11 строк disposition переведены в deferred (риск принят).
 
 ### 2. Живой web-аудит после рестарта chat-app.service (сервис заморожен, рестарт только по разрешению владельца)
 expected: |
   Web-аудит chat-app показывает находки по запретным словам пространства в config/persona.yaml
   (3 известные) и замороженные находки; других нет
-result: skipped. Рестарт chat-app.service владелец не разрешал (сервис заморожен); код доказан ASGI-тестами. Проверить при ближайшем разрешённом рестарте chat-app.
+result: skipped
+reason: "Deferred follow-up: проверить живой web-аудит при ближайшем разрешённом владельцем рестарте chat-app.service (сервис заморожен; код доказан ASGI-тестами). Ответ владельца 2026-10-10: «Принять риски, идти дальше»."
 
 ## Summary
 
 total: 2
-passed: 0
+passed: 1
 issues: 0
 pending: 0
-skipped: 2
+skipped: 1
 blocked: 0
 
 ## Gaps
+
+## Deferred Follow-Ups
+
+- test: 2
+  idea: "Живой web-аудит chat-app после ближайшего разрешённого владельцем рестарта chat-app.service: должны быть 3 известные находки по словам NDA в config/persona.yaml и замороженные, других нет"
+  deferred_at: 2026-10-10
