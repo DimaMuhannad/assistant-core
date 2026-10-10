@@ -1520,17 +1520,104 @@ def test_backup_opens_source_read_only(tmp_path, monkeypatch):
     assert len(seen) == 2  # источник и приёмник, других соединений нет
 
 
-def test_backup_tightens_permissions_of_existing_directory(tmp_path):
+def test_backup_refuses_existing_directory_with_wide_mode_and_keeps_its_mode(tmp_path):
     live = tmp_path / "live.db"
     writer = _make_wal_db(live)
     dst_dir = tmp_path / "wide"
     dst_dir.mkdir()
     dst_dir.chmod(0o755)
     try:
+        with pytest.raises(deploy.BackupPathError):
+            deploy.make_db_copy(live, dst_dir, NOW)
+    finally:
+        writer.close()
+    assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o755
+    assert os.listdir(dst_dir) == []
+
+
+def test_backup_accepts_own_private_directory_and_does_not_chmod_it(tmp_path, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst_dir = tmp_path / "private"
+    dst_dir.mkdir()
+    dst_dir.chmod(0o700)
+    chmod_calls: list[Path] = []
+    real_chmod = os.chmod
+
+    def spy_chmod(path, mode, *args, **kwargs):
+        chmod_calls.append(Path(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(deploy.os, "chmod", spy_chmod)
+    try:
+        copy = deploy.make_db_copy(live, dst_dir, NOW)
+    finally:
+        writer.close()
+    assert copy.parent == dst_dir.resolve()
+    assert dst_dir.resolve() not in chmod_calls
+    assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o700
+
+
+def test_backup_chmods_only_the_directory_it_created(tmp_path, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst_dir = tmp_path / "parent" / "backups"
+    chmod_calls: list[Path] = []
+    real_chmod = os.chmod
+
+    def spy_chmod(path, mode, *args, **kwargs):
+        chmod_calls.append(Path(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(deploy.os, "chmod", spy_chmod)
+    try:
         deploy.make_db_copy(live, dst_dir, NOW)
     finally:
         writer.close()
+    assert chmod_calls == [dst_dir.resolve()]
     assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o700
+
+
+def test_backup_refuses_existing_directory_of_other_owner_without_changes(tmp_path, monkeypatch):
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    dst_dir = tmp_path / "foreign"
+    dst_dir.mkdir()
+    dst_dir.chmod(0o700)
+    monkeypatch.setattr(deploy.os, "geteuid", lambda: dst_dir.stat().st_uid + 1)
+    try:
+        with pytest.raises(deploy.BackupPathError):
+            deploy.make_db_copy(live, dst_dir, NOW)
+    finally:
+        writer.close()
+    assert stat.S_IMODE(dst_dir.stat().st_mode) == 0o700
+    assert os.listdir(dst_dir) == []
+
+
+def test_backup_rejects_directory_under_foreign_git_repository_before_creating_it(tmp_path, monkeypatch):
+    fake_core = tmp_path / "core"
+    fake_core.mkdir()
+    monkeypatch.setattr(deploy, "CORE_DIR", fake_core.resolve())
+    foreign = tmp_path / "chat-app"
+    (foreign / ".git").mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    live = tmp_path / "live.db"
+    writer = _make_wal_db(live)
+    try:
+        for inside in (foreign / "uploads", foreign / "uploads" / "deep" / "x", worktree / "b"):
+            with pytest.raises(deploy.BackupPathError):
+                deploy.make_db_copy(live, inside, NOW)
+        assert not (foreign / "uploads").exists()
+        assert not (worktree / "b").exists()
+        link = tmp_path / "link"
+        link.symlink_to(foreign)
+        with pytest.raises(deploy.BackupPathError):
+            deploy.make_db_copy(live, link / "uploads", NOW)
+        assert not (foreign / "uploads").exists()
+    finally:
+        writer.close()
 
 
 def test_backup_rejects_directory_inside_repo_before_creating_it(tmp_path, monkeypatch):

@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -934,24 +935,55 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
     return conn.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
 
 
-def _inside_core(path: Path) -> bool:
+def _inside_git_tree(path: Path) -> bool:
+    """Путь внутри дерева git: сам путь или любой существующий предок содержит запись .git.
+
+    Проверка не ограничена CORE_DIR (WR-09): копия БД не должна попасть в рабочее дерево
+    ни одного репозитория на хосте, например /opt/chat-app или /opt/assistant-shared.
+    ``path`` уже раскрыт через resolve(), поэтому символические ссылки в нём не участвуют.
+    """
     core = CORE_DIR.resolve()
-    return path == core or core in path.parents
+    if path == core or core in path.parents:
+        return True
+    return any(os.path.lexists(candidate / ".git") for candidate in (path, *path.parents))
+
+
+def _prepare_private_dir(directory: Path, error: type[Exception], unsafe_message: str) -> None:
+    """Создать каталог с правами 0700 или принять существующий, только если он безопасен.
+
+    Существующий каталог принимается только если это каталог, принадлежащий текущему
+    пользователю, без битов группы и остальных (mode & 0o077 == 0). Права меняются ТОЛЬКО у
+    каталога, созданного этим вызовом; при небезопасном существующем каталоге вызывается
+    ``error`` и ничего не меняется.
+    """
+    try:
+        os.makedirs(directory, mode=0o700)
+    except FileExistsError:
+        st = os.lstat(directory)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or (st.st_mode & 0o077) != 0:
+            raise error(unsafe_message) from None
+        return
+    os.chmod(directory, 0o700)
 
 
 def make_db_copy(live_db: Path, dst_dir: Path, now: datetime) -> Path:
     """Консистентная копия БД через sqlite3 backup API (источник только на чтение, D-11).
 
-    Единственное место, где скрипт открывает SQLite. Каталог ``dst_dir`` должен быть выделенным
-    под копии: его права сужаются до 0700. Копия создаётся с правами 0600 и не перезаписывает
+    Единственное место, где скрипт открывает SQLite. Каталог ``dst_dir`` создаётся с правами
+    0700; существующий принимается только собственный, без битов группы и остальных, и его права
+    не меняются (отказ BackupPathError). Копия создаётся с правами 0600 и не перезаписывает
     существующий файл. Проверка целостности (``PRAGMA integrity_check``) идёт на копии; при
     любом сбое неполная копия удаляется.
     """
     target_dir = Path(dst_dir).expanduser().resolve()
-    if _inside_core(target_dir):
+    if _inside_git_tree(target_dir):
         raise BackupPathError("каталог резервных копий внутри дерева git")
-    os.makedirs(target_dir, mode=0o700, exist_ok=True)
-    os.chmod(target_dir, 0o700)
+    _prepare_private_dir(
+        target_dir,
+        BackupPathError,
+        "каталог резервных копий существует с небезопасными правами или чужим владельцем; "
+        "укажите новый каталог",
+    )
     stamp = now.astimezone(timezone.utc).strftime("%Y%m%d-%H%M%S")
     copy_path = target_dir / f"assistant-{stamp}.db"
     fd = os.open(copy_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
