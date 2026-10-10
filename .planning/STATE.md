@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-11-PLAN.md
-last_updated: "2026-10-10T16:04:49.776Z"
+stopped_at: Completed 02-12-PLAN.md
+last_updated: "2026-10-10T16:13:20.247Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: 6b3189f420c83fde9aecd9d3c44c271f66b00c91
+state_head: f143d87cd3c00aed544f1a216e1bc62b74300995
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 21
+  completed_plans: 22
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 12 of 15
+Plan: 13 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -78,6 +78,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P10 | 30 min | 3 tasks | 9 files |
 | Phase 02 P09 | 35min | 3 tasks | 6 files |
 | Phase 02 P11 | 25min | 4 tasks | 5 files |
+| Phase 02 P12 | 20min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,7 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: 02-10: audit_repository(repo_path, check_staged_only, *, workspaces=None): None даёт rc=1 (D-20), слов по умолчанию нет (D-09), допуска слов нет (D-21); shield shared стал делегатором в assistant-core (D-18)
 - [Phase 02]: 02-09: chat-app adapter PROTECTED extended by 8 gate-environment paths, ancestor dirs protected, exit 17 on symlinked scripts/gate.py, GATE_KIND labels fallback gate (chat-app 27886b3)
 - [Phase 02]: 02-11: privacy.email_ai_notice validated by schema (non-empty, <=1500); neutral fallback text in code, owner text in persona data (PRIV-01, D-14)
+- [Phase 02]: 02-12: флаг показа PRIV-01 хранится в daily_primed_context под ключом notice:email_ai (без миграции); флаг ставится только после непустого результата отправки
 
 ### Pending Todos
 
@@ -149,6 +151,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T16:04:40.441Z
-Stopped at: Completed 02-11-PLAN.md
+Last session: 2026-10-10T16:13:12.473Z
+Stopped at: Completed 02-12-PLAN.md
 Resume file: None
