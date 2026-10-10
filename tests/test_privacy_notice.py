@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from src.notifier.bot_handler import EmailBotHandler
 from src.persona.current import use_persona
@@ -145,3 +146,47 @@ async def test_help_does_not_reply_to_unauthorized_user(tmp_path):
     with use_persona(_persona(tmp_path)):
         await handler.handle_cmd_help(_message(ALLOWED_USER_ID + 1))
     handler.notifier.send_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------- данные владельца (персона по умолчанию)
+
+
+def test_default_persona_carries_owner_notice(monkeypatch):
+    monkeypatch.delenv("PERSONA_CONFIG_PATH", raising=False)
+    notice = load_persona().privacy.email_ai_notice
+    assert notice is not None
+    assert "внешними ИИ-сервисами" in notice
+    assert "Gemini" in notice
+    assert "не несёт ответственности" in notice
+    assert len(notice) <= EMAIL_AI_NOTICE_MAX_LEN
+    # Markdown Telegram: подчёркивания и звёздочки вне разметки сломали бы форматирование
+    assert "_" not in notice and "*" not in notice
+
+
+@pytest.mark.asyncio
+async def test_help_with_default_persona_sends_owner_notice(monkeypatch):
+    monkeypatch.delenv("PERSONA_CONFIG_PATH", raising=False)
+    persona = load_persona()
+    handler = _handler()
+    with use_persona(persona):
+        await handler.handle_cmd_help(_message(ALLOWED_USER_ID))
+    sent = handler.notifier.send_message.await_args.args[0]
+    assert sent.endswith(persona.privacy.email_ai_notice)
+    assert len(sent) < TELEGRAM_MESSAGE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_help_with_synthetic_persona_without_privacy_block_sends_fallback(tmp_path):
+    from .synthetic_persona import SYNTHETIC_PERSONA, synthetic_to_config
+
+    config = synthetic_to_config(SYNTHETIC_PERSONA)
+    assert "privacy" not in config["persona"]
+    path = tmp_path / "synthetic.yaml"
+    path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+    persona = load_persona(path)
+    handler = _handler()
+    with use_persona(persona):
+        await handler.handle_cmd_help(_message(ALLOWED_USER_ID))
+    sent = handler.notifier.send_message.await_args.args[0]
+    assert sent.endswith(email_ai_notice(persona))
+    assert "внешними ИИ-сервисами" in sent
