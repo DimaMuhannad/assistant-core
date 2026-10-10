@@ -39,6 +39,12 @@ NDA-режим и аудит безопасности определяются �
 - **D-15:** Места показа: (1) блок внизу `/help` (`handle_cmd_help`, `src/notifier/bot_handler.py:426`); (2) старт сборщика почты — запись в журнале и одно сообщение в Telegram при первом успешном запуске `email_collector`, флаг «показано» хранится в БД (на временной БД в тестах); (3) `scripts/auth_google.py` и подсказки `.env.example`.
 - **D-16:** Только информирование, без кнопки «принимаю» и блокировки сбора. Мастер подключения почты и согласие — Phase 8/9.
 
+### Решения владельца после исследования (опрос 2026-10-10, plan-phase)
+- **D-17:** Находки код-ревью Phase 1 (`.planning/phases/01-sobstvennyy-geyt-kachestva-assistant-core/01-REVIEW-DISPOSITION.md`, `01-REVIEW.md`) входят в Phase 2: CR-01 (path traversal при записи файла с Google Drive, демон от root) и все WR-01…WR-13, плюс T-uo4-02 (отказ адаптера cross-AI при подмене `scripts` симлинком, с тестом). IN-01…IN-06 в фазу не входят — в бэклог. После закрытия каждой находки её disposition в `01-REVIEW-DISPOSITION.md` обновляется (fixed / с обоснованием).
+- **D-18:** Обёртки shield в chat-app (`/opt/chat-app/scripts/security_shield.py` и т.п.) и в assistant-shared становятся тонкими делегаторами в `/opt/assistant-core/scripts/security_shield.py`, который загружает `persona.yaml` и передаёт `workspaces`. Если обёртка assistant-core недоступна — делегатор завершается с ошибкой (fail-closed). chat-app допускает зависимость от каталога `/opt/assistant-core`. Правки chat-app — только через `/gsd-quick` в chat-app, его pytest остаётся зелёным.
+- **D-19:** Флаг «предупреждение PRIV-01 о почте показано» хранится в существующей таблице `daily_primed_context` под зарезервированным ключом, за двумя методами `Database` (прочитать/поставить). Миграция не создаётся.
+- **D-20:** Библиотека аудита при `workspaces=None` даёт красный итог (rc=1, fail-closed). Тесты передают явный `workspaces=()`.
+
 ### Claude's Discretion
 - Точное устройство интерфейса `audit_repository` и передачи правил из wrapper; имена функций и модулей.
 - Как определять «смысл ведёт к очистке памяти» для D-02 (детерминированный список фраз и маршрут `clear_dialog` или LLM-намерение); достаточно покрыть существующие триггеры и маршрут `intent_router`.
@@ -119,6 +125,8 @@ No external specs beyond the above.
 - Уведомление после ночного сброса с возможностью восстановить — новая возможность, в бэклог.
 - Кнопка «прочитал и принимаю» для PRIV-01 — Phase 8/9 (онбординг, мастер почты).
 - Мастер подключения почты — Phase 9.
+- Находки ревью Phase 1 уровня info (IN-01…IN-06) — бэклог (решение владельца 2026-10-10).
+- `fastapi` в зависимостях assistant-shared (`hitl.decorators`) — Phase 3.
 
 </deferred>
 
