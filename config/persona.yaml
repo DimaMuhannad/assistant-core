@@ -94,6 +94,8 @@ persona:
       remote_tile_caption: github-personal vs github-tydex (includeIf gitdir)
       airgap_tile_caption: Запрет агентам читать артефакты Тидекс в открытых сессиях
       reminder_context_placeholder: 'Например: ГУАП: Осенний семестр 2026 / Почта'
+  privacy:
+    email_ai_notice: Содержимое подключённых писем обрабатывается внешними ИИ-сервисами (Gemini и др.). Разработчик не несёт ответственности за утечку секретов и иной личной информации из писем. Не подключайте ящики, содержимое которых нельзя передавать третьим лицам.
   connectors:
     schedule_source:
     - id: main
