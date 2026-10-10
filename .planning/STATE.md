@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-12-PLAN.md
-last_updated: "2026-10-10T16:13:20.247Z"
+stopped_at: Completed 02-13-PLAN.md
+last_updated: "2026-10-10T16:30:53.595Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: f143d87cd3c00aed544f1a216e1bc62b74300995
+state_head: 9d6d0e85cf0d4327e6e19de125447646d3b15403
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 22
+  completed_plans: 23
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 13 of 15
+Plan: 14 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -79,6 +79,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P09 | 35min | 3 tasks | 6 files |
 | Phase 02 P11 | 25min | 4 tasks | 5 files |
 | Phase 02 P12 | 20min | 2 tasks | 6 files |
+| Phase 02 P13 | 40min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,8 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: 02-09: chat-app adapter PROTECTED extended by 8 gate-environment paths, ancestor dirs protected, exit 17 on symlinked scripts/gate.py, GATE_KIND labels fallback gate (chat-app 27886b3)
 - [Phase 02]: 02-11: privacy.email_ai_notice validated by schema (non-empty, <=1500); neutral fallback text in code, owner text in persona data (PRIV-01, D-14)
 - [Phase 02]: 02-12: флаг показа PRIV-01 хранится в daily_primed_context под ключом notice:email_ai (без миграции); флаг ставится только после непустого результата отправки
+- [Phase 02]: 02-13: смягчение проверки боевой БД допускается только при совместимых снимках схемы и числа строк (RUNTIME_DELETES_FROM), иначе КРАСНЫЙ (WR-03)
+- [Phase 02]: 02-13: замороженный список shield привязан к sha256 точной строки файла, unreadable не покрывается записью (WR-04)
 
 ### Pending Todos
 
@@ -151,6 +154,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T16:13:12.473Z
-Stopped at: Completed 02-12-PLAN.md
+Last session: 2026-10-10T16:30:53.237Z
+Stopped at: Completed 02-13-PLAN.md
 Resume file: None
