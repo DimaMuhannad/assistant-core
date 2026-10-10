@@ -30,6 +30,7 @@ from src.persona.bindings import format_hours, has_binding, lms_settings, method
 from src.persona.current import current_persona
 from src.persona.models import PersonaConfigError
 from src.persona.prompts import render_prompt
+from src.brain.dialog_safety import CLEAR_DIALOG_TEXT_WARNING, is_clear_dialog_request
 from src.brain.methodist import MethodistService
 from src.brain.key_rotator import key_rotator
 from src.composition import default_timesheet_service
@@ -607,10 +608,9 @@ class SecretaryDialogEngine:
                 return (msg, [], None) if return_files else (msg, None)
             return (msg, []) if return_files else msg
 
-        # Handle explicit reset command
-        if cleaned_text.lower() in ("/clear", "/reset", "очисти диалог", "забудь контекст", "сброс"):
-            await self.db.clear_dialog_history(user_id)
-            msg = "🧹 **Контекст диалога успешно очищен.** Я готов к новым вопросам!"
+        # SAFE-01 (D-01): движок память диалога не очищает; очистка только через /clear с HITL-карточкой.
+        if is_clear_dialog_request(cleaned_text):
+            msg = CLEAR_DIALOG_TEXT_WARNING
             if return_proposal:
                 return (msg, [], None) if return_files else (msg, None)
             return (msg, []) if return_files else msg

@@ -49,12 +49,12 @@ async def test_secretary_dialog_clear_command():
     user_id = 999
     await db.save_dialog_message(user_id=user_id, role="user", content="Вопрос")
     
-    # Process /clear
+    # SAFE-01: движок память не очищает, только предупреждает про ручной /clear с карточкой
     res = await engine.answer_user_message(user_id=user_id, message_text="/clear")
-    assert "очищен" in res.lower()
+    assert "/clear" in res
 
     hist = await db.get_recent_dialog_history(user_id)
-    assert len(hist) == 0
+    assert len(hist) == 1
 
     await db.close()
 

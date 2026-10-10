@@ -2596,7 +2596,8 @@ class EmailBotHandler:
             elif route_res.action == "lms_reports":
                 await self.handle_cmd_lms_reports(message)
             elif route_res.action == "clear_dialog":
-                await self.handle_cmd_clear_dialog(message)
+                # SAFE-01 (D-02): голосом память не чистим; у голосового message.text равен None.
+                await self._warn_clear_requires_slash(message)
             elif route_res.action in ("ticker", "status", "hud", "tablo"):
                 await self.handle_cmd_ticker(message)
             elif route_res.action == "methodist":

@@ -27,6 +27,7 @@ from google.genai import types
 from src import config
 from src.storage.db import Database
 from src.persona.prompts import render_prompt
+from src.brain.dialog_safety import is_clear_dialog_request
 from src.brain.key_rotator import key_rotator
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,7 @@ class FastIntentRouter:
 
         # 1. Deterministic instant fast-paths for unambiguous keywords/commands
         lower = cleaned.lower()
-        if lower in ("/clear", "сброс", "очисти диалог", "забудь контекст", "/reset"):
+        if is_clear_dialog_request(cleaned):
             res = IntentResult(
                 action="clear_dialog",
                 confidence=1.0,
