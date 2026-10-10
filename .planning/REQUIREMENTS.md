@@ -87,6 +87,7 @@
 - **SCH-03**: Разбор URL БД не создаёт каталог `sqlite+aiosqlite:`; артефакт удаляется после подтверждения владельца.
 - **DEBT-01**: Разделение `src/notifier/bot_handler.py` и `src/storage/db.py` (> 3000 строк) по доменам.
 - **DEBT-02**: Асинхронный доступ к SQLite в `src/connectors/aadhk/parser.py`; сужение широких `except` (77 мест).
+- **DEBT-03**: Информационные находки код-ревью Phase 1 (IN-01..IN-06, источник `.planning/phases/01-sobstvennyy-geyt-kachestva-assistant-core/01-REVIEW.md`; решение владельца 2026-10-10 (D-17): в бэклог): IN-01 переменная переопределения пути БД не логируется и не нормализуется в боевом рантайме; IN-02 `os.environ.setdefault` не заменяет пустую строку; IN-03 мелочи `scripts/deploy.py`; IN-04 неточности `scripts/gate.py`; IN-05 hook и установщик `assistant-shared` зависят от пути assistant-core и проверяют не то, что исполняется; IN-06 мёртвые и слабые места `src/connectors/gdrive/client.py`.
 
 ### NDA-почта
 
