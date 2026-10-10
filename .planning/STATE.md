@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-04-PLAN.md
-last_updated: "2026-10-10T12:24:06.911Z"
+stopped_at: Completed 02-05-PLAN.md
+last_updated: "2026-10-10T12:34:43.141Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: 8f70aca780c414bcda60198857e638f061073813
+state_head: 0c52a71d4b7822f4c9a623142d2c962ff8055920
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 14
+  completed_plans: 15
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 5 of 15
+Plan: 6 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -71,6 +71,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P02 | 40min | 2 tasks | 6 files |
 | Phase 02 P03 | 45min | 3 tasks | 2 files |
 | Phase 02 P04 | n/a | 2 tasks | 3 files |
+| Phase 02 P05 | 30min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,8 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: SAFE-01: очистка памяти диалога только через HITL-карточку /clear или /reset; текст, голос, LLM-маршрут и движок только предупреждают
 - [Phase 02]: 02-03: имя файла с Drive с «/», «\» или нулевым байтом отвергается целиком (CR-01); серверный бэкап (архив .env и сессии) удалён (WR-02)
 - [Phase 02]: WR-08/WR-09 (D-17): каталог копий и состояние проверяются по владельцу и правам; запись через временный файл и os.replace; путь состояния /var/lib/assistant-core (0700)
+- [Phase 02]: WR-07: страж боевой БД охраняет абсолютные пути /opt/assistant-core/... и символические ссылки по realpath (02-05)
+- [Phase 02]: WR-13: страж правил использует регулярные выражения, собранные из частей, с самопроверкой (02-05)
 
 ### Pending Todos
 
@@ -134,6 +137,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T12:24:05.682Z
-Stopped at: Completed 02-04-PLAN.md
+Last session: 2026-10-10T12:34:42.739Z
+Stopped at: Completed 02-05-PLAN.md
 Resume file: None
