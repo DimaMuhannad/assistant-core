@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import tarfile
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,39 @@ from src import config
 from src.storage.db import Database
 
 logger = logging.getLogger(__name__)
+
+# Каталог, куда складываются скачанные с Google Drive файлы. Читается в момент вызова
+# (тесты подменяют его через monkeypatch), демон пишет сюда от root (CR-01, D-17).
+UPLOADS_DIR = Path("/opt/chat-app/uploads")
+
+_UNSAFE_NAME_CHARS = re.compile(r"[^\w.-]")
+
+
+def _safe_upload_path(remote_name: Any) -> Path | None:
+    """Построить путь внутри UPLOADS_DIR по имени файла с Drive или вернуть None (отказ).
+
+    Имя приходит извне (в том числе из файла, которым с владельцем поделились), а демон пишет
+    от root, поэтому имя не доверяется: разделители пути, «..», пустое имя и нулевой байт
+    отвергаются, прочие символы вне [\\w.-] заменяются на «_», а родитель назначения после
+    resolve() обязан совпасть с UPLOADS_DIR.resolve() (символьная ссылка наружу даёт отказ).
+    """
+    try:
+        if not isinstance(remote_name, str):
+            return None
+        if "\x00" in remote_name or "/" in remote_name or "\\" in remote_name:
+            return None
+        name = Path(remote_name).name
+        if name in ("", ".", ".."):
+            return None
+        safe_name = _UNSAFE_NAME_CHARS.sub("_", name)
+        uploads_root = UPLOADS_DIR.resolve()
+        dest = (UPLOADS_DIR / f"gdrive_{safe_name}").resolve()
+        if dest.parent != uploads_root:
+            return None
+        return dest
+    except (ValueError, OSError):
+        return None
+
 
 DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -255,7 +289,13 @@ class GoogleDriveClient:
 
         file_id = backup_file["id"]
         remote_name = backup_file["name"]
-        local_dest = Path(f"/opt/chat-app/uploads/gdrive_{remote_name}")
+        local_dest = _safe_upload_path(remote_name)
+        if local_dest is None:
+            logger.warning("Rejected unsafe Google Drive file name: %s", repr(remote_name)[:80])
+            return {
+                "status": "error",
+                "message": "Недопустимое имя файла на Google Drive, загрузка отклонена",
+            }
 
         self.download_file(file_id, local_dest)
         ingestion = AadhkIngestionService(db)
