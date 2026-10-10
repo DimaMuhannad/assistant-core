@@ -22,10 +22,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-09)
+See: .planning/PROJECT.md (updated 2026-10-10)
 
 **Core value:** Ассистент надёжно выполняет ежедневную работу секретаря. Ни одно содержимое NDA-пространств не уходит во внешнюю LLM, и ни одно необратимое действие не выполняется без подтверждения человека (HITL).
-**Current focus:** Phase 01 — Собственный гейт качества assistant-core
+**Current focus:** Phase 2 — Безопасность, приватность и находки ревью
 
 ## Current Position
 
@@ -107,8 +107,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: GATE-05 требует правки адаптера `agy_cross_ai.sh` в chat-app. Допустимо только мелкой задачей `/gsd-quick` в репозитории chat-app.
-- [Phase 1]: `src/config.py` вызывает `load_dotenv(..., override=True)`, поэтому БД тестов нельзя переопределить окружением. До GATE-02 защиту боевой БД даёт только хеш в общем гейте.
+- [Phase 2]: 20 находок код-ревью Phase 1 (`01-REVIEW-DISPOSITION.md`, все deferred), включая CR-01 (path traversal при загрузке с Google Drive, демон от root) — вход планирования Phase 2.
+- [Phase 2]: адаптер cross-AI: отказ при подмене `scripts` симлинком (T-uo4-02) и доверие к `conftest.py` цели (WR-05/06).
+- [Phase 2/3]: `fastapi` отсутствует в зависимостях assistant-shared (`hitl.decorators`).
+- [Phase 3]: пустые `assistant.db-wal/-shm` в `data/` после ro-чтения; перед первым живым `--backup` проверить WR-08/WR-09 (права, `/var/tmp`).
 - [Phase 2]: SAFE-01 ждёт решения владельца (HITL-карточка или обратимый архив с командой отмены) на этапе discuss-phase.
 - [Phase 3]: Боевая БД получает миграцию `0003` только при рестарте, разрешённом владельцем. Перед ним нужна резервная копия по процедуре OPS-01.
 - [Phase 5]: Статус «ожидает / подтверждено / отклонено» для web (HIT-04) может потребовать мелкой правки chat-app через `/gsd-quick`.
@@ -124,6 +126,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-09T22:48:38.809Z
+Last session: 2026-10-10
 Stopped at: Phase 01 complete, ready to plan Phase 2
 Resume file: None
