@@ -25,6 +25,8 @@ _ID_PATTERN = r"^[a-z0-9][a-z0-9-]*$"
 # Единственная допустимая форма идентификатора Telegram в файле персоны (D-05): ${ИМЯ_ПЕРЕМЕННОЙ}.
 _ENV_PLACEHOLDER = re.compile(r"^\$\{([A-Z][A-Z0-9_]*)\}$")
 _DIGITS = re.compile(r"^[0-9]+$")
+# Предел текста предупреждения PRIV-01: справка с блоком остаётся короче лимита Telegram 4096.
+EMAIL_AI_NOTICE_MAX_LEN = 1500
 
 
 class PersonaConfigError(ValueError):
@@ -109,6 +111,37 @@ class UiConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     texts: dict[str, str] = Field(default_factory=dict)
+
+
+class PrivacyConfig(BaseModel):
+    """Данные предупреждения о приватности почты (PRIV-01, D-14).
+
+    Пустое значение email_ai_notice считается ошибкой схемы, чтобы данные не отключили
+    предупреждение молча: чтобы взять запасной текст, поле не задают вовсе.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    email_ai_notice: str | None = None
+    external_ai_services: list[str] = Field(default_factory=list)
+
+    @field_validator("email_ai_notice")
+    @classmethod
+    def _notice_not_empty_and_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("email_ai_notice не должен быть пустым")
+        if len(value.strip()) > EMAIL_AI_NOTICE_MAX_LEN:
+            raise ValueError(f"email_ai_notice длиннее {EMAIL_AI_NOTICE_MAX_LEN} символов")
+        return value
+
+    @field_validator("external_ai_services")
+    @classmethod
+    def _services_not_empty(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("external_ai_services содержит пустое название")
+        return [item.strip() for item in value]
 
 
 class ConnectorBindingConfig(BaseModel):
@@ -259,6 +292,7 @@ class PersonaConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     task_areas: list[TaskAreaConfig]
     ui: UiConfig = Field(default_factory=UiConfig)
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     workspaces: list[WorkspaceConfig] = Field(default_factory=list)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
     methodist: MethodistConfig

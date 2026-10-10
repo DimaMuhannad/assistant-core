@@ -43,6 +43,7 @@ from src.core.ports.clients import DriveClientLike, EmailSenderLike, LmsClientLi
 from src.core.ports.connectors import BaseTimesheetProvider
 from src.persona.bindings import format_hours, timesheet_settings
 from src.persona.current import current_persona
+from src.persona.notices import email_ai_notice
 from src.notifier.live_ticker import LiveTickerService
 from src.notifier.telegram import (
     TelegramNotifier,
@@ -454,6 +455,8 @@ class EmailBotHandler:
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота"
         )
+        # PRIV-01 (D-14, D-15 п.1): текст из данных персоны, без обращения к БД; только информирование.
+        text += f"\n\n🔒 **Приватность почты**\n{email_ai_notice(current_persona())}"
         await self.notifier.send_message(text, chat_id=message.chat.id)
 
 
