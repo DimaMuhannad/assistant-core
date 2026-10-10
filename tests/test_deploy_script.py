@@ -1350,6 +1350,121 @@ def test_save_state_tightens_mode_of_existing_file(tmp_path):
     assert (path.stat().st_mode & 0o777) == 0o600
 
 
+# ---------------------------------------------------------------- WR-08: безопасная запись и чтение
+
+
+def test_write_private_replaces_symlink_and_never_touches_its_target(tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("чужие данные", encoding="utf-8")
+    victim.chmod(0o644)
+    link = tmp_path / "s.json"
+    link.symlink_to(victim)
+    deploy._write_private(link, "{}")
+    assert not link.is_symlink()
+    assert link.read_text(encoding="utf-8") == "{}"
+    assert stat.S_IMODE(link.stat().st_mode) == 0o600
+    assert victim.read_text(encoding="utf-8") == "чужие данные"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.json", "victim.txt"]
+
+
+def test_write_private_leaves_no_temp_file_and_replaces_content(tmp_path):
+    path = tmp_path / "r.md"
+    path.write_text("старое", encoding="utf-8")
+    path.chmod(0o644)
+    deploy._write_private(path, "новое")
+    assert path.read_text(encoding="utf-8") == "новое"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir()] == ["r.md"]
+
+
+def test_load_state_refuses_symlink_to_state_file(tmp_path):
+    real = tmp_path / "real.json"
+    deploy.save_state(real, _state_dict())
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    with pytest.raises(deploy.StateError):
+        deploy.load_state(link)
+
+
+def test_load_state_refuses_group_or_other_readable_file(tmp_path):
+    path = tmp_path / "s.json"
+    deploy.save_state(path, _state_dict())
+    for mode in (0o640, 0o604, 0o666):
+        path.chmod(mode)
+        with pytest.raises(deploy.StateError):
+            deploy.load_state(path)
+
+
+def test_load_state_refuses_file_of_other_owner(tmp_path, monkeypatch):
+    path = tmp_path / "s.json"
+    deploy.save_state(path, _state_dict())
+    monkeypatch.setattr(deploy.os, "geteuid", lambda: path.stat().st_uid + 1)
+    with pytest.raises(deploy.StateError):
+        deploy.load_state(path)
+
+
+def test_validate_report_path_rejects_symlink_even_to_new_target(tmp_path):
+    existing = tmp_path / "r.md"
+    existing.write_text("x", encoding="utf-8")
+    link_to_existing = tmp_path / "link_existing.md"
+    link_to_existing.symlink_to(existing)
+    dangling = tmp_path / "link_new.md"
+    dangling.symlink_to(tmp_path / "not_yet.md")
+    with pytest.raises(ValueError):
+        deploy.validate_report_path(link_to_existing)
+    with pytest.raises(ValueError):
+        deploy.validate_report_path(dangling)
+
+
+def test_validate_report_path_rejects_non_regular_file(tmp_path):
+    fifo = tmp_path / "pipe.md"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError):
+        deploy.validate_report_path(fifo)
+
+
+def test_state_file_default_lives_in_var_lib_and_is_not_in_var_tmp():
+    assert deploy.STATE_FILE_DEFAULT == Path("/var/lib/assistant-core/smoke-state.json")
+
+
+def test_save_state_creates_default_directory_with_0700(tmp_path, monkeypatch):
+    default = tmp_path / "lib" / "assistant-core" / "smoke-state.json"
+    monkeypatch.setattr(deploy, "STATE_FILE_DEFAULT", default)
+    deploy.save_state(default, _state_dict())
+    assert stat.S_IMODE(default.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(default.stat().st_mode) == 0o600
+
+
+def test_save_state_refuses_existing_default_directory_with_wide_mode(tmp_path, monkeypatch):
+    directory = tmp_path / "assistant-core"
+    directory.mkdir()
+    directory.chmod(0o755)
+    default = directory / "smoke-state.json"
+    monkeypatch.setattr(deploy, "STATE_FILE_DEFAULT", default)
+    with pytest.raises(deploy.StateError):
+        deploy.save_state(default, _state_dict())
+    assert not default.exists()
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o755
+
+
+def test_save_state_custom_path_requires_existing_parent(tmp_path):
+    with pytest.raises(OSError):
+        deploy.save_state(tmp_path / "missing" / "s.json", _state_dict())
+    assert not (tmp_path / "missing").exists()
+
+
+def test_main_refuses_unsafe_default_state_directory_before_any_command(tmp_path, monkeypatch, capsys):
+    directory = tmp_path / "assistant-core"
+    directory.mkdir()
+    directory.chmod(0o755)
+    monkeypatch.setattr(deploy, "STATE_FILE_DEFAULT", directory / "smoke-state.json")
+    runner = FakeRunner()
+    assert deploy.main([], runner=runner, now=lambda: NOW) == 2
+    assert deploy.main(["--restart"], runner=runner, now=lambda: NOW) == 2
+    assert runner.calls == []
+    assert "небезопасными" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------- D-07 и CLI
 
 
@@ -2373,3 +2488,11 @@ def test_docs_state_that_rollback_is_never_automatic_and_restart_needs_owner_yes
     assert "Автоотката нет" in text
     assert "ТОЛЬКО печатаются" in text
     assert "только после ответа «да» владельца" in text
+
+
+def test_docs_drop_old_state_path_and_describe_new_refusals():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    assert "/var/tmp/assistant-core-smoke-state.json" not in text
+    assert str(deploy.STATE_FILE_DEFAULT) in text
+    assert "символическ" in text
+    assert "чужим владельцем" in text

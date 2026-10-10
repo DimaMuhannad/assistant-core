@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import json
 import os
 import re
+import secrets
 import shlex
 import sqlite3
 import stat
@@ -53,7 +55,7 @@ SERVICE_NAME = "assistant-worker"
 STARTUP_TAIL_SECONDS = 60
 SYSTEMCTL_TIMEOUT_S = 30
 JOURNAL_TIMEOUT_S = 120
-STATE_FILE_DEFAULT = Path("/var/tmp/assistant-core-smoke-state.json")
+STATE_FILE_DEFAULT = Path("/var/lib/assistant-core/smoke-state.json")
 MESSAGE_LIMIT = 160
 MAX_LISTED_FINDINGS = 10
 GET_ME_TIMEOUT_S = 15
@@ -595,33 +597,98 @@ _STATE_REQUIRED_KEYS = ("invocation_id", "help_marker_utc", "checks")
 
 
 def _write_private(path: Path, text: str) -> None:
-    """Записать файл с правами 0600 (в том числе сузить права существующего файла)."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Атомарно записать файл с правами 0600 (WR-08, D-17).
+
+    Данные пишутся во временный файл рядом с целью (O_CREAT|O_EXCL|O_NOFOLLOW, 0600), затем
+    ``os.replace`` подменяет путь целиком. Заранее поставленная символическая ссылка заменяется,
+    а не открывается: файл, на который она указывала, не усекается и не меняется.
+    """
+    target = Path(path)
+    tmp = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
     except BaseException:
         try:
-            os.close(fd)
+            os.unlink(tmp)
         except OSError:
             pass
         raise
 
 
+def _prepare_state_dir(path: Path) -> None:
+    """Для пути состояния по умолчанию подготовить каталог /var/lib/assistant-core (0700).
+
+    Каталог создаётся при первом запуске; существующий принимается только собственный, без битов
+    группы и остальных. Для пользовательского ``--state-file`` родитель обязан существовать, как и раньше.
+    """
+    if Path(path) != STATE_FILE_DEFAULT:
+        return
+    _prepare_private_dir(
+        Path(path).parent,
+        StateError,
+        "каталог состояния существует с небезопасными правами или чужим владельцем: "
+        "исправьте каталог /var/lib/assistant-core или укажите --state-file",
+    )
+
+
+def _state_dir_refusal(state_file: Path) -> str | None:
+    """Текст отказа, если каталог состояния по умолчанию непригоден; None, если можно работать."""
+    try:
+        _prepare_state_dir(state_file)
+    except StateError as exc:
+        return str(exc)
+    except OSError as exc:
+        return f"каталог состояния недоступен ({type(exc).__name__})"
+    return None
+
+
 def save_state(path: Path, data: dict) -> None:
     """Записать JSON состояния с правами 0600 (каталог вне репозитория, секретов нет)."""
-    _write_private(path, json.dumps(data, ensure_ascii=False, indent=2))
+    _prepare_state_dir(Path(path))
+    _write_private(Path(path), json.dumps(data, ensure_ascii=False, indent=2))
 
 
-def load_state(path: Path) -> dict:
+def _read_state_text(path: Path) -> str:
+    """Прочитать файл состояния без следования по символической ссылке (WR-08, D-17).
+
+    Открытие с O_NOFOLLOW и проверка fstat по самому дескриптору: символическая ссылка, чужой
+    владелец и биты группы или остальных дают отказ, поэтому подложенный файл не меняет вердикт.
+    """
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError as exc:
         raise StateError(
             "файл состояния не найден: сначала запустите смоук без флагов (python3 scripts/deploy.py)"
         ) from exc
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise StateError("файл состояния является символической ссылкой: повторите смоук") from exc
+        raise StateError(f"файл состояния недоступен ({type(exc).__name__}): повторите смоук") from exc
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        st = os.fstat(handle.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise StateError("файл состояния не является обычным файлом: повторите смоук")
+        if st.st_uid != os.geteuid():
+            raise StateError("файл состояния принадлежит другому пользователю: повторите смоук")
+        if (st.st_mode & 0o077) != 0:
+            raise StateError("файл состояния доступен группе или остальным: повторите смоук")
+        try:
+            return handle.read()
+        except (OSError, ValueError) as exc:
+            raise StateError(f"файл состояния повреждён ({type(exc).__name__}): повторите смоук") from exc
+
+
+def load_state(path: Path) -> dict:
+    text = _read_state_text(Path(path))
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
         raise StateError(f"файл состояния повреждён ({type(exc).__name__}): повторите смоук") from exc
     if not isinstance(data, dict) or any(key not in data for key in _STATE_REQUIRED_KEYS):
         raise StateError("файл состояния имеет неожиданный формат: повторите смоук")
@@ -751,11 +818,17 @@ def verdict_reasons(state: dict) -> list[str]:
 
 
 def validate_report_path(path: Path) -> Path:
-    resolved = Path(path).expanduser().resolve()
+    raw = Path(path).expanduser()
+    # Проверка по неразрешённому пути: resolve() скрыл бы ссылку и подменил цель (WR-08).
+    if raw.is_symlink():
+        raise ValueError("путь отчёта не может быть символической ссылкой")
+    resolved = raw.resolve()
     if ".git" in resolved.parts:
         raise ValueError("отчёт нельзя писать внутрь каталога .git")
     if resolved.is_dir():
         raise ValueError("путь отчёта указывает на каталог")
+    if resolved.exists() and not resolved.is_file():
+        raise ValueError("путь отчёта существует и не является обычным файлом")
     if not resolved.parent.is_dir():
         raise ValueError(f"каталог отчёта не существует: {resolved.parent}")
     return resolved
@@ -1267,6 +1340,9 @@ def _run_phase(
         return 1
     try:
         save_state(args.state_file, state)
+    except StateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except OSError as exc:
         print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
         return 2
@@ -1363,6 +1439,9 @@ def _run_restart(
     state = build_state(smoke, clock())
     try:
         save_state(args.state_file, state)
+    except StateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except OSError as exc:
         print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
         return 2
@@ -1421,6 +1500,10 @@ def main(
         return _run_phase(args, runner, clock, sleep_fn, report_path)
 
     if args.restart:
+        refusal = _state_dir_refusal(args.state_file)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return 2
         return _run_restart(
             args,
             runner,
@@ -1436,6 +1519,10 @@ def main(
     if args.backup:
         return _run_backup(args, clock, live_db or LIVE_DB)
 
+    refusal = _state_dir_refusal(args.state_file)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 2
     result = run_smoke(
         runner,
         opener=opener or urllib.request.urlopen,
@@ -1446,6 +1533,9 @@ def main(
     state = build_state(result, clock())
     try:
         save_state(args.state_file, state)
+    except StateError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except OSError as exc:
         print(f"Не удалось сохранить файл состояния: {type(exc).__name__}", file=sys.stderr)
         return 2
