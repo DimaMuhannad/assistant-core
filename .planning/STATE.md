@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 02
 current_phase_name: Безопасность, приватность и находки ревью
 status: executing
-stopped_at: Completed 02-07-PLAN.md
-last_updated: "2026-10-10T14:40:59.517Z"
+stopped_at: Completed 02-08-PLAN.md
+last_updated: "2026-10-10T14:57:00.348Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 execution started
-state_head: 72899d9482937ad393bd391bb05eb4a7d43948ef
+state_head: 7f91310d13902f73517ed2e08bf0b0fbfe779845
 progress:
   total_phases: 9
   completed_phases: 1
   total_plans: 25
-  completed_plans: 17
+  completed_plans: 18
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 02 (Безопасность, приватность и находки ревью) — EXECUTING
-Plan: 8 of 15
+Plan: 9 of 15
 Status: Ready to execute
 Last activity: 2026-10-10 — Phase 02 execution started
 
@@ -74,6 +74,7 @@ Progress: [█░░░░░░░░░] 11%
 | Phase 02 P05 | 30min | 2 tasks | 4 files |
 | Phase 02 P06 | 40min | 3 tasks | 7 files |
 | Phase 02 P07 | 90min | 3 tasks | 1 files |
+| Phase 02 P08 | 45min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,7 @@ Progress: [█░░░░░░░░░] 11%
 - [Phase 02]: WR-13: страж правил использует регулярные выражения, собранные из частей, с самопроверкой (02-05)
 - [Phase 02]: 02-06: NDA-режим CLI-аудита определяется данными рабочих пространств (match_workspace по resolve()-пути и remote, строжайший допуск); workspaces=None даёт rc=1; прежняя ветка живёт до 02-10
 - [Phase 02]: 02-07: chat-app переведён на данные пространств через /gsd-quick (568ecf2); обёртка chat-app - делегатор в assistant-core, fail-closed
+- [Phase 02]: 02-08: shield wrapper loads workspaces from persona in main(); fail-closed rc=1 without values; no keyword allowance in commit or --all mode (D-21)
 
 ### Pending Todos
 
@@ -141,6 +143,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-10T14:40:58.898Z
-Stopped at: Completed 02-07-PLAN.md
+Last session: 2026-10-10T14:56:59.923Z
+Stopped at: Completed 02-08-PLAN.md
 Resume file: None
