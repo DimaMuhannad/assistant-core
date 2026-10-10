@@ -20,8 +20,10 @@ _FALLBACK_BASE = (
 )
 
 
-def email_ai_notice(persona: PersonaConfig) -> str:
-    """Текст предупреждения: из данных персоны, а при его отсутствии нейтральный запасной."""
+def email_ai_notice(persona: PersonaConfig | None = None) -> str:
+    """Текст предупреждения: из данных персоны, а при её отсутствии нейтральный запасной."""
+    if persona is None:
+        return _FALLBACK_BASE.format(services="")
     configured = persona.privacy.email_ai_notice
     if configured is not None:
         return configured

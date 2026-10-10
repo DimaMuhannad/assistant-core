@@ -382,3 +382,88 @@ async def test_notice_flag_independent_from_primed_context(notice_db):
     # повторная отметка идемпотентна
     await notice_db.mark_notice_shown("notice:email_ai")
     assert await notice_db.has_notice_shown("notice:email_ai") is True
+
+
+# ---------------------------------------------------------------- auth_google.py и .env.example (PRIV-01, D-15 п.3)
+
+import ast  # noqa: E402
+import importlib.util  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+AUTH_SCRIPT = REPO_ROOT / "scripts" / "auth_google.py"
+
+
+def _load_auth_script():
+    spec = importlib.util.spec_from_file_location("auth_google_under_test", AUTH_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_notice_without_persona_returns_neutral_fallback():
+    text = email_ai_notice(None)
+    assert "внешними ИИ-сервисами" in text
+    assert "не несёт ответственности" in text
+    assert "и др." not in text
+
+
+def test_auth_script_prints_default_persona_notice_to_stderr(monkeypatch, capsys):
+    monkeypatch.delenv("PERSONA_CONFIG_PATH", raising=False)
+    module = _load_auth_script()
+    module._print_privacy_notice()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Приватность" in captured.err
+    assert load_persona().privacy.email_ai_notice in captured.err
+
+
+def test_auth_script_falls_back_when_persona_unavailable(monkeypatch, capsys):
+    module = _load_auth_script()
+    import src.persona.loader as loader
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("persona недоступна")
+
+    monkeypatch.setattr(loader, "load_persona", _boom)
+    module._print_privacy_notice()  # исключение наружу не выходит
+    captured = capsys.readouterr()
+    assert email_ai_notice(None) in captured.err
+
+
+def test_env_example_has_commented_mail_block_with_russian_notice():
+    from assistant_shared.security import SECRET_PATTERNS
+
+    lines = (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if "Почта (сбор писем)" in line)
+    block = lines[start:]
+    joined = "\n".join(block)
+    assert "внешними ИИ-сервисами" in joined
+    assert "не отвечает" in joined
+    for name in ("MAILRU_EMAIL", "MAILRU_PASSWORD", "GMAIL_EMAIL", "GMAIL_PASSWORD"):
+        assert f"# {name}=" in block
+    assert all(line.startswith("#") or not line.strip() for line in block)
+    for line in block:
+        for name, pattern in SECRET_PATTERNS:
+            assert not pattern.search(line), (name, line)
+
+
+def test_auth_script_prints_notice_before_credentials_check():
+    tree = ast.parse(AUTH_SCRIPT.read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+
+    def _first_line(predicate):
+        lines = [n.lineno for n in ast.walk(main) if predicate(n)]
+        return min(lines) if lines else None
+
+    notice_line = _first_line(
+        lambda n: isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_print_privacy_notice"
+    )
+    creds_line = _first_line(
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "exists"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "creds_path"
+    )
+    assert notice_line is not None and creds_line is not None
+    assert notice_line < creds_line

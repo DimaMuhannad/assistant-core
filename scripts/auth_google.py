@@ -16,7 +16,24 @@ SCOPES = [
 ]
 
 
+def _print_privacy_notice() -> None:
+    """Предупреждение PRIV-01 в stderr: текст из данных персоны, при сбое нейтральный запасной."""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from src.persona.notices import email_ai_notice
+
+    try:
+        from src.persona.loader import load_persona
+
+        text = email_ai_notice(load_persona())
+    except Exception:
+        text = email_ai_notice(None)
+    print(f"🔒 Приватность: {text}", file=sys.stderr)
+
+
 def main() -> None:
+    _print_privacy_notice()
     token_path = Path("/opt/assistant-core/token.json")
     creds_path = Path("/opt/assistant-core/credentials.json")
 
