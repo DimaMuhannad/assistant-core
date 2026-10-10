@@ -679,6 +679,7 @@ def test_gate_source_has_no_test_filters_and_pins_xfail_strict():
 def test_run_all_measures_hash_after_pytest_core_and_before_other_rows(monkeypatch):
     events = []
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: events.append("hash") or "h")
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: dict(_SNAP))
     monkeypatch.setattr(
         gate,
         "_safe_pytest_step",
@@ -714,6 +715,7 @@ def test_run_all_measures_hash_after_pytest_core_and_before_other_rows(monkeypat
 def test_run_all_isolates_pytest_db_and_removes_temp_dir(monkeypatch):
     seen = {}
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: dict(_SNAP))
 
     def fake_pytest(repo, **kw):
         if repo == gate.REPO_CORE:
@@ -1170,6 +1172,7 @@ def _stub_all_steps(monkeypatch, calls=None):
     """Заглушки всех шагов: узнаваемые имена; под стражем БД реальный хеш из теста запрещён."""
     calls = calls if calls is not None else []
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: dict(_SNAP))
 
     def pytest_step(repo, **kw):
         calls.append(("pytest", repo, kw))
@@ -1231,6 +1234,7 @@ def test_shared_pytest_row_uses_core_venv_and_shared_cwd(monkeypatch):
 def test_run_all_never_aborts_on_step_exception(monkeypatch):
     """Исключение одного из run_*_step даёт красную строку «сбой шага», остальные 9 печатаются."""
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: "h")
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: dict(_SNAP))
     monkeypatch.setattr(
         gate, "run_pytest_step", lambda repo, **kw: CheckResult(repo, "pytest", True)
     )
@@ -1265,6 +1269,9 @@ import os  # noqa: E402
 import time  # noqa: E402
 
 WINDOW = (1000.0, 2000.0)
+# Совместимые снимки целостности (WR-03): та же схема, строки не убыли.
+_SNAP = {"schema": "s" * 64, "objects": {"t": "o" * 64}, "rows": {"t": 5}}
+COMPAT = (_SNAP, {**_SNAP, "rows": {"t": 6}})
 
 
 def _spy_remeasure(result):
@@ -1285,9 +1292,11 @@ def test_db_retry_service_write_then_quiet_remeasure_match_is_green_with_explici
         window=WINDOW,
         evidence_fn=lambda window: (True, "сервис assistant-worker: active; время изменения БД: T"),
         remeasure_fn=remeasure,
+        snapshots=COMPAT,
     )
     assert result.ok is True
     assert len(calls) == 1
+    assert "снимки целостности" in result.info
     assert "запись сервиса assistant-worker" in result.info
     assert "повторное измерение" in result.info
     assert "cccccccccccc" in result.info
@@ -1303,6 +1312,7 @@ def test_db_retry_quiet_remeasure_also_differs_is_red_with_guard_phrase():
         window=WINDOW,
         evidence_fn=lambda window: (True, "E"),
         remeasure_fn=remeasure,
+        snapshots=COMPAT,
     )
     assert result.ok is False
     assert len(calls) == 1  # один повтор, не цикл
@@ -1350,7 +1360,12 @@ def test_db_retry_none_in_quiet_remeasure_is_red():
     for pair in ((None, "c"), ("c", None), (None, None)):
         remeasure, calls = _spy_remeasure(pair)
         result = gate.db_unchanged_check(
-            "a", "b", window=WINDOW, evidence_fn=lambda window: (True, "E"), remeasure_fn=remeasure
+            "a",
+            "b",
+            window=WINDOW,
+            evidence_fn=lambda window: (True, "E"),
+            remeasure_fn=remeasure,
+            snapshots=COMPAT,
         )
         assert result.ok is False and len(calls) == 1
 
@@ -1360,10 +1375,15 @@ def test_db_retry_crash_in_remeasure_or_evidence_is_red():
         raise RuntimeError("сбой")
 
     r1 = gate.db_unchanged_check(
-        "a", "b", window=WINDOW, evidence_fn=lambda window: (True, "E"), remeasure_fn=boom
+        "a",
+        "b",
+        window=WINDOW,
+        evidence_fn=lambda window: (True, "E"),
+        remeasure_fn=boom,
+        snapshots=COMPAT,
     )
     r2 = gate.db_unchanged_check(
-        "a", "b", window=WINDOW, evidence_fn=boom, remeasure_fn=lambda: ("c", "c")
+        "a", "b", window=WINDOW, evidence_fn=boom, remeasure_fn=lambda: ("c", "c"), snapshots=COMPAT
     )
     assert r1.ok is False and r2.ok is False
 
@@ -1500,6 +1520,8 @@ def test_run_all_service_write_is_remeasured_and_row_is_green_with_note(monkeypa
     _stub_all_steps(monkeypatch)
     hashes = iter(["before", "after"])
     monkeypatch.setattr(gate, "_sha_or_none", lambda path: next(hashes))
+    snaps = iter(COMPAT)
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: next(snaps))
     monkeypatch.setattr(gate, "service_write_evidence", lambda window: (True, "сервис active"))
     monkeypatch.setattr(gate, "quiet_remeasure", lambda: ("quiet-hash-1", "quiet-hash-1"))
     results = gate._run_all(None)
@@ -1522,3 +1544,205 @@ def test_run_all_write_with_idle_service_stays_red(monkeypatch):
     row = next(r for r in results if r.name == "боевая assistant.db не изменена")
     assert row.ok is False
     assert gate.overall_green(results) is False
+
+
+# ============ WR-03 (D-17): снимок целостности БД и условие смягчения ============
+
+
+def _make_db(path, tables=None, fts=False):
+    """Временная SQLite: таблицы {имя: число строк}; при fts - FTS5 с триггером-копией."""
+    conn = sqlite3.connect(path)
+    try:
+        for name, count in (tables or {"items": 3}).items():
+            conn.execute(f"CREATE TABLE {name} (id INTEGER PRIMARY KEY, v TEXT)")
+            conn.executemany(f"INSERT INTO {name} (v) VALUES (?)", [("x",)] * count)
+        if fts:
+            conn.execute("CREATE VIRTUAL TABLE docs_fts USING fts5(body)")
+            conn.executemany("INSERT INTO docs_fts (body) VALUES (?)", [("слово",)] * 4)
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+def test_integrity_snapshot_contains_schema_and_row_counts(tmp_path):
+    snap = gate.db_integrity_snapshot(_make_db(tmp_path / "a.db", {"alpha": 2, "beta": 0}))
+    assert snap["rows"] == {"alpha": 2, "beta": 0}
+    assert len(snap["schema"]) == 64 and set(snap["objects"]) >= {"alpha", "beta"}
+
+
+def test_integrity_snapshot_excludes_fts_virtual_and_shadow_tables(tmp_path):
+    snap = gate.db_integrity_snapshot(_make_db(tmp_path / "a.db", {"items": 1}, fts=True))
+    assert snap["rows"] == {"items": 1}
+
+
+def test_integrity_snapshot_schema_changes_with_ddl_not_with_rows(tmp_path):
+    db = _make_db(tmp_path / "a.db", {"items": 1})
+    first = gate.db_integrity_snapshot(db)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO items (v) VALUES ('y')")
+    conn.commit()
+    same_schema = gate.db_integrity_snapshot(db)
+    conn.execute("ALTER TABLE items ADD COLUMN extra TEXT")
+    conn.commit()
+    conn.close()
+    changed = gate.db_integrity_snapshot(db)
+    assert same_schema["schema"] == first["schema"] and same_schema["rows"] == {"items": 2}
+    assert changed["schema"] != first["schema"]
+
+
+def test_integrity_snapshot_unreadable_or_missing_file_gives_none(tmp_path):
+    junk = tmp_path / "junk.db"
+    junk.write_bytes(b"not a database " * 100)
+    assert gate.db_integrity_snapshot(junk) is None
+    assert gate.db_integrity_snapshot(tmp_path / "нет.db") is None
+
+
+def test_integrity_snapshot_opens_only_read_only_uri(tmp_path, monkeypatch):
+    db = _make_db(tmp_path / "a.db")
+    seen = []
+    real_connect = sqlite3.connect
+
+    def spy(target, *args, **kwargs):
+        seen.append((target, kwargs))
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(gate.sqlite3, "connect", spy)
+    assert gate.db_integrity_snapshot(db) is not None
+    assert len(seen) == 1
+    target, kwargs = seen[0]
+    assert target.startswith("file:") and target.endswith("?mode=ro") and kwargs.get("uri") is True
+
+
+def _snap(schema="s", rows=None, objects=None):
+    return {"schema": schema, "objects": objects or {}, "rows": rows or {"t": 5}}
+
+
+def test_compare_integrity_growth_is_compatible():
+    ok, text = gate.compare_integrity(_snap(rows={"t": 5}), _snap(rows={"t": 9, "new": 1}))
+    assert ok is True and text
+
+
+def test_compare_integrity_schema_change_is_incompatible_and_names_object_only():
+    before = _snap("a", objects={"t": "1", "u": "2"})
+    after = _snap("b", objects={"t": "1", "u": "3"})
+    ok, text = gate.compare_integrity(before, after)
+    assert ok is False and "u" in text and "схема" in text
+
+
+def test_compare_integrity_shrink_outside_runtime_tables_is_incompatible():
+    ok, text = gate.compare_integrity(
+        _snap(rows={"email_messages": 10, "tasks": 4}), _snap(rows={"email_messages": 9, "tasks": 4})
+    )
+    assert ok is False and "email_messages" in text and "tasks" not in text
+
+
+def test_compare_integrity_shrink_in_runtime_delete_table_is_compatible():
+    assert "tasks" in gate.RUNTIME_DELETES_FROM
+    ok, _ = gate.compare_integrity(_snap(rows={"tasks": 4}), _snap(rows={"tasks": 1}))
+    assert ok is True
+
+
+def test_compare_integrity_missing_table_counts_as_shrink_even_with_same_schema_digest():
+    ok, text = gate.compare_integrity(_snap(rows={"memory_facts": 3}), _snap(rows={}))
+    assert ok is False and "memory_facts" in text
+
+
+def test_compare_integrity_none_snapshot_is_incompatible():
+    assert gate.compare_integrity(None, _snap())[0] is False
+    assert gate.compare_integrity(_snap(), None)[0] is False
+    assert gate.compare_integrity(None, None)[0] is False
+    assert gate.compare_integrity({"schema": "x"}, _snap())[0] is False
+
+
+def test_runtime_deletes_from_matches_delete_statements_in_storage_layer():
+    import re
+
+    source = (Path(_GATE_PATH).parents[1] / "src" / "storage" / "db.py").read_text(encoding="utf-8")
+    found = set(re.findall(r"DELETE FROM ([a-z_]+)\b", source))
+    assert found <= gate.RUNTIME_DELETES_FROM, sorted(found - gate.RUNTIME_DELETES_FROM)
+
+
+def _hash_pair_check(snapshots, **kw):
+    remeasure, calls = _spy_remeasure(("c" * 64, "c" * 64))
+    result = gate.db_unchanged_check(
+        "a" * 64,
+        "b" * 64,
+        diagnostics_fn=lambda: "ДИАГНОСТИКА",
+        window=WINDOW,
+        evidence_fn=lambda window: (True, "сервис assistant-worker: active"),
+        remeasure_fn=remeasure,
+        snapshots=snapshots,
+        **kw,
+    )
+    return result, calls
+
+
+def test_db_unchanged_check_mitigation_with_compatible_snapshots_is_green():
+    result, calls = _hash_pair_check(COMPAT)
+    assert result.ok is True and len(calls) == 1
+    assert "снимки целостности" in result.info
+
+
+def test_db_unchanged_check_mitigation_with_changed_schema_is_red():
+    after = {**_SNAP, "schema": "z" * 64, "objects": {"t": "q" * 64}}
+    result, calls = _hash_pair_check((_SNAP, after))
+    assert result.ok is False and calls == []
+    assert "смягчение не применено" in result.detail and "ДИАГНОСТИКА" in result.detail
+    assert "схема" in result.detail
+
+
+def test_db_unchanged_check_mitigation_without_snapshots_is_red():
+    result, calls = _hash_pair_check(None)
+    assert result.ok is False and calls == []
+    assert "смягчение не применено" in result.detail
+
+
+def test_db_unchanged_check_mitigation_with_none_snapshot_is_red():
+    for pair in ((None, _SNAP), (_SNAP, None), (None, None)):
+        result, calls = _hash_pair_check(pair)
+        assert result.ok is False and calls == []
+
+
+def test_db_unchanged_check_mitigation_with_shrinking_rows_is_red_and_names_only_tables():
+    after = {**_SNAP, "rows": {"t": 1}}
+    result, calls = _hash_pair_check((_SNAP, after))
+    assert result.ok is False and calls == []
+    assert "число строк уменьшилось в таблицах: t" in result.detail
+
+
+def test_db_unchanged_check_malformed_snapshots_are_red():
+    result, calls = _hash_pair_check("не кортеж")
+    assert result.ok is False and calls == []
+
+
+def test_db_unchanged_check_equal_hashes_ignore_snapshots():
+    assert gate.db_unchanged_check("h", "h", snapshots=None).ok is True
+
+
+def test_run_all_passes_snapshots_from_before_and_after_to_db_check(monkeypatch):
+    _stub_all_steps(monkeypatch)
+    order = iter([{"schema": "before"}, {"schema": "after"}])
+    monkeypatch.setattr(gate, "db_integrity_snapshot", lambda path: next(order))
+    seen = {}
+
+    def fake_check(before, after, **kw):
+        seen.update(kw)
+        return CheckResult("assistant-core", "боевая assistant.db не изменена", True)
+
+    monkeypatch.setattr(gate, "db_unchanged_check", fake_check)
+    results = gate._run_all(None)
+    assert seen["snapshots"] == ({"schema": "before"}, {"schema": "after"})
+    assert len(results) == 10
+
+
+def test_run_all_source_passes_snapshots_keyword_to_db_unchanged_check():
+    func = next(
+        n for n in ast.walk(_gate_tree()) if isinstance(n, ast.FunctionDef) and n.name == "_run_all"
+    )
+    calls = [
+        n
+        for n in ast.walk(func)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "db_unchanged_check"
+    ]
+    assert len(calls) == 1 and "snapshots" in {kw.arg for kw in calls[0].keywords}

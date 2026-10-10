@@ -440,6 +440,107 @@ def _sha_or_none(path: Path) -> str | None:
         return None
 
 
+# Таблицы, из которых рантайм assistant-worker удаляет строки (DELETE FROM в src/storage/db.py:
+# рабочие пространства и привязки, проекты, задачи, напоминания, документы, чанки и оглавление
+# методиста, живой тикер, пользовательские псевдонимы). Только в них уменьшение числа строк
+# между снимками «до» и «после» считается допустимым при смягчении проверки боевой БД (WR-03).
+# Состав получен поиском DELETE FROM по src/ и scripts/; каскады ON DELETE CASCADE идут только
+# от таблиц, из которых рантайм не удаляет, поэтому в список не добавлены. Список пополняется
+# только после проверки кода: лишняя таблица ослабляет проверку.
+RUNTIME_DELETES_FROM = frozenset(
+    {
+        "workspaces",
+        "connector_bindings",
+        "projects",
+        "tasks",
+        "reminders",
+        "documents",
+        "methodist_chunks",
+        "methodist_toc_index",
+        "bot_live_ticker",
+        "bot_custom_aliases",
+    }
+)
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def db_integrity_snapshot(db: Path) -> dict | None:
+    """Снимок целостности БД: хеш схемы и число строк по обычным таблицам, либо None.
+
+    Соединение только на чтение (``mode=ro``, как в db_content_hash): рядом с хешем это
+    единственное обращение гейта к боевой БД, читаются схема и счётчики, но не данные.
+    Виртуальные таблицы и их служебные таблицы (имя начинается с ``<имя виртуальной>_``)
+    в счётчики не входят: слияние сегментов FTS меняет число строк без участия данных.
+    Любой сбой чтения даёт None (fail-closed: нет снимка - нет смягчения).
+    """
+    try:
+        conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+    try:
+        conn.execute("BEGIN")
+        entries = conn.execute(
+            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
+        ).fetchall()
+        entries = sorted((str(kind), str(name), str(sql or "")) for kind, name, sql in entries)
+        objects = {}
+        schema_digest = hashlib.sha256()
+        for kind, name, sql in entries:
+            item = f"{kind}\0{name}\0{sql}".encode("utf-8", "surrogatepass")
+            objects[name] = hashlib.sha256(item).hexdigest()
+            schema_digest.update(item)
+            schema_digest.update(b"\n")
+        virtual = [
+            name
+            for kind, name, sql in entries
+            if kind == "table" and " ".join(sql.upper().split()).startswith("CREATE VIRTUAL TABLE")
+        ]
+        rows = {}
+        for kind, name, _sql in entries:
+            if kind != "table":
+                continue
+            if name in virtual or any(name.startswith(v + "_") for v in virtual):
+                continue
+            rows[name] = int(conn.execute(f"SELECT count(*) FROM {_quote_ident(name)}").fetchone()[0])
+        return {"schema": schema_digest.hexdigest(), "objects": objects, "rows": rows}
+    except (OSError, sqlite3.Error, ValueError):
+        return None
+    finally:
+        conn.close()
+
+
+def compare_integrity(before: dict | None, after: dict | None) -> tuple[bool, str]:
+    """Совместимы ли снимки целостности: (да/нет, причина). В причине только имена таблиц.
+
+    Нет: любой снимок None; схема изменилась; в таблице вне RUNTIME_DELETES_FROM число строк
+    уменьшилось. Рост строк и уменьшение в таблицах рантайма допустимы.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False, "снимок целостности боевой БД недоступен"
+    try:
+        if before["schema"] != after["schema"]:
+            b_obj, a_obj = before.get("objects", {}), after.get("objects", {})
+            changed = sorted(
+                name for name in set(b_obj) | set(a_obj) if b_obj.get(name) != a_obj.get(name)
+            )
+            names = ", ".join(changed[:10]) if changed else "неизвестно"
+            return False, f"схема боевой БД изменилась (объекты: {names})"
+        b_rows, a_rows = before["rows"], after["rows"]
+        shrunk = sorted(
+            name
+            for name, count in b_rows.items()
+            if name not in RUNTIME_DELETES_FROM and a_rows.get(name, 0) < count
+        )
+        if shrunk:
+            return False, "число строк уменьшилось в таблицах: " + ", ".join(shrunk[:10])
+        return True, f"схема БД та же, число строк вне таблиц рантайма не уменьшилось ({len(b_rows)} табл.)"
+    except (KeyError, TypeError, AttributeError):
+        return False, "снимок целостности боевой БД повреждён"
+
+
 def _service_state() -> str:
     """Состояние assistant-worker: только чтение (``systemctl is-active``), сервис не меняется."""
     try:
@@ -511,6 +612,7 @@ def db_unchanged_check(
     window: tuple[float, float] | None = None,
     evidence_fn=None,
     remeasure_fn=None,
+    snapshots: tuple[dict | None, dict | None] | None = None,
 ) -> CheckResult:
     """Хеш боевой БД до и сразу после pytest core: расхождение краснит итог.
 
@@ -519,7 +621,10 @@ def db_unchanged_check(
     окна измерения, делается ОДИН повторный замер в тихом окне (две пробы через
     REMEASURE_WAIT_S). Совпали обе - строка зелёная с явной пометкой в info. Не совпали,
     сервис не активен, время изменения вне окна, окна нет или любой хеш None - КРАСНЫЙ, как
-    раньше. Основная защита от записи тестов в боевую БД - страж tests/live_db_guard.py.
+    раньше. Смягчение допускается только при совместимых снимках целостности «до» и «после»
+    (WR-03, ``compare_integrity``): без снимков, при другой схеме или убыли строк вне таблиц
+    рантайма - КРАСНЫЙ. Основная защита от записи тестов в боевую БД - страж
+    tests/live_db_guard.py.
     """
     name = "боевая assistant.db не изменена"
     if before is None or after is None:
@@ -533,21 +638,31 @@ def db_unchanged_check(
         except Exception:
             consistent, evidence = False, "диагностика недоступна"
         if consistent:
-            try:
-                first, second = (remeasure_fn or quiet_remeasure)()
-            except Exception:
-                first = second = None
-            if first is not None and first == second:
-                info = (
-                    f"обнаружена запись сервиса assistant-worker в окне прогона ({evidence})\n"
-                    "SHA-256 до/после не совпали; повторное измерение в тихом окне "
-                    f"({REMEASURE_WAIT_S} с) дало совпадение двух замеров: {first[:12]}"
+            integrity_ok, integrity_note = False, "снимки целостности боевой БД не переданы"
+            if snapshots is not None:
+                try:
+                    integrity_ok, integrity_note = compare_integrity(*snapshots)
+                except Exception:
+                    integrity_ok, integrity_note = False, "снимки целостности боевой БД непригодны"
+            if not integrity_ok:
+                retry_note = f"смягчение не применено: {integrity_note}\n"
+            else:
+                try:
+                    first, second = (remeasure_fn or quiet_remeasure)()
+                except Exception:
+                    first = second = None
+                if first is not None and first == second:
+                    info = (
+                        f"обнаружена запись сервиса assistant-worker в окне прогона ({evidence})\n"
+                        "SHA-256 до/после не совпали; повторное измерение в тихом окне "
+                        f"({REMEASURE_WAIT_S} с) дало совпадение двух замеров: {first[:12]}\n"
+                        f"снимки целостности: {integrity_note}"
+                    )
+                    return CheckResult(REPO_CORE, name, True, info=info)
+                retry_note = (
+                    "повторное измерение в тихом окне тоже не подтвердило неизменность "
+                    f"(пауза {REMEASURE_WAIT_S} с)\n"
                 )
-                return CheckResult(REPO_CORE, name, True, info=info)
-            retry_note = (
-                "повторное измерение в тихом окне тоже не подтвердило неизменность "
-                f"(пауза {REMEASURE_WAIT_S} с)\n"
-            )
     try:
         diagnostics = (diagnostics_fn or _db_diagnostics)()
     except Exception:
@@ -682,6 +797,7 @@ def _run_all(save_dir: Path | None) -> list[CheckResult]:
     results: list[CheckResult] = []
     window_start = time.time()
     before = _sha_or_none(LIVE_DB)
+    snap_before = db_integrity_snapshot(LIVE_DB)
     tmp_dir = Path(tempfile.mkdtemp(prefix="gate-"))
     try:
         results.append(
@@ -697,8 +813,16 @@ def _run_all(save_dir: Path | None) -> list[CheckResult]:
         )
         # «После» измеряется СРАЗУ за pytest core: окно для записи живого сервиса минимально.
         after = _sha_or_none(LIVE_DB)
+        snap_after = db_integrity_snapshot(LIVE_DB)
         window_end = time.time()
-        results.append(db_unchanged_check(before, after, window=(window_start, window_end)))
+        results.append(
+            db_unchanged_check(
+                before,
+                after,
+                window=(window_start, window_end),
+                snapshots=(snap_before, snap_after),
+            )
+        )
         results.append(
             _safe_lint_step(
                 REPO_CORE, lint_bin=CORE_VENV_BIN / "lint-imports", cwd=CORE_DIR, env_extra=None
