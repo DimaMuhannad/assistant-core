@@ -29,6 +29,7 @@ from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
 from src.brain.secretary_dialog import SecretaryDialogEngine
 from src.brain.voice import VoiceProcessor
+from src.brain.dialog_safety import CLEAR_DIALOG_TEXT_WARNING
 from src.brain.intent_router import FastIntentRouter
 from src.composition import (
     default_drive_client,
@@ -1428,7 +1429,12 @@ class EmailBotHandler:
                 await self.handle_cmd_lms_reports(message)
                 return
             elif route_res.action == "clear_dialog":
-                await self.handle_cmd_clear_dialog(message)
+                # SAFE-01 (D-02, D-03): из обычного текста память не чистим и карточку не показываем.
+                # Слэш-форма (например /clear@имя_бота) остаётся на HITL-карточке.
+                if (message.text or "").lstrip().startswith("/"):
+                    await self.handle_cmd_clear_dialog(message)
+                else:
+                    await self._warn_clear_requires_slash(message)
                 return
             elif route_res.action in ("ticker", "status", "hud", "tablo"):
                 await self.handle_cmd_ticker(message)
@@ -1853,6 +1859,15 @@ class EmailBotHandler:
                 src_text = "\n\n📚 **Использованные первоисточники (выгрузка страниц):**\n" + "\n".join(unique_src[:4])
 
         await message.answer(f"🎓 **Методист кафедры физики:**\n\n{answer}{src_text}")
+
+    async def _warn_clear_requires_slash(self, message: Message) -> None:
+        """Предупредить, что очистка памяти из текста или голоса не выполняется (SAFE-01, D-02)."""
+        if not self._is_authorized(message.from_user.id):
+            return
+        if self.notifier:
+            await self.notifier.send_message(CLEAR_DIALOG_TEXT_WARNING, chat_id=message.chat.id)
+        else:
+            await message.answer(CLEAR_DIALOG_TEXT_WARNING)
 
     async def handle_cmd_clear_dialog(self, message: Message) -> None:
         """Handle /clear or /reset with Human-in-the-Loop confirmation guardrail."""
