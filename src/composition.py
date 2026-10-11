@@ -126,3 +126,43 @@ def default_email_collector(db: Any) -> Any:
 
     return EmailCollector(db=db)
 
+
+def default_notion_client() -> Any | None:
+    """Собрать клиент Notion по умолчанию (NotionAsyncClient)."""
+    from src.core.exceptions import MissingScopeError
+    from src.persona.bindings import binding, has_binding
+
+    if not has_binding("notion"):
+        return None
+
+    from src.connectors.notion.client import NotionAsyncClient
+
+    bound = binding("notion")
+    req = set(NotionAsyncClient.required_scopes)
+    actual = set(bound.scopes)
+    if not req.issubset(actual):
+        raise MissingScopeError(f"Коннектор notion требует scopes {req}, у персоны только {actual}")
+
+    return NotionAsyncClient()
+
+
+def default_git_evaluator(db: Any) -> Any | None:
+    """Собрать оценщика активности Git по умолчанию (GitProgressEvaluator)."""
+    git_provider = default_git_source_provider()
+    if git_provider is None:
+        return None
+
+    notion_client = default_notion_client()
+
+    from assistant_shared.hitl import ConfirmationStore
+    from src import config
+    from src.brain.git_evaluator import GitProgressEvaluator
+
+    return GitProgressEvaluator(
+        git_provider=git_provider,
+        notion_client=notion_client,
+        confirmation_store=ConfirmationStore(db.db_path),
+        default_activity_db_id=config.NOTION_ACTIVITY_DB_ID,
+        use_key_rotator=True,
+    )
+
