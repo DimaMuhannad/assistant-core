@@ -62,6 +62,7 @@ NOTION_TASKS_DB_ID = os.getenv("NOTION_TASKS_DB_ID", "")
 NOTION_PROJECTS_DB_ID = os.getenv("NOTION_PROJECTS_DB_ID", "")
 NOTION_WAITING_DB_ID = os.getenv("NOTION_WAITING_DB_ID", "")
 NOTION_JOURNAL_DB_ID = os.getenv("NOTION_JOURNAL_DB_ID", "")
+NOTION_ACTIVITY_DB_ID = os.getenv("NOTION_ACTIVITY_DB_ID", "")
 
 # Mailbox 1: Mail.ru (Personal & University)
 MAILRU_EMAIL = os.getenv("MAILRU_EMAIL", "")
