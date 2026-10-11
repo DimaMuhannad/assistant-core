@@ -178,8 +178,40 @@ Plans:
   4. Обработчик `notion_project_sync` зарегистрирован в рантайме, связь «пространство → проект Notion» берётся из персоны. Запись в Notion идёт только после подтверждения владельцем HITL-карточкой в Telegram: отклонение ничего не пишет, повтор не создаёт дублей, сбой SSH или Notion не роняет демон и виден в статусе (NTN-01, NTN-02).
   5. VERIFICATION.md доказывает достижимость из рантайма: задача планировщика видна в списке задач при старте, команда бота запускает оценку, а цепочка «команда → оценка → HITL-карточка → запись» проходит на временной БД с подменёнными SSH и Notion. Рестарт `assistant-worker` выполнен только после разрешения владельца, смоук-проверка OPS-01 пройдена.
 
-**Plans**: TBD
+**Plans:** 13 plans
+
+Plans:
+**Wave 1**
+- [ ] 04-01-PLAN.md — Трассирующая пуля: /git → оценка → кнопка → карточка HITL → подтверждение → запись в Notion на настоящем git и временной БД, fail-closed допуск первой операцией (GIT-01, GIT-02, GIT-03, GIT-04, NTN-01, NTN-02)
+- [ ] 04-02-PLAN.md — assistant-shared: ConfirmationStore.reopen_action и find_confirmations, аддитивно и без миграции (NTN-02)
+- [ ] 04-03-PLAN.md — Поля персоны git_source (stagnation_days, расписание), git_host и account в домене, NOTION_ACTIVITY_DB_ID (GIT-02, GIT-03, NTN-01)
+- [ ] 04-04-PLAN.md — Адаптер Notion: find_project_activity, required_scopes, протокол клиента (NTN-01, NTN-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 04-05-PLAN.md — Безопасное ядро: пересечение path, remote, ssh_alias в допуске, защита в глубину SshGitProvider, чтение всех веток, kill по таймауту (GIT-01, GIT-02, GIT-04)
+- [ ] 04-06-PLAN.md — Оценка: LLM-текст с запасным шаблоном, stagnation_days из персоны, промпт в двух копиях, статусы пропуска и сбоя SSH (GIT-02, GIT-03)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 04-07-PLAN.md — Идемпотентные карточки по ключу «пространство|дата», строгий обработчик notion_project_sync, проверка «уже есть» в Notion (NTN-01, NTN-02)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 04-08-PLAN.md — Корень композиции и планировщик: default_git_evaluator, задача git_progress_job, run_git_progress_cycle (GIT-01, GIT-03, NTN-01)
+- [ ] 04-09-PLAN.md — Команда /git в реестре и меню, откат карточки после сбоя Notion, диспетчеризация текста и голоса (GIT-03, NTN-02)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 04-10-PLAN.md — Ловушки git, LLM, Notion на рантайм-пути, сквозные сценарии от команды и планировщика, ast-проверки достижимости (GIT-02, GIT-04, NTN-02)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 04-11-PLAN.md — Блок git_source в config/persona.yaml: один коммит с --no-verify только по согласию владельца (GIT-03)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 04-12-PLAN.md — Гейт до рестарта, evidence R1-R5 для верификатора, инструкция docs/GIT_NOTION_SETUP.md (GIT-01, GIT-02, GIT-03, GIT-04, NTN-01, NTN-02)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 04-13-PLAN.md — Выкатка: рестарт по разрешению владельца, смоук OPS-01, живые проверки /help и /git (GIT-01, GIT-02, GIT-03, GIT-04, NTN-01, NTN-02)
+
 **UI hint**: no
+**Заметки для планирования**: реальные ID Notion владелец присылает отдельно (D-06, D-07): до того все пространства получают статус «Notion не настроен», а полная цепочка до записи доказана тестами на временной БД. Правка `config/persona.yaml` требует разового обхода hook по согласию владельца (D-21 фазы 2). Правки `/opt/assistant-shared` аддитивные, без миграции.
 
 ### Phase 5: Цепочка web-HITL → Telegram
 
@@ -265,7 +297,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Собственный гейт качества assistant-core | v3.0 | 10/10 | Complete    | 2026-10-10 |
 | 2. Безопасность, приватность и находки ревью | v3.0 | 15/15 | Complete    | 2026-10-10 |
 | 3. Владение схемой БД | v3.0 | 6/6 | Complete    | 2026-10-11 |
-| 4. Цепочка Git → оценка → HITL → Notion | v3.0 | 0/TBD | Not started | - |
+| 4. Цепочка Git → оценка → HITL → Notion | v3.0 | 0/13 | Planned | - |
 | 5. Цепочка web-HITL → Telegram | v3.0 | 0/TBD | Not started | - |
 | 6. Ретро-верификация v2.0 | v3.0 | 0/TBD | Not started | - |
 | 7. Быстрые действия по времени суток | v3.0 | 0/TBD | Not started | - |

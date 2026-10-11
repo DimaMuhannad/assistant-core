@@ -38,14 +38,14 @@ created: "2026-10-11"
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| 04-GIT-01 | TBD | TBD | GIT-01 | — | оценщик собирается по привязке и scope `git.read`, вызывается из `main()` | unit + ast | `pytest tests/test_phase4_reachability.py -k composition -x` | ❌ W0 | ⬜ pending |
-| 04-GIT-02 | TBD | TBD | GIT-02 | — | нет remote / каталога / `.git` → статус-строка, ни LLM, ни Notion | unit | `pytest tests/test_git_chain.py -k skipped -x` | ❌ W0 | ⬜ pending |
-| 04-GIT-03 | TBD | TBD | GIT-03 | — | `/git` по-русски, задача в расписании, запасной шаблон при сбое LLM | unit + ast | `pytest tests/test_git_chain.py tests/test_phase4_reachability.py -x` | ❌ W0 | ⬜ pending |
-| 04-GIT-04 | TBD | TBD | GIT-04 | NDA air-gap | NDA / неизвестный допуск / ошибка персоны → ноль вызовов git, LLM, Notion | integration (ловушки) | `pytest tests/test_git_chain_airgap.py -x` | ❌ W0 | ⬜ pending |
-| 04-NTN-01 | TBD | TBD | NTN-01 | — | обработчик `notion_project_sync` зарегистрирован; нет ID → «Notion не настроен» | unit | `pytest tests/test_git_chain.py -k notion -x` | ❌ W0 | ⬜ pending |
-| 04-NTN-02 | TBD | TBD | NTN-02 | HITL | запись в Notion только после подтверждения; отклонение → 0 вызовов; повтор → 1 запись | integration | `pytest tests/test_phase4_chain_e2e.py -x` | ❌ W0 | ⬜ pending |
-| 04-SHARED | TBD | TBD | GIT-04 / NTN-02 | — | `reopen_action`, `find_confirmations` в assistant-shared | unit | `/opt/assistant-core/.venv/bin/pytest /opt/assistant-shared/tests/test_hitl_shared.py -x` | ✅ файл есть | ⬜ pending |
-| 04-REG | TBD | TBD | — | — | счётчики команд 9→10, ожидания NDA-карточек переписаны | unit | `pytest tests/test_command_registry.py tests/test_bot_menu.py tests/test_notion_git_hitl.py -x` | ✅ править | ⬜ pending |
+| 04-GIT-01 | 04-08 (+04-01) | 4 (+1) | GIT-01 | — | оценщик собирается по привязке и scope `git.read`, вызывается из `main()` | unit + ast | `pytest tests/test_phase4_reachability.py -k composition -x` | ❌ W0 | ⬜ pending |
+| 04-GIT-02 | 04-06 (+04-01, 04-05) | 2 (+1, 2) | GIT-02 | — | нет remote / каталога / `.git` → статус-строка, ни LLM, ни Notion | unit | `pytest tests/test_git_chain.py -k skipped -x` | ❌ W0 | ⬜ pending |
+| 04-GIT-03 | 04-06, 04-08, 04-09 | 2, 4, 4 | GIT-03 | — | `/git` по-русски, задача в расписании, запасной шаблон при сбое LLM | unit + ast | `pytest tests/test_git_chain.py tests/test_phase4_reachability.py -x` | ❌ W0 | ⬜ pending |
+| 04-GIT-04 | 04-10 (+04-01, 04-05) | 5 (+1, 2) | GIT-04 | NDA air-gap | NDA / неизвестный допуск / ошибка персоны → ноль вызовов git, LLM, Notion | integration (ловушки) | `pytest tests/test_git_chain_airgap.py -x` | ❌ W0 | ⬜ pending |
+| 04-NTN-01 | 04-07 (+04-08) | 3 (+4) | NTN-01 | — | обработчик `notion_project_sync` зарегистрирован; нет ID → «Notion не настроен» | unit | `pytest tests/test_git_chain.py -k notion -x` | ❌ W0 | ⬜ pending |
+| 04-NTN-02 | 04-10 (+04-01, 04-07, 04-09) | 5 (+1, 3, 4) | NTN-02 | HITL | запись в Notion только после подтверждения; отклонение → 0 вызовов; повтор → 1 запись | integration | `pytest tests/test_phase4_chain_e2e.py -x` | ❌ W0 | ⬜ pending |
+| 04-SHARED | 04-02 | 1 | GIT-04 / NTN-02 | — | `reopen_action`, `find_confirmations` в assistant-shared | unit | `/opt/assistant-core/.venv/bin/pytest /opt/assistant-shared/tests/test_hitl_shared.py -x` | ✅ файл есть | ⬜ pending |
+| 04-REG | 04-09 | 4 | — | — | счётчики команд 9→10, ожидания NDA-карточек переписаны | unit | `pytest tests/test_command_registry.py tests/test_bot_menu.py tests/test_notion_git_hitl.py -x` | ✅ править | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
