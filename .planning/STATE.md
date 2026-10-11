@@ -6,10 +6,10 @@ current_phase: 4
 current_phase_name: Цепочка Git → оценка → HITL → Notion
 status: planning
 stopped_at: Phase 4 context gathered
-last_updated: "2026-10-11T10:10:56.922Z"
+last_updated: "2026-10-11T10:16:40.495Z"
 last_activity: 2026-10-11
 last_activity_desc: Phase 03 complete, transitioned to Phase 4
-state_head: c34dfa223c570524ce6bda830452e0d656cba595
+state_head: d3d0d1f692cdac4775b545a544fc813072d4ca80
 progress:
   total_phases: 9
   completed_phases: 3
@@ -163,6 +163,10 @@ None yet.
 - [Phase 6]: Нестабильный `test_concurrent_write_two_processes` (DAT-03) нужно прогнать повторно и честно записать результат. 2026-10-11 при приёмке Phase 3 упал в 1 из 2 полных прогонов chat-app (принято, A-1).
 - [Phase 3, принято]: пустые `assistant.db-wal/-shm` не чистятся (A-3); `fastapi` не в зависимостях assistant-shared (A-4).
 - [Инфраструктура]: agy не передаёт задачи субагентам, механизм делегирования нужно починить отдельной задачей через `/gsd-quick` (A-6).
+
+### Roadmap Evolution
+
+- Phase 4 edited: edited fields: goal, success_criteria (NDA excluded entirely, D-12); REQUIREMENTS GIT-04 rewritten
 
 ## Deferred Items
 
