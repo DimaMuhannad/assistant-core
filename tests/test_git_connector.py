@@ -218,7 +218,7 @@ async def test_fetch_remote_nonexistent_dir(tmp_path: Path):
 
 
 async def test_fetch_remote_timeout_handling(temp_git_repo: Path):
-    """Таймаут fetch перехватывается, процесс не падает, возвращается False (D-02)."""
+    """Таймаут fetch перехватывается, процесс не падает, вызывается kill и возвращается False (D-02)."""
     ws = Workspace(
         id="ws_slow",
         name="Slow Remote",
@@ -229,6 +229,9 @@ async def test_fetch_remote_timeout_handling(temp_git_repo: Path):
     provider = SshGitProvider()
 
     mock_proc = AsyncMock()
+    from unittest.mock import MagicMock
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock()
     async def _slow_communicate():
         await asyncio.sleep(1.0)
         return b"", b""
@@ -237,6 +240,7 @@ async def test_fetch_remote_timeout_handling(temp_git_repo: Path):
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         result = await provider.fetch_remote(ws, timeout_sec=0.01)
         assert result is False
+        mock_proc.kill.assert_called_once()
 
 
 async def test_fetch_remote_failure_handling(temp_git_repo: Path):
@@ -260,10 +264,14 @@ async def test_fetch_remote_failure_handling(temp_git_repo: Path):
 
 
 async def test_list_repositories_filtering(tmp_path: Path):
-    """list_repositories фильтрует пространства по наличию .git или remote/ssh_alias."""
+    """list_repositories фильтрует пространства по air-gap допуску и наличию .git/remote."""
     repo_dir = tmp_path / "valid_repo"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
+
+    repo_dir_pub = tmp_path / "valid_pub"
+    repo_dir_pub.mkdir()
+    (repo_dir_pub / ".git").mkdir()
 
     ws_local = Workspace(
         id="ws_1",
@@ -271,9 +279,9 @@ async def test_list_repositories_filtering(tmp_path: Path):
         clearance=WorkspaceClearance.INTERNAL,
         path=str(repo_dir),
     )
-    ws_remote = Workspace(
+    ws_remote_nda = Workspace(
         id="ws_2",
-        name="Remote Git",
+        name="Remote Git NDA",
         clearance=WorkspaceClearance.RESTRICTED_NDA,
         path=str(tmp_path / "remote_only"),
         ssh_alias="remote_alias",
@@ -284,11 +292,18 @@ async def test_list_repositories_filtering(tmp_path: Path):
         clearance=WorkspaceClearance.PUBLIC,
         path=str(tmp_path / "just_dir"),
     )
+    ws_pub = Workspace(
+        id="ws_4",
+        name="Public Git",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir_pub),
+        remote="https://github.com/example/pub.git",
+    )
 
     dummy_persona = Persona(
         id="p1",
         name="Test Persona",
-        workspaces=(ws_local, ws_remote, ws_plain),
+        workspaces=(ws_local, ws_remote_nda, ws_plain, ws_pub),
     )
 
     provider = SshGitProvider()
@@ -296,5 +311,136 @@ async def test_list_repositories_filtering(tmp_path: Path):
         repos = await provider.list_repositories()
         repo_ids = {r.id for r in repos}
         assert "ws_1" in repo_ids
-        assert "ws_2" in repo_ids
-        assert "ws_3" not in repo_ids
+        assert "ws_4" in repo_ids
+        assert "ws_2" not in repo_ids  # NDA исключён шлюзом допуска
+        assert "ws_3" not in repo_ids  # Нет репозитория
+
+
+async def test_fetch_remote_rejects_nda_workspace(temp_git_repo: Path):
+    """fetch_remote для restricted_nda бросает AirGapViolationError до запуска подпроцесса."""
+    from src.core.exceptions import AirGapViolationError
+
+    ws_nda = Workspace(
+        id="nda_repo",
+        name="NDA Repo",
+        clearance=WorkspaceClearance.RESTRICTED_NDA,
+        path=str(temp_git_repo),
+        remote="git@secret.corp:repo.git",
+    )
+    provider = SshGitProvider()
+
+    with patch("asyncio.create_subprocess_exec") as mock_exec:
+        with pytest.raises(AirGapViolationError):
+            await provider.fetch_remote(ws_nda)
+        mock_exec.assert_not_called()
+
+
+async def test_get_commits_since_rejects_nda_workspace(temp_git_repo: Path):
+    """get_commits_since для restricted_nda бросает AirGapViolationError до запуска подпроцесса."""
+    from src.core.exceptions import AirGapViolationError
+
+    ws_nda = Workspace(
+        id="nda_repo",
+        name="NDA Repo",
+        clearance=WorkspaceClearance.RESTRICTED_NDA,
+        path=str(temp_git_repo),
+    )
+    provider = SshGitProvider()
+
+    with patch("asyncio.create_subprocess_exec") as mock_exec:
+        with pytest.raises(AirGapViolationError):
+            await provider.get_commits_since(ws_nda)
+        mock_exec.assert_not_called()
+
+
+async def test_git_log_sees_fetched_remote_branches(tmp_path: Path):
+    """git log видит коммит в remote-tracking ветке после fetch (Pitfall 4)."""
+    origin_bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, capture_output=True)
+
+    clone_a = tmp_path / "clone_a"
+    subprocess.run(["git", "clone", str(origin_bare), str(clone_a)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester A"], cwd=clone_a, check=True)
+    subprocess.run(["git", "config", "user.email", "a@test.local"], cwd=clone_a, check=True)
+    (clone_a / "init.txt").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=clone_a, check=True)
+    subprocess.run(["git", "commit", "-m", "feat: initial clone A"], cwd=clone_a, check=True)
+    subprocess.run(["git", "push", "origin", "HEAD:main"], cwd=clone_a, check=True)
+
+    clone_b = tmp_path / "clone_b"
+    subprocess.run(["git", "clone", str(origin_bare), str(clone_b)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester B"], cwd=clone_b, check=True)
+    subprocess.run(["git", "config", "user.email", "b@test.local"], cwd=clone_b, check=True)
+    (clone_b / "feature_b.txt").write_text("feature from B", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=clone_b, check=True)
+    subprocess.run(["git", "commit", "-m", "feat: commit only in branch B"], cwd=clone_b, check=True)
+    subprocess.run(["git", "push", "origin", "HEAD:feature-b"], cwd=clone_b, check=True)
+
+    # В clone_a делаем fetch
+    subprocess.run(["git", "fetch", "--all"], cwd=clone_a, check=True, capture_output=True)
+
+    ws_a = Workspace(
+        id="ws_a",
+        name="Workspace A",
+        clearance=WorkspaceClearance.INTERNAL,
+        path=str(clone_a),
+    )
+    provider = SshGitProvider()
+    commits = await provider.get_commits_since(ws_a, max_commits=20)
+    messages = [c.message for c in commits]
+    assert "feat: commit only in branch B" in messages
+
+
+async def test_subprocess_env_never_prompts(temp_git_repo: Path):
+    """Подпроцессы git получают GIT_TERMINAL_PROMPT=0, BatchMode=yes и stdin=DEVNULL."""
+    ws = Workspace(
+        id="ws_env",
+        name="Env Test",
+        clearance=WorkspaceClearance.INTERNAL,
+        path=str(temp_git_repo),
+        remote="https://git.example/repo.git",
+    )
+    provider = SshGitProvider()
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        await provider.fetch_remote(ws)
+        assert mock_exec.called
+        kwargs = mock_exec.call_args.kwargs
+        env = kwargs.get("env", {})
+        assert env.get("GIT_TERMINAL_PROMPT") == "0"
+        ssh_cmd = env.get("GIT_SSH_COMMAND", "")
+        assert "BatchMode=yes" in ssh_cmd
+        assert "ConnectTimeout" in ssh_cmd
+        assert kwargs.get("stdin") == asyncio.subprocess.DEVNULL
+
+
+async def test_list_repositories_returns_domain_workspaces_from_persona_config(tmp_path: Path):
+    """list_repositories для PersonaConfig возвращает доменные Workspace с полем name."""
+    import json
+    from src.persona.loader import load_persona
+    from .synthetic_persona import SYNTHETIC_PERSONA, synthetic_to_config
+
+    data = synthetic_to_config(SYNTHETIC_PERSONA)
+    # Создаем локальный .git для первого пространства
+    repo_path = tmp_path / "synthetic_public_repo"
+    repo_path.mkdir(parents=True)
+    (repo_path / ".git").mkdir()
+
+    data["persona"]["workspaces"][0]["path"] = str(repo_path)
+    p_file = tmp_path / "persona.json"
+    p_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    loaded_persona = load_persona(p_file)
+
+    provider = SshGitProvider()
+    with use_persona(loaded_persona):
+        repos = await provider.list_repositories()
+        assert len(repos) >= 1
+        for r in repos:
+            assert isinstance(r, Workspace)
+            assert hasattr(r, "name")
+            assert r.clearance != WorkspaceClearance.RESTRICTED_NDA
+

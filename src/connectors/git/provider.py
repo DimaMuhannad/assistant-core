@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 from datetime import datetime
@@ -15,7 +16,9 @@ from pathlib import Path
 from typing import ClassVar
 
 from src.core.domain.entities import ConnectorRole, GitCommit, Workspace
+from src.core.exceptions import AirGapViolationError
 from src.core.ports.connectors import BaseGitSourceProvider
+from src.security.airgap import is_git_chain_eligible, git_chain_workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,24 @@ class SshGitProvider(BaseGitSourceProvider):
     def __init__(self, git_bin: str | None = None) -> None:
         self.git_bin = git_bin or shutil.which("git") or "git"
 
+    def _git_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+        return env
+
+    async def _terminate(self, proc: asyncio.subprocess.Process) -> None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+
     async def health_check(self) -> bool:
         """Проверка наличия исполняемого файла git."""
         return bool(shutil.which(self.git_bin))
@@ -44,7 +65,10 @@ class SshGitProvider(BaseGitSourceProvider):
             from src.persona.current import current_persona
 
             persona = current_persona()
-            workspaces = getattr(persona, "workspaces", ())
+            split = git_chain_workspaces(persona)
+            if split.unresolved:
+                return []
+            workspaces = split.eligible
         except Exception:
             return []
 
@@ -58,6 +82,9 @@ class SshGitProvider(BaseGitSourceProvider):
 
     async def fetch_remote(self, workspace: Workspace, timeout_sec: float = 30.0) -> bool:
         """Неблокирующий git fetch по SSH с таймаутом (D-01, D-02)."""
+        if not is_git_chain_eligible(workspace):
+            raise AirGapViolationError(f"Рабочее пространство {workspace.id} не допущено к цепочке git (Air-Gap)")
+
         p = Path(workspace.path)
         if not (p / ".git").exists():
             logger.warning("Каталог %s не является git-репозиторием, fetch пропущен", workspace.path)
@@ -68,11 +95,14 @@ class SshGitProvider(BaseGitSourceProvider):
             return True
 
         cmd = [self.git_bin, "-C", str(p), "fetch", "--all", "--prune"]
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=self._git_env(),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
             if proc.returncode == 0:
@@ -87,6 +117,8 @@ class SshGitProvider(BaseGitSourceProvider):
             return False
         except asyncio.TimeoutError:
             logger.warning("Таймаут git fetch для %s (> %s с)", workspace.id, timeout_sec)
+            if proc is not None:
+                await self._terminate(proc)
             return False
         except Exception as e:
             logger.warning("Ошибка при вызове git fetch для %s: %s", workspace.id, e)
@@ -99,17 +131,25 @@ class SshGitProvider(BaseGitSourceProvider):
         max_commits: int = 100,
     ) -> list[GitCommit]:
         """Чтение истории коммитов репозитория начиная с указанной даты (D-01, D-03)."""
+        if not is_git_chain_eligible(workspace):
+            raise AirGapViolationError(f"Рабочее пространство {workspace.id} не допущено к цепочке git (Air-Gap)")
+
         p = Path(workspace.path)
         if not (p / ".git").exists():
             logger.warning("Каталог %s не существует, коммиты не найдены", workspace.path)
             return []
 
         # Формат: %H (hash), %an (author name), %aI (author date ISO), %s (subject) с разделителем Unit Separator \x1f
+        # Фильтр --since работает по дате коммитера, разбор берёт дату автора (%aI), расхождение допустимо;
+        # при достижении max_commits счётчик ограничен сверху.
+        # Флаги --branches и --remotes гарантируют включение коммитов из всех веток (в т.ч. remote-tracking).
         cmd = [
             self.git_bin,
             "-C",
             str(p),
             "log",
+            "--branches",
+            "--remotes",
             f"-n{max_commits}",
             "--format=format:COMMIT_RECORD%x1f%H%x1f%an%x1f%aI%x1f%s",
             "--shortstat",
@@ -117,11 +157,14 @@ class SshGitProvider(BaseGitSourceProvider):
         if since is not None:
             cmd.append(f"--since={since.isoformat()}")
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=self._git_env(),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15.0)
             if proc.returncode != 0:
@@ -135,6 +178,11 @@ class SshGitProvider(BaseGitSourceProvider):
 
             output = stdout.decode("utf-8", errors="replace")
             return self._parse_git_log(output)
+        except asyncio.TimeoutError:
+            logger.warning("Таймаут git log для %s (> 15.0 с)", workspace.id)
+            if proc is not None:
+                await self._terminate(proc)
+            return []
         except Exception as e:
             logger.warning("Ошибка чтения git log для %s: %s", workspace.id, e)
             return []
