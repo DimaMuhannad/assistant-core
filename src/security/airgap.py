@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from typing import Any
 
 from src.core.domain.entities import GitCommit, WorkspaceClearance
+
+GIT_CHAIN_ELIGIBLE_CLEARANCES: frozenset[str] = frozenset({"public", "internal"})
 
 NDA_MASK_MARKER = "[NDA: тело и вложения скрыты Air-Gap]"
 NDA_GIT_MASK_MARKER = "[NDA: сообщение коммита скрыто Air-Gap]"
@@ -238,4 +240,67 @@ def sanitize_notion_payload_for_airgap(
     commit_count = clean.get("commit_count", 0)
     clean["summary"] = f"Проект находится под защитой Air-Gap (NDA). Зафиксировано {commit_count} коммитов."
     return clean
+
+
+def is_git_chain_eligible(workspace: Any) -> bool:
+    """Определить, допущено ли рабочее пространство к цепочке Git -> LLM -> Notion (D-12, D-13).
+    
+    Fail-closed: разрешены только явные public и internal. Любые ошибки, None или
+    неизвестные значения допуска возвращают False.
+    """
+    if workspace is None:
+        return False
+
+    try:
+        clearance = (
+            workspace.get("clearance")
+            if isinstance(workspace, dict)
+            else getattr(workspace, "clearance", None)
+        )
+        if clearance is None:
+            return False
+
+        val = clearance.value if hasattr(clearance, "value") else str(clearance)
+        return val in GIT_CHAIN_ELIGIBLE_CLEARANCES
+    except Exception:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class GitChainSplit:
+    """Результат разделения пространств по допуску к цепочке Git."""
+
+    eligible: tuple[Any, ...]
+    excluded_count: int
+    unresolved: bool
+
+
+def git_chain_workspaces(persona: Any) -> GitChainSplit:
+    """Разделить пространства персоны на допущенные к цепочке Git и исключенные (D-12, D-13).
+    
+    Fail-closed: при persona is None или любой ошибке доступа возвращает unresolved=True.
+    """
+    if persona is None:
+        return GitChainSplit(eligible=(), excluded_count=0, unresolved=True)
+
+    try:
+        if hasattr(persona, "to_domain") and callable(persona.to_domain):
+            workspaces = persona.to_domain().workspaces
+        else:
+            workspaces = getattr(persona, "workspaces", ())
+
+        eligible: list[Any] = []
+        for ws in workspaces:
+            if is_git_chain_eligible(ws):
+                eligible.append(ws)
+
+        eligible_tuple = tuple(eligible)
+        excluded_count = len(workspaces) - len(eligible_tuple)
+        return GitChainSplit(
+            eligible=eligible_tuple,
+            excluded_count=excluded_count,
+            unresolved=False,
+        )
+    except Exception:
+        return GitChainSplit(eligible=(), excluded_count=0, unresolved=True)
 

@@ -163,6 +163,31 @@ def build_dialog_feedback_keyboard(msg_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[btn_up, btn_down]])
 
 
+def build_notion_sync_keyboard(conf_id: str) -> InlineKeyboardMarkup:
+    """Инлайн-кнопки для подтверждения или отклонения публикации в Notion (D-04, D-11)."""
+    btn_confirm = InlineKeyboardButton(
+        text="✅ Опубликовать в Notion",
+        callback_data=f"ntn:conf:{conf_id}",
+    )
+    btn_reject = InlineKeyboardButton(
+        text="❌ Отклонить",
+        callback_data=f"ntn:rej:{conf_id}",
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[[btn_confirm, btn_reject]])
+
+
+def build_git_run_keyboard(token: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Инлайн-кнопки для запроса карточки Notion по готовым проектам сводки (D-04)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, label in items:
+        btn = InlineKeyboardButton(
+            text=f"Внести в Notion: {label}",
+            callback_data=f"ntn:req:{token}:{idx}",
+        )
+        rows.append([btn])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def format_hitl_proposal_card(action_type: str, params: dict[str, Any]) -> str:
     """Formats interactive HITL proposal card for Telegram in Russian with project styling (D-01)."""
     lines: list[str] = []

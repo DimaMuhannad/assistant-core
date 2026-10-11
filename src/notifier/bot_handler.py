@@ -1,6 +1,8 @@
 import asyncio
+from collections import OrderedDict
 import logging
 import re
+import secrets
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone, date
@@ -25,6 +27,7 @@ from assistant_shared.hitl import (
 )
 
 from src.storage.db import Database
+from src.brain.git_evaluator import NotionSyncError
 from src.brain.reply_generator import ReplyGenerator
 from src.brain.summarizer import GeminiSummarizer
 from src.brain.secretary_dialog import SecretaryDialogEngine
@@ -49,10 +52,12 @@ from src.notifier.telegram import (
     TelegramNotifier,
     build_email_action_keyboard,
     build_draft_action_keyboard,
+    build_git_run_keyboard,
     build_hitl_action_keyboard,
     build_dialog_feedback_keyboard,
     build_lms_tasks_keyboard,
     build_lms_pub_hide_keyboard,
+    build_notion_sync_keyboard,
     format_and_split_for_telegram,
     format_hitl_proposal_card,
 )
@@ -134,9 +139,12 @@ class EmailBotHandler:
         calendar_client: Any | None = None,
         schedule_parser_factory: Callable[..., Any] | None = None,
         email_collector_factory: Callable[[Database], Any] | None = None,
+        git_evaluator: Any | None = None,
     ):
         self.db = db
         self.calendar_client = calendar_client
+        self.git_evaluator = git_evaluator
+        self._git_runs: OrderedDict[str, Any] = OrderedDict()
         self.reply_generator = reply_generator or ReplyGenerator()
         self.email_sender = email_sender or default_email_sender()
         self.notifier = notifier
@@ -404,11 +412,17 @@ class EmailBotHandler:
         self.router.callback_query(F.data == "tk:refresh")(self.cb_ticker_refresh)
         self.router.callback_query(F.data == "noop")(self.cb_noop)
 
+        # Callbacks for Notion project sync (Phase 4, Plan 04-01)
+        self.router.callback_query(F.data.startswith("ntn:req:"))(self.cb_ntn_request)
+        self.router.callback_query(F.data.startswith("ntn:conf:"))(self.cb_ntn_confirm)
+        self.router.callback_query(F.data.startswith("ntn:rej:"))(self.cb_ntn_reject)
+
         # Callbacks for Connector Health Alerts & Dialog Feedback (UXQ-04)
         self.router.callback_query(F.data.startswith("chk:"))(self.cb_connector_health_check)
         self.router.callback_query(F.data.startswith("fb:"))(self.cb_dialog_feedback)
 
         # Interactive text messages (for edit, commands, or conversational secretary)
+        self.router.message(Command("git"))(self.handle_cmd_git)
         self.router.message(Command("ticker", "hud", "tablo", "status"))(self.handle_cmd_ticker)
         self.router.message(Command("clear", "reset"))(self.handle_cmd_clear_dialog)
         self.router.message(Command("undo_clear"))(self.handle_cmd_undo_clear)
@@ -2128,6 +2142,152 @@ class EmailBotHandler:
         )
         if callback.message:
             await callback.message.edit_text(text)
+        await callback.answer("Отклонено")
+
+    async def handle_cmd_git(self, message: Message) -> None:
+        """Оценивает ход разработки по git-репозиториям рабочих пространств (D-04, GIT-03)."""
+        if not self._is_authorized(message.from_user.id):
+            return
+
+        if self.git_evaluator is None:
+            await message.answer("Оценка git не подключена: в персоне нет привязки git_source.")
+            return
+
+        status_msg = await message.answer("⏳ Оцениваю ход проектов по git...")
+        try:
+            run = await self.git_evaluator.evaluate()
+        except Exception as e:
+            logger.warning("Git evaluation failed: %s", type(e).__name__)
+            err_text = "⚠️ Оценка не выполнена, подробности в журнале."
+            if status_msg:
+                await status_msg.edit_text(err_text)
+            else:
+                await message.answer(err_text)
+            return
+
+        token = secrets.token_hex(4)
+        self._git_runs[token] = run
+        while len(self._git_runs) > 5:
+            self._git_runs.popitem(last=False)
+
+        items: list[tuple[int, str]] = []
+        for idx, entry in enumerate(run.entries):
+            if entry.notion_ready:
+                ws_name = getattr(entry.workspace, "name", getattr(entry.workspace, "id", f"Проект {idx + 1}"))
+                items.append((idx, ws_name))
+
+        kb = build_git_run_keyboard(token, items) if items else None
+        run_text = self.git_evaluator.format_run_text(run)
+        if status_msg:
+            await status_msg.edit_text(run_text, reply_markup=kb)
+        else:
+            await message.answer(run_text, reply_markup=kb)
+
+    async def cb_ntn_request(self, callback: CallbackQuery) -> None:
+        """Запрос карточки подтверждения для записи проекта в Notion (D-04)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        parts = (callback.data or "").split(":")
+        if len(parts) != 4:
+            await callback.answer("Неверный формат запроса", show_alert=True)
+            return
+
+        token, idx_str = parts[2], parts[3]
+        if token not in self._git_runs:
+            await callback.answer("Результат устарел, повторите /git", show_alert=True)
+            return
+
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            await callback.answer("Неверный индекс", show_alert=True)
+            return
+
+        run = self._git_runs[token]
+        if idx < 0 or idx >= len(run.entries):
+            await callback.answer("Результат устарел, повторите /git", show_alert=True)
+            return
+
+        entry = run.entries[idx]
+        if not entry.notion_ready:
+            await callback.answer("Notion не настроен", show_alert=True)
+            return
+
+        proposal = await self.git_evaluator.propose_card(entry, run.date_iso)
+        conf = proposal.confirmation
+        card_text = self.git_evaluator.format_card_text(conf)
+        kb = build_notion_sync_keyboard(conf.id)
+        await callback.answer()
+        if callback.message:
+            await callback.message.answer(card_text, reply_markup=kb)
+
+    async def cb_ntn_confirm(self, callback: CallbackQuery) -> None:
+        """Обрабатывает подтверждение публикации отчета активности в Notion (NTN-02)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        parts = (callback.data or "").split(":", 2)
+        if len(parts) < 3:
+            await callback.answer("Неверный формат", show_alert=True)
+            return
+
+        conf_id = parts[2]
+        store = self._get_confirmation_store()
+
+        conf = await store.get_confirmation(conf_id)
+        if not conf:
+            await callback.answer("Запрос не найден", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("❌ Запрос не найден или удален.")
+            return
+
+        if conf.status == ConfirmationStatus.EXPIRED or conf.is_expired():
+            await callback.answer("Срок действия запроса истек", show_alert=True)
+            if callback.message:
+                await callback.message.edit_text("⏳ Срок действия запроса истек.")
+            return
+
+        if conf.status != ConfirmationStatus.PENDING:
+            await callback.answer(f"Запрос уже обработан ({conf.status.value})", show_alert=True)
+            return
+
+        try:
+            await resume_action(conf_id, store, confirmed_by=str(callback.from_user.id))
+            ws_name = conf.payload.get("workspace_name") or conf.payload.get("workspace_id") or "Проект"
+            text = f"✅ Записано в Notion: {ws_name}"
+            if callback.message:
+                await callback.message.edit_text(text)
+            await callback.answer("Записано в Notion")
+        except NotionSyncError as e:
+            logger.warning("NotionSyncError при подтверждении %s: %s", conf_id, e)
+            await callback.answer("Не записано в Notion, повторите", show_alert=True)
+        except ValueError:
+            await callback.answer("Запрос уже обработан", show_alert=True)
+        except LookupError:
+            await callback.answer("Обработчик записи не зарегистрирован", show_alert=True)
+        except Exception as e:
+            logger.warning("Ошибка при подтверждении публикации Notion %s: %s", conf_id, e)
+            await callback.answer("Ошибка при выполнении", show_alert=True)
+
+    async def cb_ntn_reject(self, callback: CallbackQuery) -> None:
+        """Обрабатывает отклонение публикации отчета активности в Notion (D-10)."""
+        if not self._is_authorized(callback.from_user.id):
+            await callback.answer("⛔ Доступ запрещен", show_alert=True)
+            return
+
+        parts = (callback.data or "").split(":", 2)
+        if len(parts) < 3:
+            await callback.answer("Неверный формат", show_alert=True)
+            return
+
+        conf_id = parts[2]
+        store = self._get_confirmation_store()
+        await store.reject_action(conf_id, rejected_by=str(callback.from_user.id))
+        if callback.message:
+            await callback.message.edit_text("❌ Отклонено. В Notion ничего не записано.")
         await callback.answer("Отклонено")
 
     async def cb_dlg_undo_clear(self, callback: CallbackQuery) -> None:
