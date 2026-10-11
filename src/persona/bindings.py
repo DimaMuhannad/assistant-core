@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.persona.current import current_persona
-from src.persona.models import ConnectorBindingConfig, MethodistConfig, PersonaConfig, PersonaConfigError
+from src.persona.models import (
+    ConnectorBindingConfig,
+    GitSourceParams,
+    MethodistConfig,
+    PersonaConfig,
+    PersonaConfigError,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,16 @@ class LmsSettings:
     """Адрес личного кабинета (привязка lms)."""
 
     base_url: str
+
+
+@dataclass(frozen=True)
+class GitSourceSettings:
+    """Порог застоя и расписание оценки хода работ (привязка git_source)."""
+
+    stagnation_days: int
+    day_of_week: str
+    hour: int
+    minute: int
 
 
 def binding(role: str, persona: PersonaConfig | None = None) -> ConnectorBindingConfig:
@@ -111,3 +127,21 @@ def methodist_settings(persona: PersonaConfig | None = None) -> MethodistConfig:
 def format_hours(value: float) -> str:
     """Норма часов для текстов: 8.5 -> «8.5», 6.0 -> «6»."""
     return f"{value:g}"
+
+
+def git_source_settings(persona: Any = None) -> GitSourceSettings:
+    """Параметры застоя и расписания из привязки git_source персоны."""
+    p = persona or current_persona()
+    connectors = getattr(p, "connectors", None)
+    bindings = getattr(connectors, "git_source", None) if connectors else None
+    if not bindings:
+        params = GitSourceParams()
+    else:
+        params = GitSourceParams.model_validate(bindings[0].config)
+    return GitSourceSettings(
+        stagnation_days=params.stagnation_days,
+        day_of_week=params.day_of_week,
+        hour=params.hour,
+        minute=params.minute,
+    )
+

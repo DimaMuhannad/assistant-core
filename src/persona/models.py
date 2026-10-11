@@ -187,11 +187,21 @@ class _LmsParams(BaseModel):
     base_url: str = Field(pattern=_HTTP_URL)
 
 
+class GitSourceParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stagnation_days: int = Field(default=7, ge=1, le=365)
+    day_of_week: str = Field(default="sun", pattern="^(mon|tue|wed|thu|fri|sat|sun)$")
+    hour: int = Field(default=20, ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+
+
 # Параметры привязок по ролям (WR-04): проверяются при загрузке, а не в момент вызова.
 _ROLE_PARAMS: dict[str, type[BaseModel]] = {
     "schedule_source": _ScheduleSourceParams,
     "timesheet": _TimesheetParams,
     "lms": _LmsParams,
+    "git_source": GitSourceParams,
 }
 
 
@@ -381,6 +391,8 @@ class PersonaConfig(BaseModel):
                     remote=ws.remote,
                     ssh_alias=ws.ssh_alias,
                     notion_project=ws.notion_project,
+                    git_host=ws.git_host,
+                    account=ws.account,
                 )
                 for ws in self.workspaces
             ),

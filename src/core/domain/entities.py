@@ -12,8 +12,8 @@ from enum import StrEnum
 class ConnectorRole(StrEnum):
     """Роль коннектора в платформе.
 
-    GIT_SOURCE и NOTION только объявлены (привязки в персоне допустимы, пустые); портов и
-    реализаций у них нет до Фазы 7.
+    Порт git существует (BaseGitSourceProvider), у notion порта коннектора нет,
+    клиент описан протоколом NotionClientLike.
     """
 
     SCHEDULE_SOURCE = "schedule_source"
@@ -94,6 +94,8 @@ class Workspace:
     remote: str | None = None
     ssh_alias: str | None = None
     notion_project: str | None = None
+    git_host: str | None = None
+    account: str = ""
 
 
 @dataclass(frozen=True, slots=True)
