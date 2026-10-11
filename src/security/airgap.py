@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, is_dataclass, replace
+import os
+from pathlib import PurePath
 from typing import Any
 
 from src.core.domain.entities import GitCommit, WorkspaceClearance
@@ -275,10 +277,99 @@ class GitChainSplit:
     unresolved: bool
 
 
+def _norm_path(p: Any) -> str | None:
+    if not isinstance(p, (str, bytes)) and not isinstance(p, os.PathLike):
+        return None
+    s = str(p).strip()
+    if not s:
+        return None
+    norm = os.path.normpath(s).rstrip("/\\").casefold()
+    return norm if norm else None
+
+
+def _paths_overlap(p1: str | None, p2: str | None) -> bool:
+    if p1 is None or p2 is None:
+        return False
+    if p1 == p2:
+        return True
+    try:
+        parts1 = PurePath(p1).parts
+        parts2 = PurePath(p2).parts
+        if len(parts1) < len(parts2) and parts2[:len(parts1)] == parts1:
+            return True
+        if len(parts2) < len(parts1) and parts1[:len(parts2)] == parts2:
+            return True
+    except Exception:
+        return True
+    return False
+
+
+def _norm_remote(r: Any) -> str | None:
+    if not isinstance(r, str):
+        return None
+    s = r.strip()
+    if not s:
+        return None
+    val = s.rstrip("/")
+    if val.lower().endswith(".git"):
+        val = val[:-4]
+    val = val.rstrip("/").casefold()
+    return val if val else None
+
+
+def _remotes_overlap(r1: str | None, r2: str | None) -> bool:
+    if r1 is None or r2 is None:
+        return False
+    return r1 == r2
+
+
+def _norm_alias(a: Any) -> str | None:
+    if not isinstance(a, str):
+        return None
+    s = a.strip()
+    if not s:
+        return None
+    return s.casefold()
+
+
+def _aliases_overlap(a1: str | None, a2: str | None) -> bool:
+    if a1 is None or a2 is None:
+        return False
+    return a1 == a2
+
+
+def _workspace_overlaps(ws: Any, other: Any) -> bool:
+    """Проверяет пересечение пространств по path, remote или ssh_alias.
+    
+    Любая ошибка внутри трактуется как пересечение (fail-closed).
+    """
+    try:
+        p1 = _norm_path(getattr(ws, "path", None) if not isinstance(ws, dict) else ws.get("path"))
+        p2 = _norm_path(getattr(other, "path", None) if not isinstance(other, dict) else other.get("path"))
+        if _paths_overlap(p1, p2):
+            return True
+
+        r1 = _norm_remote(getattr(ws, "remote", None) if not isinstance(ws, dict) else ws.get("remote"))
+        r2 = _norm_remote(getattr(other, "remote", None) if not isinstance(other, dict) else other.get("remote"))
+        if _remotes_overlap(r1, r2):
+            return True
+
+        a1 = _norm_alias(getattr(ws, "ssh_alias", None) if not isinstance(ws, dict) else ws.get("ssh_alias"))
+        a2 = _norm_alias(getattr(other, "ssh_alias", None) if not isinstance(other, dict) else other.get("ssh_alias"))
+        if _aliases_overlap(a1, a2):
+            return True
+
+        return False
+    except Exception:
+        return True
+
+
 def git_chain_workspaces(persona: Any) -> GitChainSplit:
-    """Разделить пространства персоны на допущенные к цепочке Git и исключенные (D-12, D-13).
+    """Разделить пространства персоны на допущенные к цепочке Git и исключенные (D-12, D-13, A8).
     
     Fail-closed: при persona is None или любой ошибке доступа возвращает unresolved=True.
+    Исключаются не только пространства с недопущенным clearance, но и допущенные пространства,
+    идентичность которых (path, remote, ssh_alias) пересекается с любым исключённым пространством.
     """
     if persona is None:
         return GitChainSplit(eligible=(), excluded_count=0, unresolved=True)
@@ -289,12 +380,25 @@ def git_chain_workspaces(persona: Any) -> GitChainSplit:
         else:
             workspaces = getattr(persona, "workspaces", ())
 
-        eligible: list[Any] = []
+        first_pass_eligible: list[Any] = []
+        excluded: list[Any] = []
         for ws in workspaces:
             if is_git_chain_eligible(ws):
-                eligible.append(ws)
+                first_pass_eligible.append(ws)
+            else:
+                excluded.append(ws)
 
-        eligible_tuple = tuple(eligible)
+        final_eligible: list[Any] = []
+        for ws in first_pass_eligible:
+            has_overlap = False
+            for exc_ws in excluded:
+                if _workspace_overlaps(ws, exc_ws):
+                    has_overlap = True
+                    break
+            if not has_overlap:
+                final_eligible.append(ws)
+
+        eligible_tuple = tuple(final_eligible)
         excluded_count = len(workspaces) - len(eligible_tuple)
         return GitChainSplit(
             eligible=eligible_tuple,
@@ -303,4 +407,5 @@ def git_chain_workspaces(persona: Any) -> GitChainSplit:
         )
     except Exception:
         return GitChainSplit(eligible=(), excluded_count=0, unresolved=True)
+
 
