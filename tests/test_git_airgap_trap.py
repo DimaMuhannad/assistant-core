@@ -196,6 +196,7 @@ async def test_nda_commits_not_sent_to_llm(
         period_start="2026-03-20",
         period_end="2026-03-27",
         is_stagnant=False,
+        stagnation_days=7,
         clearance="restricted_nda",
     )
 
@@ -231,6 +232,7 @@ async def test_public_commits_processed_normally(
         period_start="2026-03-20",
         period_end="2026-03-27",
         is_stagnant=False,
+        stagnation_days=7,
         clearance="public",
     )
 
