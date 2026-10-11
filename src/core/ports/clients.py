@@ -85,3 +85,11 @@ class NotionClientLike(Protocol):
         summary: str,
     ) -> dict[str, Any]: ...
 
+    async def find_project_activity(
+        self,
+        database_id: str,
+        project_page_id: str,
+        date_iso: str,
+    ) -> dict[str, Any] | None: ...
+
+

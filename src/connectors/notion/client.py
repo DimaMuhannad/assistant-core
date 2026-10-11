@@ -1,7 +1,7 @@
 """Async Notion API client for Voice-First Second Brain synchronization."""
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 import httpx
 
 from src import config
@@ -20,6 +20,7 @@ class NotionAsyncClient:
 
     BASE_URL = "https://api.notion.com/v1"
     NOTION_VERSION = "2022-06-28"
+    required_scopes: ClassVar[tuple[str, ...]] = ("notion.read", "notion.write")
 
     def __init__(
         self,
@@ -318,4 +319,36 @@ class NotionAsyncClient:
             resp = await client.post("/pages", json=payload)
             resp.raise_for_status()
             return resp.json()
+
+    async def find_project_activity(
+        self,
+        database_id: str,
+        project_page_id: str,
+        date_iso: str,
+    ) -> dict[str, Any] | None:
+        """Поиск существующей записи активности проекта за дату (D-08).
+
+        Защита от дублирования при повторной отправке или сбое сети.
+        """
+        payload = {
+            "filter": {
+                "and": [
+                    {
+                        "property": "Project",
+                        "relation": {"contains": project_page_id},
+                    },
+                    {
+                        "property": "Date",
+                        "date": {"equals": date_iso},
+                    },
+                ]
+            },
+            "page_size": 1,
+        }
+        async with self._client() as client:
+            resp = await client.post(f"/databases/{database_id}/query", json=payload)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            return results[0] if results else None
+
 
