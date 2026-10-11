@@ -25,6 +25,7 @@ from google.genai import types
 
 from assistant_shared.hitl import (
     ConfirmationChannel,
+    ConfirmationStatus,
     ConfirmationStore,
     PendingConfirmation,
     register_action_handler,
@@ -57,6 +58,11 @@ NDA_EXCLUDED_LINE = "NDA: исключено из оценки"
 NOTION_ACTION_TYPE = "notion_project_sync"
 CARD_TTL_MINUTES = 1440
 DEFAULT_STAGNATION_DAYS = GitSourceParams().stagnation_days
+
+
+def build_card_key(workspace_id: str, date_iso: str) -> str:
+    """Формирование составного idempotency-ключа карточки подтверждения (D-08)."""
+    return f"{workspace_id}|{date_iso}"
 
 SUMMARY_MAX_LEN = 1500
 COMMIT_MESSAGE_MAX_LEN = 200
@@ -179,6 +185,8 @@ class GitProgressEvaluator:
         self.llm_client = llm_client
         self.use_key_rotator = use_key_rotator
         self.model = model or getattr(config, "GEMINI_MODEL", "gemini-2.5-flash")
+        self._card_lock = asyncio.Lock()
+        self._last_signature: Any = None
 
         register_action_handler(NOTION_ACTION_TYPE, self._handle_notion_sync)
 
@@ -490,7 +498,7 @@ class GitProgressEvaluator:
         date_iso: str,
         ttl_minutes: int = CARD_TTL_MINUTES,
     ) -> CardProposal:
-        """Создать отложенное подтверждение PendingConfirmation для одного проекта (D-04, D-11)."""
+        """Создать отложенное подтверждение PendingConfirmation для одного проекта (D-04, D-08, D-11)."""
         if not entry.notion_ready or entry.report is None:
             ws_id = getattr(entry.workspace, "id", str(entry.workspace))
             raise ValueError(f"Рабочее пространство {ws_id} не готово к созданию карточки Notion")
@@ -502,27 +510,98 @@ class GitProgressEvaluator:
         ws_name = getattr(ws, "name", ws_id)
         report = entry.report
 
-        payload = {
-            "workspace_id": ws_id,
-            "workspace_name": ws_name,
-            "notion_project_id": getattr(ws, "notion_project", ""),
-            "database_id": self.default_activity_db_id,
-            "date_iso": date_iso,
-            "commit_count": report.commit_count,
-            "status": "Застой" if report.is_stagnant else "Активно",
-            "summary": report.summary_text,
-        }
+        target_id = build_card_key(ws_id, date_iso)
 
-        target_id = f"{ws_id}|{date_iso}"
-        conf = await self.confirmation_store.create_confirmation(
-            persona_id=persona_id,
-            action_type=NOTION_ACTION_TYPE,
-            target_id=target_id,
-            payload=payload,
-            channel=ConfirmationChannel.TELEGRAM,
-            ttl_minutes=ttl_minutes,
-        )
-        return CardProposal(confirmation=conf, created=True)
+        async with self._card_lock:
+            existing = await self.confirmation_store.find_confirmations(
+                action_type=NOTION_ACTION_TYPE,
+                target_id=target_id,
+                statuses=(
+                    ConfirmationStatus.PENDING,
+                    ConfirmationStatus.CONFIRMED,
+                    ConfirmationStatus.REJECTED,
+                ),
+            )
+            if existing:
+                return CardProposal(confirmation=existing[0], created=False)
+
+            payload = {
+                "workspace_id": ws_id,
+                "workspace_name": ws_name,
+                "notion_project_id": getattr(ws, "notion_project", ""),
+                "database_id": self.default_activity_db_id,
+                "date_iso": date_iso,
+                "commit_count": report.commit_count,
+                "status": "Застой" if report.is_stagnant else "Активно",
+                "summary": report.summary_text,
+            }
+
+            conf = await self.confirmation_store.create_confirmation(
+                persona_id=persona_id,
+                action_type=NOTION_ACTION_TYPE,
+                target_id=target_id,
+                payload=payload,
+                channel=ConfirmationChannel.TELEGRAM,
+                ttl_minutes=ttl_minutes,
+            )
+            return CardProposal(confirmation=conf, created=True)
+
+    async def propose_cards(
+        self,
+        run: EvaluationRun,
+        ttl_minutes: int = CARD_TTL_MINUTES,
+    ) -> list[CardProposal]:
+        """Создать карточки подтверждения для всех готовых записей прогона (D-11)."""
+        proposals: list[CardProposal] = []
+        for entry in run.entries:
+            if not entry.notion_ready or entry.report is None:
+                continue
+            ws_id = getattr(entry.workspace, "id", str(entry.workspace))
+            try:
+                proposal = await self.propose_card(entry, run.date_iso, ttl_minutes=ttl_minutes)
+                proposals.append(proposal)
+            except Exception as e:
+                logger.warning("Ошибка создания карточки для %s: %s", ws_id, type(e).__name__)
+        return proposals
+
+    def register_run_signature(self, run: EvaluationRun) -> bool:
+        """Регистрация сигнатуры прогона для отслеживания изменений статусов (D-05)."""
+        items: list[tuple[str, str, bool | None, bool]] = []
+        for entry in run.entries:
+            ws_id = getattr(entry.workspace, "id", str(entry.workspace))
+            status_val = getattr(entry.status, "value", str(entry.status))
+            stagnant = entry.report.is_stagnant if entry.report is not None else None
+            items.append((ws_id, status_val, stagnant, entry.notion_ready))
+        items.sort(key=lambda x: x[0])
+        sig = (tuple(items), run.nda_excluded)
+        changed = sig != self._last_signature
+        self._last_signature = sig
+        return changed
+
+    def format_background_summary(self, run: EvaluationRun) -> str | None:
+        """Сводка фонового запуска: только записи без карточек и строка NDA (D-05)."""
+        lines: list[str] = []
+        for entry in run.entries:
+            if entry.report is not None and entry.notion_ready:
+                continue
+            ws_name = getattr(entry.workspace, "name", getattr(entry.workspace, "id", "Проект"))
+            if entry.status == GitStatus.OK:
+                emoji = "⚠️" if (entry.report and entry.report.is_stagnant) else "⚡"
+                note_suffix = f" [{entry.notion_note}]" if entry.notion_note else ""
+                lines.append(f"• {ws_name}: {emoji} {entry.status_text}{note_suffix}")
+            else:
+                lines.append(f"• {ws_name}: {entry.status_text}")
+
+        if run.nda_excluded:
+            lines.append(f"\n🔒 {NDA_EXCLUDED_LINE}")
+
+        if not lines:
+            return None
+
+        full_text = "\n".join(lines).strip()
+        if len(full_text) > 3900:
+            return full_text[:3897] + "..."
+        return full_text
 
     def format_run_text(self, run: EvaluationRun) -> str:
         """Сформировать текст ответа для команды /git (D-04, D-05, D-12)."""
