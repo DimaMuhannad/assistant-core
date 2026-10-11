@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 3
 current_phase_name: Владение схемой БД
 status: executing
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-10-11T00:21:00.000Z"
+stopped_at: Completed 03-05-PLAN.md
+last_updated: "2026-10-11T00:51:00.000Z"
 last_activity: 2026-10-11
-last_activity_desc: Completed plan 03-04 (runtime reachability tests and verification evidence for GSD verifier)
-state_head: 236ee9a
+last_activity_desc: Completed plan 03-05 (live copy migration check with owner consent)
+state_head: 2ffa865
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 31
-  completed_plans: 29
+  completed_plans: 30
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 3 — Владение схемой БД
-Plan: 4 of 6 (03-04 completed)
+Plan: 5 of 6 (03-05 completed)
 Status: Executing
-Last activity: 2026-10-11 — Completed plan 03-04 (runtime reachability tests and verification evidence for GSD verifier)
+Last activity: 2026-10-11 — Completed plan 03-05 (live copy migration check with owner consent)
 
 Progress: [█████░░░░░] 32%
 
@@ -87,6 +87,7 @@ Progress: [█████░░░░░] 32%
 | Phase 03 P02 | 15 min | 3 tasks | 4 files |
 | Phase 03 P03 | 20 min | 2 tasks | 4 files |
 | Phase 03 P04 | 15 min | 2 tasks | 3 files |
+| Phase 03 P05 | 10 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -141,6 +142,7 @@ Progress: [█████░░░░░] 32%
 - [Phase 03]: 03-02: Database._apply_migrations вынесен в рабочий поток (to_thread), общий хвост init_db без инлайн-DDL; DDL-сканер по 75 файлам src/ без allowlist; паритет 85 объектов схемы трёх источников (SCH-01, DAT-01)
 - [Phase 03]: 03-03: scripts/check_migration_on_copy.py с обязательным --source, mode=ro, iterdump-хеш и сравнение снимков без утечки данных; раздел 13 docs/OPS_DEPLOY.md (DAT-01, D-05, D-06)
 - [Phase 03]: 03-04: сквозная цепочка достижимости AST main.py/db.py -> старт на временных БД -> реальные роуты бота (9 passed); гейт ЗЕЛЁНЫЙ (10 строк ✓), боевая БД не открывалась (7d071cf43c1c); 03-VERIFICATION.md пишет верификатор GSD по перечню R1-R5 (D-13, критерий 5)
+- [Phase 03]: 03-05: владелец согласовал check-and-restart; проверка на копии боевой БД ЗЕЛЁНАЯ (hash 47559fb19642 совпал, данные неизменны, 0003 уже в БД); рестарт не выполнялся (DAT-01, Критерий 2)
 
 ### Pending Todos
 

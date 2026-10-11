@@ -342,7 +342,7 @@ def render_report(report: MigrationCheckReport) -> str:
         "==================================================================",
         "  ОТЧЁТ ПРОВЕРКИ МИГРАЦИИ НА КОПИИ БД (DAT-01, D-05)",
         "==================================================================",
-        f"Хеш источника до:    {report.hash_before[:SHORT_HASH_LEN]}",
+        f"Хеш источника до: {report.hash_before[:SHORT_HASH_LEN]}",
         f"Хеш источника после: {report.hash_after[:SHORT_HASH_LEN]}",
         f"Версии до проверки:  {report.source_versions_before}",
         f"Применено на копии:  {report.applied_versions or '[]'}",
