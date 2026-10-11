@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 3
 current_phase_name: Владение схемой БД
 status: executing
-stopped_at: Completed 03-05-PLAN.md
-last_updated: "2026-10-11T00:51:00.000Z"
+stopped_at: Completed Phase 3 (03-06-PLAN.md)
+last_updated: "2026-10-11T08:58:00.000Z"
 last_activity: 2026-10-11
-last_activity_desc: Completed plan 03-05 (live copy migration check with owner consent)
-state_head: 2ffa865
+last_activity_desc: Completed plan 03-06 (OPS-01 rollout, green smoke, live Telegram checks, post-restart copy check)
+state_head: de2dbae
 progress:
   total_phases: 9
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 31
-  completed_plans: 30
+  completed_plans: 31
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 3 — Владение схемой БД
-Plan: 5 of 6 (03-05 completed)
-Status: Executing
-Last activity: 2026-10-11 — Completed plan 03-05 (live copy migration check with owner consent)
+Plan: 6 of 6 (all plans completed)
+Status: Ready for verification
+Last activity: 2026-10-11 — Completed plan 03-06 (OPS-01 rollout, green smoke, live Telegram checks, post-restart copy check)
 
 Progress: [█████░░░░░] 32%
 
@@ -88,6 +88,7 @@ Progress: [█████░░░░░] 32%
 | Phase 03 P03 | 20 min | 2 tasks | 4 files |
 | Phase 03 P04 | 15 min | 2 tasks | 3 files |
 | Phase 03 P05 | 10 min | 2 tasks | 3 files |
+| Phase 03 P06 | 20 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,7 @@ Progress: [█████░░░░░] 32%
 - [Phase 03]: 03-03: scripts/check_migration_on_copy.py с обязательным --source, mode=ro, iterdump-хеш и сравнение снимков без утечки данных; раздел 13 docs/OPS_DEPLOY.md (DAT-01, D-05, D-06)
 - [Phase 03]: 03-04: сквозная цепочка достижимости AST main.py/db.py -> старт на временных БД -> реальные роуты бота (9 passed); гейт ЗЕЛЁНЫЙ (10 строк ✓), боевая БД не открывалась (7d071cf43c1c); 03-VERIFICATION.md пишет верификатор GSD по перечню R1-R5 (D-13, критерий 5)
 - [Phase 03]: 03-05: владелец согласовал check-and-restart; проверка на копии боевой БД ЗЕЛЁНАЯ (hash 47559fb19642 совпал, данные неизменны, 0003 уже в БД); рестарт не выполнялся (DAT-01, Критерий 2)
+- [Phase 03]: 03-06: рестарт assistant-worker с бэкапом (/var/backups/assistant-core/assistant-20261011-005251.db, 8.7MB); смоук ЗЕЛЁНЫЙ; живые проверки /help, /menu, 👍/👎 passed; контрольная копия 83fece373834 ЗЕЛЁНАЯ; CONCERNS.md закрыт; гейт ЗЕЛЁНЫЙ (10 строк ✓) (DAT-01, Критерий 5)
 
 ### Pending Todos
 
