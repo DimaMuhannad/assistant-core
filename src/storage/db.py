@@ -53,80 +53,28 @@ class Database:
             await self._shared_conn.close()
             self._shared_conn = None
 
-    async def init_db(self) -> None:
-        """Create all tables and run migrations via assistant_shared.db.migrator."""
+    async def _apply_migrations(self) -> None:
+        """Единый неблокирующий путь применения миграций схемы БД (WR-06, SCH-01).
+
+        Для файловой БД цель миграций — путь self.db_path.
+        Для ветки :memory: — разделяемое соединение aiosqlite (migrator распаковывает
+        его до синхронного sqlite3.Connection с check_same_thread=False).
+        Вызов run_migrations выполняется в отдельном рабочем потоке через asyncio.to_thread,
+        гарантируя, что цикл событий демона не блокируется даже при долгой синхронизации.
+        Сбои миграции не перехватываются (fail-closed).
+        """
         if self.db_path == ":memory:":
             async with self.connection() as conn:
-                raw_conn = getattr(conn, "_conn", getattr(conn, "_connection", conn))
-                run_migrations(raw_conn)
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS bot_command_settings (
-                        command_name TEXT PRIMARY KEY,
-                        is_enabled INTEGER NOT NULL DEFAULT 1,
-                        custom_description TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS bot_custom_aliases (
-                        alias TEXT PRIMARY KEY,
-                        canonical_command TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS dialog_feedback_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        message_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        feedback_type TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.commit()
-                await self._seed_initial_data_if_empty(conn)
+                target = conn
         else:
-            # Синхронный мигратор может ждать блокировку до 30 с: не блокируем event loop демона (WR-06)
-            await asyncio.to_thread(run_migrations, self.db_path)
-            async with self.connection() as conn:
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS bot_command_settings (
-                        command_name TEXT PRIMARY KEY,
-                        is_enabled INTEGER NOT NULL DEFAULT 1,
-                        custom_description TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS bot_custom_aliases (
-                        alias TEXT PRIMARY KEY,
-                        canonical_command TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS dialog_feedback_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        message_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        feedback_type TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                    """
-                )
-                await conn.commit()
-                await self._seed_initial_data_if_empty(conn)
+            target = self.db_path
+        await asyncio.to_thread(run_migrations, target)
+
+    async def init_db(self) -> None:
+        """Create all tables and run migrations via assistant_shared.db.migrator."""
+        await self._apply_migrations()
+        async with self.connection() as conn:
+            await self._seed_initial_data_if_empty(conn)
 
     async def upsert_persona(
         self,

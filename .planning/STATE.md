@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 3
 current_phase_name: Владение схемой БД
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-10-10T23:54:00.000Z"
-last_activity: 2026-10-10
-last_activity_desc: Completed plan 03-01 (migration 0003 and chat-app coordination)
-state_head: 5bce99c
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-10-11T00:06:00.000Z"
+last_activity: 2026-10-11
+last_activity_desc: Completed plan 03-02 (unified non-blocking migrations, inline DDL removal, schema parity)
+state_head: 833514f
 progress:
   total_phases: 9
   completed_phases: 2
   total_plans: 31
-  completed_plans: 26
+  completed_plans: 27
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 3 — Владение схемой БД
-Plan: 1 of 6 (03-01 completed)
+Plan: 2 of 6 (03-02 completed)
 Status: Executing
-Last activity: 2026-10-10 — Completed plan 03-01 (migration 0003 and chat-app coordination)
+Last activity: 2026-10-11 — Completed plan 03-02 (unified non-blocking migrations, inline DDL removal, schema parity)
 
-Progress: [███░░░░░░░] 26%
+Progress: [████░░░░░░] 29%
 
 ## Performance Metrics
 
@@ -83,6 +83,8 @@ Progress: [███░░░░░░░] 26%
 | Phase 02 P13 | 40min | 3 tasks | 2 files |
 | Phase 02 P14 | 60min | 3 tasks | 5 files |
 | Phase 02 P15 | ~1h (с ожиданием владельца) | 4 tasks | 2 files |
+| Phase 03 P01 | 25 min | 3 tasks | 4 files |
+| Phase 03 P02 | 15 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -133,6 +135,8 @@ Progress: [███░░░░░░░] 26%
 - [Phase 02]: 02-13: замороженный список shield привязан к sha256 точной строки файла, unreadable не покрывается записью (WR-04)
 - [Phase 02]: 02-14: находки CR-01 и WR-01..WR-13 помечены fixed только после зелёного прогона 119 регрессионных тестов; IN-01..IN-06 в бэклог (DEBT-03)
 - [Phase 02]: 02-15: рестарт assistant-worker с --backup выполнил владелец (запуск агентом заблокирован правилами прав); смоук OPS-01 ЗЕЛЁНЫЙ, живые проверки R1-R5 passed; 02-VERIFICATION.md пишет верификатор
+- [Phase 03]: 03-01: миграция 0003 в assistant-shared, согласование chat-app с динамическим каталогом MIGRATIONS_DIR строго до релиза библиотеки (DAT-01, SCH-02)
+- [Phase 03]: 03-02: Database._apply_migrations вынесен в рабочий поток (to_thread), общий хвост init_db без инлайн-DDL; DDL-сканер по 75 файлам src/ без allowlist; паритет 85 объектов схемы трёх источников (SCH-01, DAT-01)
 
 ### Pending Todos
 
