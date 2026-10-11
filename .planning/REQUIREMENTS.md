@@ -25,9 +25,9 @@
 
 ### Владение схемой БД (DAT, SCH)
 
-- [ ] **DAT-01** (WR-07): Таблицы `bot_command_settings`, `bot_custom_aliases`, `dialog_feedback_log` создаются миграцией `0003_*.sql` в `/opt/assistant-shared`. Инлайн-`CREATE TABLE` удалён из `src/storage/db.py` (обе ветки). На копии боевой БД миграция применяется без изменения существующих данных (тест на копии, не на оригинале).
-- [ ] **SCH-01** (WR-06): Ветки `:memory:` и файловой БД используют один путь миграций, и ни одна не блокирует event loop. Тест паритета подтверждает, что схема `:memory:`, файловой БД и миграций `assistant-shared` совпадает.
-- [ ] **SCH-02**: chat-app как потребитель схемы получает таблицы `0003` через общий мигратор и не создаёт их сам. Если нужна правка chat-app — только через `/gsd-quick` в его репозитории; его pytest остаётся зелёным.
+- [x] **DAT-01** (WR-07): Таблицы `bot_command_settings`, `bot_custom_aliases`, `dialog_feedback_log` создаются миграцией `0003_*.sql` в `/opt/assistant-shared`. Инлайн-`CREATE TABLE` удалён из `src/storage/db.py` (обе ветки). На копии боевой БД миграция применяется без изменения существующих данных (тест на копии, не на оригинале).
+- [x] **SCH-01** (WR-06): Ветки `:memory:` и файловой БД используют один путь миграций, и ни одна не блокирует event loop. Тест паритета подтверждает, что схема `:memory:`, файловой БД и миграций `assistant-shared` совпадает.
+- [x] **SCH-02**: chat-app как потребитель схемы получает таблицы `0003` через общий мигратор и не создаёт их сам. Если нужна правка chat-app — только через `/gsd-quick` в его репозитории; его pytest остаётся зелёным.
 
 ### Сквозные цепочки в рантайме (GIT, NTN, HIT)
 
@@ -139,9 +139,9 @@
 | SECF-02 | Phase 2 | Complete |
 | SAFE-01 | Phase 2 | Complete |
 | PRIV-01 | Phase 2 | Complete |
-| DAT-01 | Phase 3 | Pending |
-| SCH-01 | Phase 3 | Pending |
-| SCH-02 | Phase 3 | Pending |
+| DAT-01 | Phase 3 | Complete |
+| SCH-01 | Phase 3 | Complete |
+| SCH-02 | Phase 3 | Complete |
 | GIT-01 | Phase 4 | Pending |
 | GIT-02 | Phase 4 | Pending |
 | GIT-03 | Phase 4 | Pending |
