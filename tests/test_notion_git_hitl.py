@@ -115,6 +115,7 @@ def mock_git_provider(mock_workspaces: tuple[Workspace, Workspace]):
 def mock_notion_client():
     client = AsyncMock()
     client.is_configured = True
+    client.find_project_activity = AsyncMock(return_value=None)
     client.log_project_activity = AsyncMock(
         return_value={"id": "page-notion-created-123", "object": "page"}
     )
@@ -631,4 +632,303 @@ def test_background_summary_lists_only_entries_without_cards(hitl_store: Confirm
     assert "NoNotionWS: ⚡ Зафиксирован 1 коммит. [Notion не настроен]" in text
     assert "ReadyWS" not in text  # готовое к карточке не попадает в фон
     assert "🔒 NDA: исключено из оценки" in text
+
+
+# ---------------------------------------------------------------------------
+# План 04-07 Task 2: Строгий обработчик notion_project_sync
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handler_rejects_stub_or_empty_project_id(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Обработчик отклоняет невалидный или пустой notion_project_id без обращений к Notion (D-06)."""
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "stub-proj",
+            "database_id": "11111111111111111111111111111111",
+        },
+    )
+
+    from src.brain.git_evaluator import NotionSyncError
+    with pytest.raises(NotionSyncError, match="Notion не настроен"):
+        await evaluator._handle_notion_sync(conf)
+
+    mock_notion.find_project_activity.assert_not_called()
+    mock_notion.log_project_activity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_invalid_database_id(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Обработчик отклоняет невалидный database_id без обращений к Notion."""
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "invalid-db",
+        },
+    )
+
+    from src.brain.git_evaluator import NotionSyncError
+    with pytest.raises(NotionSyncError, match="Notion не настроен"):
+        await evaluator._handle_notion_sync(conf)
+
+    mock_notion.find_project_activity.assert_not_called()
+    mock_notion.log_project_activity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_deduplicates_when_activity_found(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Если запись за дату уже существует в Notion, log_project_activity не вызывается, возвращается deduplicated=True."""
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    mock_notion.find_project_activity = AsyncMock(return_value={"id": "existing-page-456", "object": "page"})
+    mock_notion.log_project_activity = AsyncMock()
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+            "date_iso": "2026-10-11",
+            "commit_count": 5,
+            "status": "Активно",
+            "summary": "Тестовая сводка",
+        },
+    )
+
+    res = await evaluator._handle_notion_sync(conf)
+    assert res["success"] is True
+    assert res["page_id"] == "existing-page-456"
+    assert res["deduplicated"] is True
+
+    mock_notion.find_project_activity.assert_called_once_with(
+        database_id="22222222222222222222222222222222",
+        project_page_id="11111111111111111111111111111111",
+        date_iso="2026-10-11",
+    )
+    mock_notion.log_project_activity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_creates_page_when_not_found(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Если запись за дату отсутствует, создается новая запись через log_project_activity с deduplicated=False."""
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    mock_notion.find_project_activity = AsyncMock(return_value=None)
+    mock_notion.log_project_activity = AsyncMock(return_value={"id": "new-page-789", "object": "page"})
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+            "date_iso": "2026-10-11",
+            "commit_count": 5,
+            "status": "Активно",
+            "summary": "Тестовая сводка",
+        },
+    )
+
+    res = await evaluator._handle_notion_sync(conf)
+    assert res["success"] is True
+    assert res["page_id"] == "new-page-789"
+    assert res["deduplicated"] is False
+
+    mock_notion.find_project_activity.assert_called_once()
+    mock_notion.log_project_activity.assert_called_once_with(
+        database_id="22222222222222222222222222222222",
+        project_page_id="11111111111111111111111111111111",
+        date_iso="2026-10-11",
+        commit_count=5,
+        status="Активно",
+        summary="Тестовая сводка",
+    )
+
+
+@pytest.mark.asyncio
+async def test_handler_wraps_http_status_error(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HTTPStatusError оборачивается в NotionSyncError с типом и кодом, без тела ответа (T-04-23)."""
+    import logging
+    import httpx
+    from src.brain.git_evaluator import NotionSyncError
+
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    mock_notion.find_project_activity = AsyncMock(return_value=None)
+
+    req = httpx.Request("POST", "https://api.notion.com/v1/pages")
+    resp = httpx.Response(500, request=req, text="SECRET_RESPONSE_BODY_LEAK_TOKEN_XYZ")
+    mock_notion.log_project_activity = AsyncMock(
+        side_effect=httpx.HTTPStatusError("500 Server Error", request=req, response=resp)
+    )
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(NotionSyncError) as exc_info:
+            await evaluator._handle_notion_sync(conf)
+
+    err_str = str(exc_info.value)
+    assert "500" in err_str
+    assert "HTTPStatusError" in err_str
+    assert "SECRET_RESPONSE_BODY_LEAK_TOKEN_XYZ" not in err_str
+    assert "SECRET_RESPONSE_BODY_LEAK_TOKEN_XYZ" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_when_clearance_changed_or_unresolved(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Если допуск пространства изменился на restricted_nda, публикация блокируется без обращений к Notion (T-04-22)."""
+    ws_public, _ = mock_workspaces
+    # Пространство стало restricted_nda
+    ws_nda = Workspace(
+        id=ws_public.id,
+        name=ws_public.name,
+        clearance=WorkspaceClearance.RESTRICTED_NDA,
+        path=ws_public.path,
+    )
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_nda,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+        },
+    )
+
+    from src.brain.git_evaluator import NotionSyncError
+    with pytest.raises(NotionSyncError, match="изменился или не определен"):
+        await evaluator._handle_notion_sync(conf)
+
+    mock_notion.find_project_activity.assert_not_called()
+    mock_notion.log_project_activity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_when_client_not_configured(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Если клиент Notion не настроен, выбрасывается NotionSyncError."""
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = False
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+        },
+    )
+
+    from src.brain.git_evaluator import NotionSyncError
+    with pytest.raises(NotionSyncError, match="Клиент Notion не настроен"):
+        await evaluator._handle_notion_sync(conf)
+
 

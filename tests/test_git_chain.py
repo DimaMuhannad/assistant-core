@@ -659,3 +659,119 @@ async def test_hundred_plus_label(
     assert len(run.entries) == 1
     summary = run.entries[0].report.summary_text
     assert "100+" in summary
+
+
+# ---------------------------------------------------------------------------
+# План 04-07 Task 2: Валидация ID Notion, регистрация обработчика и статусы
+# ---------------------------------------------------------------------------
+
+def test_notion_id_validator_rejects_stub_and_empty() -> None:
+    """Валидатор ID Notion принимает только 32-hex или UUID-формат и отвергает заглушки (D-06)."""
+    from src.brain.git_evaluator import is_valid_notion_id
+
+    # Невалидные:
+    assert is_valid_notion_id("") is False
+    assert is_valid_notion_id("   ") is False
+    assert is_valid_notion_id(None) is False
+    assert is_valid_notion_id(12345) is False
+    assert is_valid_notion_id("notion-project-stub") is False
+    assert is_valid_notion_id("a" * 31) is False
+    assert is_valid_notion_id("a" * 33) is False
+    assert is_valid_notion_id("g" * 32) is False
+
+    # Валидные:
+    valid_hex = "1234567890abcdef1234567890abcdef"
+    assert is_valid_notion_id(valid_hex) is True
+    assert is_valid_notion_id(valid_hex.upper()) is True
+    assert is_valid_notion_id(f"  {valid_hex}  ") is True
+
+    valid_uuid = "12345678-1234-1234-1234-123456789abc"
+    assert is_valid_notion_id(valid_uuid) is True
+    assert is_valid_notion_id(valid_uuid.upper()) is True
+    assert is_valid_notion_id(f"  {valid_uuid}  ") is True
+
+
+def test_notion_handler_registered_on_init(hitl_store: ConfirmationStore) -> None:
+    """При инициализации GitProgressEvaluator обработчик notion_project_sync регистрируется в HITL."""
+    from assistant_shared.hitl import get_action_handler
+
+    evaluator = GitProgressEvaluator(
+        git_provider=StubGitProvider(),
+        notion_client=None,
+        confirmation_store=hitl_store,
+    )
+    handler = get_action_handler("notion_project_sync")
+    assert handler is not None
+    assert handler == evaluator._handle_notion_sync
+
+
+@pytest.mark.asyncio
+async def test_notion_not_configured_status_without_card_for_stub_project(
+    tmp_path: Path, hitl_store: ConfirmationStore
+) -> None:
+    """Пространство со строкой-заглушкой notion_project получает 'Notion не настроен' и не создает карточку."""
+    ws = _make_workspace(
+        tmp_path,
+        "ws_stub_notion",
+        init_git=True,
+        notion_project="notion-project-stub",
+    )
+    now = datetime.now(timezone.utc)
+    commit = GitCommit(hash="h1", author="Dev", date=now, message="feat: initial")
+    provider = StubGitProvider(fetch_result=True, commits=[commit])
+    mock_notion = MagicMock()
+    mock_notion.is_configured = True
+
+    evaluator = GitProgressEvaluator(
+        git_provider=provider,
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=SimpleNamespace(id="p_test", workspaces=[ws]),
+        default_activity_db_id="11111111111111111111111111111111",
+    )
+
+    run = await evaluator.evaluate()
+    assert len(run.entries) == 1
+    entry = run.entries[0]
+    assert entry.status == GitStatus.OK
+    assert entry.notion_ready is False
+    assert entry.notion_note == "Notion не настроен"
+
+    with pytest.raises(ValueError, match="не готово к созданию карточки"):
+        await evaluator.propose_card(entry, run.date_iso)
+
+
+@pytest.mark.asyncio
+async def test_notion_not_configured_without_database_id(
+    tmp_path: Path, hitl_store: ConfirmationStore
+) -> None:
+    """Отсутствие или невалидность default_activity_db_id приводит к статусу 'Notion не настроен'."""
+    ws = _make_workspace(
+        tmp_path,
+        "ws_valid_proj",
+        init_git=True,
+        notion_project="22222222222222222222222222222222",
+    )
+    now = datetime.now(timezone.utc)
+    commit = GitCommit(hash="h1", author="Dev", date=now, message="feat: initial")
+    provider = StubGitProvider(fetch_result=True, commits=[commit])
+    mock_notion = MagicMock()
+    mock_notion.is_configured = True
+
+    evaluator = GitProgressEvaluator(
+        git_provider=provider,
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=SimpleNamespace(id="p_test", workspaces=[ws]),
+        default_activity_db_id="stub-db-id",
+    )
+
+    run = await evaluator.evaluate()
+    assert len(run.entries) == 1
+    entry = run.entries[0]
+    assert entry.notion_ready is False
+    assert entry.notion_note == "Notion не настроен"
+
+    with pytest.raises(ValueError, match="не готово к созданию карточки"):
+        await evaluator.propose_card(entry, run.date_iso)
+

@@ -649,25 +649,57 @@ class GitProgressEvaluator:
         return "\n".join(lines).strip()
 
     async def _handle_notion_sync(self, conf: PendingConfirmation) -> dict[str, Any]:
-        """Обработчик действия HITL: публикация активности в Notion (D-06, D-09, D-10)."""
-        if self.notion_client is None:
-            raise NotionSyncError("Клиент Notion не настроен")
-
+        """Обработчик действия HITL: публикация активности в Notion (D-06, D-09, D-10, NTN-01, NTN-02)."""
         payload = conf.payload or {}
+        ws_id = payload.get("workspace_id")
+
+        # 1. Повторная проверка допуска пространства по текущей персоне
+        split = git_chain_workspaces(self._get_persona())
+        eligible_ids = {getattr(w, "id", str(w)) for w in split.eligible}
+        if not ws_id or ws_id not in eligible_ids:
+            logger.warning("Отказ публикации в Notion: допуск пространства %s изменился или не определен", ws_id)
+            raise NotionSyncError(f"Допуск пространства {ws_id} изменился или не определен")
+
+        # 2. Валидация идентификаторов проекта и базы данных из payload (без подстановок)
         project_id = payload.get("notion_project_id")
         db_id = payload.get("database_id")
-
         if not is_valid_notion_id(project_id) or not is_valid_notion_id(db_id):
+            logger.warning(
+                "Отказ публикации в Notion для %s: некорректный ID (project=%s, database=%s)",
+                ws_id,
+                project_id,
+                db_id,
+            )
             raise NotionSyncError(
-                f"Некорректный ID Notion: project={project_id}, database={db_id}"
+                f"Notion не настроен: некорректный ID (project={project_id}, database={db_id})"
             )
 
-        date_iso = payload.get("date_iso") or datetime.now(timezone.utc).date().isoformat()
-        commit_count = int(payload.get("commit_count", 0))
-        status = str(payload.get("status", "Активно"))
-        summary = str(payload.get("summary", ""))
+        # 3. Проверка готовности клиента
+        if self.notion_client is None or not getattr(self.notion_client, "is_configured", True):
+            logger.warning("Отказ публикации в Notion для %s: клиент Notion не настроен", ws_id)
+            raise NotionSyncError("Клиент Notion не настроен")
 
+        # 4. Проверка на дубликат и публикация в Notion
+        date_iso = str(payload.get("date_iso") or datetime.now(timezone.utc).date().isoformat())
         try:
+            find_fn = getattr(self.notion_client, "find_project_activity", None)
+            existing_page = (
+                await find_fn(
+                    database_id=db_id,
+                    project_page_id=project_id,
+                    date_iso=date_iso,
+                )
+                if callable(find_fn)
+                else None
+            )
+            if existing_page is not None:
+                page_id = existing_page.get("id", "")
+                return {"success": True, "page_id": page_id, "deduplicated": True}
+
+            commit_count = int(payload.get("commit_count", 0))
+            status = str(payload.get("status", "Активно"))
+            summary = str(payload.get("summary", ""))
+
             res = await self.notion_client.log_project_activity(
                 database_id=db_id,
                 project_page_id=project_id,
@@ -676,15 +708,19 @@ class GitProgressEvaluator:
                 status=status,
                 summary=summary,
             )
-            return {"success": True, "page_id": res.get("id"), "notion_response": res}
+            page_id = res.get("id", "")
+            return {"success": True, "page_id": page_id, "deduplicated": False}
+        except NotionSyncError:
+            raise
         except Exception as e:
             status_code = getattr(getattr(e, "response", None), "status_code", None)
             logger.warning(
                 "Ошибка публикации в Notion для %s: %s (status=%s)",
-                payload.get("workspace_id"),
+                ws_id,
                 type(e).__name__,
                 status_code,
             )
+            code_suffix = f" (status={status_code})" if status_code is not None else ""
             raise NotionSyncError(
-                f"Ошибка вызова Notion API: {type(e).__name__} (status={status_code})"
+                f"Ошибка вызова Notion API: {type(e).__name__}{code_suffix}"
             ) from e
