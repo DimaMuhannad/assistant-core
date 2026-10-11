@@ -2442,14 +2442,30 @@ def test_docs_flag_check_detects_a_missing_flag():
 def test_docs_have_all_numbered_sections_in_order():
     text = DOC_PATH.read_text(encoding="utf-8")
     headers = re.findall(r"^## (\d+)\. (.+)$", text, re.MULTILINE)
-    assert [int(number) for number, _ in headers] == list(range(1, 13))
+    assert [int(number) for number, _ in headers] == list(range(1, 14))
     titles = {number: title for number, title in headers}
     for number, word in {
         "1": "Назначение", "2": "Правила", "3": "Команды", "4": "смоук", "5": "Окно ошибок",
         "6": "Фазы без TTY", "7": "Резервная копия", "8": "Рестарт", "9": "Откат",
-        "10": "Отчёт", "11": "не делает", "12": "ограничения",
+        "10": "Отчёт", "11": "не делает", "12": "ограничения", "13": "Миграц",
     }.items():
         assert word.lower() in titles[number].lower(), (number, titles[number])
+
+
+def test_docs_describe_migration_rollout():
+    text = DOC_PATH.read_text(encoding="utf-8")
+    m = re.search(r"^## 13\. .*\n([\s\S]*?)(?=\Z|^## )", text, re.MULTILINE)
+    assert m, "Раздел 13 отсутствует в docs/OPS_DEPLOY.md"
+    sec13 = m.group(1)
+    assert "0003_bot_commands_and_feedback" in sec13
+    assert "scripts/check_migration_on_copy.py" in sec13
+    assert "--source" in sec13
+    assert "--attempts" in sec13
+    assert "deploy.py" in sec13
+    assert "--backup" in sec13
+    assert "--restart" in sec13
+    assert "разрешени" in sec13.lower()
+    assert "владельц" in sec13.lower()
 
 
 def test_docs_is_long_enough_and_in_russian():
