@@ -33,12 +33,12 @@
 
 Компоненты созданы в v2.0, но из рантайма недостижимы. Требование закрывается, когда VERIFICATION.md доказывает достижимость из `src/main.py` или команды бота, а не только юнит-тестом.
 
-- [ ] **GIT-01**: Порт `BaseGitSourceProvider` и `SshGitProvider` (только чтение по SSH, scope `git.read`) вызываются из рантайма через `default_git_source_provider` (`src/composition.py:97`).
-- [ ] **GIT-02**: Репозитории подключаются только данными рабочего пространства (`git: host, account, ssh_alias, remote`). Пространства без remote или каталога пропускаются с видимым статусом в рантайме.
-- [ ] **GIT-03**: `GitProgressEvaluator` создаётся в планировщике `src/main.py` (периодичность — данные персоны) и по команде бота и формирует оценку хода проекта по-русски для public- и internal-репозиториев.
-- [ ] **GIT-04**: Пространства `restricted_nda` и с неопределённым допуском исключены из цепочки полностью: ни обращений к git, ни LLM, ни Notion. Проверяется ловушками клиентов на рантайм-пути.
-- [ ] **NTN-01**: Обработчик `notion_project_sync` зарегистрирован в рантайме. Связь «пространство → проект Notion» (`notion_project`) берётся из персоны.
-- [ ] **NTN-02**: Запись в Notion — только после подтверждения владельцем через HITL-карточку в Telegram. Отклонение ничего не пишет, повтор не создаёт дублей, сбой SSH или Notion не роняет демон и виден в статусе.
+- [x] **GIT-01**: Порт `BaseGitSourceProvider` и `SshGitProvider` (только чтение по SSH, scope `git.read`) вызываются из рантайма через `default_git_source_provider` (`src/composition.py:97`).
+- [x] **GIT-02**: Репозитории подключаются только данными рабочего пространства (`git: host, account, ssh_alias, remote`). Пространства без remote или каталога пропускаются с видимым статусом в рантайме.
+- [x] **GIT-03**: `GitProgressEvaluator` создаётся в планировщике `src/main.py` (периодичность — данные персоны) и по команде бота и формирует оценку хода проекта по-русски для public- и internal-репозиториев.
+- [x] **GIT-04**: Пространства `restricted_nda` и с неопределённым допуском исключены из цепочки полностью: ни обращений к git, ни LLM, ни Notion. Проверяется ловушками клиентов на рантайм-пути.
+- [x] **NTN-01**: Обработчик `notion_project_sync` зарегистрирован в рантайме. Связь «пространство → проект Notion» (`notion_project`) берётся из персоны.
+- [x] **NTN-02**: Запись в Notion — только после подтверждения владельцем через HITL-карточку в Telegram. Отклонение ничего не пишет, повтор не создаёт дублей, сбой SSH или Notion не роняет демон и виден в статусе.
 - [ ] **HIT-02**: Поллер `ConfirmationChannel.WEB` в демоне находит новые web-подтверждения и вызывает `send_web_hitl_card` (`src/notifier/bot_handler.py:1951`). Карточка «Да / Отмена» доходит до владельца в Telegram с проверкой `allowed_user_id`.
 - [ ] **HIT-03**: Сквозной сценарий web DELETE → 409 + запись в `pending_confirmations` → карточка в Telegram → подтверждение → `resume_action` выполняет удаление; отмена ничего не удаляет. Проверяется интеграционным тестом на временной БД.
 - [ ] **HIT-04**: Подтвердить действие можно только из авторизованного канала (Telegram владельца). Web-интерфейс видит статус «ожидает / подтверждено / отклонено» вместо таймаута в 60 с.
@@ -142,12 +142,12 @@
 | DAT-01 | Phase 3 | Complete |
 | SCH-01 | Phase 3 | Complete |
 | SCH-02 | Phase 3 | Complete |
-| GIT-01 | Phase 4 | Pending |
-| GIT-02 | Phase 4 | Pending |
-| GIT-03 | Phase 4 | Pending |
-| GIT-04 | Phase 4 | Pending |
-| NTN-01 | Phase 4 | Pending |
-| NTN-02 | Phase 4 | Pending |
+| GIT-01 | Phase 4 | Complete |
+| GIT-02 | Phase 4 | Complete |
+| GIT-03 | Phase 4 | Complete |
+| GIT-04 | Phase 4 | Complete |
+| NTN-01 | Phase 4 | Complete |
+| NTN-02 | Phase 4 | Complete |
 | HIT-02 | Phase 5 | Pending |
 | HIT-03 | Phase 5 | Pending |
 | HIT-04 | Phase 5 | Pending |
