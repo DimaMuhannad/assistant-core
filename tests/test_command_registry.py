@@ -11,16 +11,17 @@ async def test_command_registry_default_catalog(tmp_path):
 
     registry = CommandRegistry(db=db)
     active = await registry.get_active_commands()
-    assert len(active) == 9
+    assert len(active) == 10
 
     names = [c.name for c in active]
     assert "ticker" in names
     assert "timesheet" in names
     assert "today" in names
+    assert "git" in names
     assert "help" in names
 
     tg_cmds = await registry.get_telegram_commands()
-    assert len(tg_cmds) == 9
+    assert len(tg_cmds) == 10
     for c in tg_cmds:
         assert c.command.islower()
         assert c.command.isascii()
@@ -35,6 +36,7 @@ async def test_command_registry_disable_connector(tmp_path):
     mock_persona.organizations = {}
     mock_persona.ui.texts = {}
     mock_persona.connectors.timesheet = []  # No timesheet
+    mock_persona.connectors.git_source = []  # No git
     mock_persona.connectors.schedule_source = [MagicMock()]
     mock_persona.connectors.lms = [MagicMock()]
     mock_persona.methodist.file_catalog = [MagicMock()]
@@ -43,6 +45,7 @@ async def test_command_registry_disable_connector(tmp_path):
     active = await registry.get_active_commands()
     names = [c.name for c in active]
     assert "timesheet" not in names
+    assert "git" not in names
     assert "today" in names
 
 
@@ -76,6 +79,9 @@ async def test_command_registry_resolve_aliases(tmp_path):
     assert await registry.resolve_command_or_alias("часы") == "timesheet"
     assert await registry.resolve_command_or_alias("пары") == "today"
     assert await registry.resolve_command_or_alias("/today") == "today"
+    assert await registry.resolve_command_or_alias("/git") == "git"
+    assert await registry.resolve_command_or_alias("гит") == "git"
+    assert await registry.resolve_command_or_alias("коммиты") == "git"
 
     # 2. Custom alias in SQLite
     await db.set_custom_alias("выработка_тидекс", "timesheet")

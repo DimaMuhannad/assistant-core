@@ -50,6 +50,7 @@ VALID_ACTIONS = {
     "undo_clear",
     "menu",
     "lms",
+    "git",
 }
 
 

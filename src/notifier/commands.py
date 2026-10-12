@@ -170,6 +170,14 @@ class CommandRegistry:
                 handler_action="methodist",
             ),
             CommandSpec(
+                name="git",
+                description="📊 Прогресс разработки и коммиты",
+                category="projects",
+                connector_id="git_source",
+                default_aliases=["гит", "коммиты"],
+                handler_action="git",
+            ),
+            CommandSpec(
                 name="evening",
                 description="🌙 Вечерний дайджест",
                 category="system",
