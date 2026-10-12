@@ -152,6 +152,11 @@ persona:
       provider: ssh_git
       scopes:
       - git.read
+      config:
+        stagnation_days: 7
+        day_of_week: sun
+        hour: 20
+        minute: 0
     notion:
     - id: main
       provider: notion_async
