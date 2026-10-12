@@ -10,7 +10,7 @@ last_mapped_at: 2026-10-09
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| GitEvaluator (Git → Notion) not instantiated at runtime | Confirmed | The class is `GitProgressEvaluator` (`src/brain/git_evaluator.py:42`); it is instantiated only in `tests/test_notion_git_hitl.py`. `default_git_source_provider` (`src/composition.py:97`) has no caller in `src/`; the `notion_project_sync` handler is registered only inside the evaluator. |
+| GitEvaluator (Git → Notion) not instantiated at runtime | Resolved (Phase 4) | Resolved in Phase 4: `GitProgressEvaluator` is instantiated at runtime via `default_git_evaluator(db)` in `src/composition.py` and wired into `src/main.py` (before `EmailBotHandler` and as a scheduled cron job `git_progress_job`), and into Telegram bot handler for `/git` (see summaries `04-01-SUMMARY.md` and `04-08-SUMMARY.md`). |
 | `send_web_hitl_card` defined but never called | Confirmed | Defined at `src/notifier/bot_handler.py:1951`; only reference outside definition is the test `tests/test_bot_hitl_parity.py:30,51`. No call site in `src/`. |
 | Shared migration 0003 missing for `bot_command_settings` / `bot_custom_aliases` / `dialog_feedback_log` | Resolved (Phase 3) | Resolved in Phase 3: migration 0003 added in assistant-shared (commit `5c85613`), inline DDL removed and unified non-blocking path in assistant-core (commit `5413266`), chat-app synced (commit `011f9c2`). |
 | NDA email subject/sender/date possibly unmasked in `search_emails` | Confirmed (leak) | `src/brain/secretary_dialog.py:186-191`: `date_str`, `sender`, and `subj` are read from the raw row before/independently of the NDA branch; `mask_nda_email_data` (`src/security/airgap.py:128-150`) only replaces `body`, `body_plain`, `snippet`, `body_html`, `attachments`. The line-based output at `secretary_dialog.py:196` therefore prints the real sender and subject for NDA mail. The tool path at `secretary_dialog.py:764-780` also passes `sender` through unmasked after masking. `search_emails` itself (`src/storage/db.py:1007`) does not filter NDA rows. |
@@ -86,7 +86,8 @@ These conflict with the directive in `CLAUDE.md` section 2 (universal platform, 
 - Current mitigation: `exec` (not shell) is used, so no shell injection; argument validation not verified in this pass.
 - Recommendations: Validate `path` and `ssh_alias` against an allowlist from `workspaces` config before building argv.
 
-**Air-gap enforcement is not evidenced at the connector layer:**
+**Air-gap enforcement is not evidenced at the connector layer:** [закрыто фазой 4: см. 04-01-SUMMARY.md, 04-08-SUMMARY.md, 04-10-SUMMARY.md]
+- Status: Resolved (Phase 4). Production dispatcher routes through strict fail-closed `git_chain_workspaces` guard, verified by runtime traps in `tests/test_git_chain_airgap.py` and reachability tests in `tests/test_phase4_reachability.py`.
 - Risk: NDA workspace git actions (`tests/test_git_airgap_trap.py`) are tested, but the production dispatcher that calls `GitProvider` was not confirmed to route through the trap; `GitEvaluator` (the Git → Notion path) is not wired at all.
 - Files: `src/connectors/git/provider.py`, `tests/test_git_airgap_trap.py`
 - Recommendations: Add an integration test that invokes the production dispatcher with an NDA workspace.
@@ -136,7 +137,8 @@ Not assessed in detail for this pass. Shared library `/opt/assistant-shared` is 
 
 ## Missing Critical Features
 
-**Git → Notion evaluation:**
+**Git → Notion evaluation:** [закрыто фазой 4: см. 04-01-SUMMARY.md, 04-08-SUMMARY.md]
+- Status: Resolved (Phase 4). Fully wired into `src/main.py` and `src/notifier/bot_handler.py`.
 - Problem: `GitEvaluator` is not instantiated; the feature described in v2.0 is not reachable from runtime.
 - Blocks: Automated Git status reporting to Notion; phase verification that requires runtime reachability.
 
@@ -152,7 +154,8 @@ Not assessed in detail for this pass. Shared library `/opt/assistant-shared` is 
 - Risk: The leak above passes existing tests.
 - Priority: High
 
-**Runtime reachability:**
+**Runtime reachability:** [GitEvaluator закрыто фазой 4: см. 04-01-SUMMARY.md, 04-08-SUMMARY.md; send_web_hitl_card ожидает Phase 5]
+- Status: GitEvaluator resolved in Phase 4 via `tests/test_phase4_reachability.py` and `tests/test_phase4_chain_e2e.py`.
 - What's not tested: `GitEvaluator` and `send_web_hitl_card` are only exercised by unit tests or not at all.
 - Files: `tests/test_bot_hitl_parity.py`, `tests/test_git_airgap_trap.py`
 - Risk: Features appear green while unreachable from the daemon.
