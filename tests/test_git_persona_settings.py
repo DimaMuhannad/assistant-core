@@ -149,3 +149,27 @@ def test_env_example_has_commented_notion_activity_and_api_key() -> None:
     for line in lines:
         for name, pattern in SECRET_PATTERNS:
             assert not pattern.search(line), f"Line '{line}' matched secret pattern {name}"
+
+
+def test_default_persona_declares_git_source_settings(monkeypatch) -> None:
+    from src.persona.bindings import GitSourceSettings, binding, git_source_settings
+    from src.persona.current import use_persona
+    from src.persona.loader import load_persona
+    from src.persona.models import PersonaConfig
+
+    monkeypatch.delenv("PERSONA_CONFIG_PATH", raising=False)
+    persona = load_persona()
+    assert isinstance(persona, PersonaConfig)
+
+    with use_persona(persona):
+        git_bound = binding("git_source")
+        assert set(git_bound.config.keys()) == {"stagnation_days", "day_of_week", "hour", "minute"}
+        settings = git_source_settings()
+        expected = GitSourceSettings(
+            stagnation_days=git_bound.config["stagnation_days"],
+            day_of_week=git_bound.config["day_of_week"],
+            hour=git_bound.config["hour"],
+            minute=git_bound.config["minute"],
+        )
+        assert settings == expected
+
