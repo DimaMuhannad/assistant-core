@@ -25,17 +25,14 @@
 - ✓ Паритет web и CLI аудита: общая функция `scan_file_content`, web ищет слова NDA других пространств — Phase 2 (SECF-02)
 - ✓ Текст и голос «очисти диалог» только предупреждают; очистка памяти диалога — лишь `/clear` через HITL-карточку — Phase 2 (SAFE-01)
 - ✓ Находки ревью Phase 1 закрыты по прогнанным тестам (14 fixed, 6 deferred): path traversal Google Drive, `deploy.py`, `gate.py`, страж боевой БД, адаптер cross-AI — Phase 2 (DEBT-03 записан)
+- ✓ Владение схемой БД: миграция `0003` в `/opt/assistant-shared`, единый путь Database, ветка `:memory:` не блокирует event loop — Phase 3 (DAT-01, SCH-01, SCH-02)
+- ✓ Git → оценка → HITL → Notion достижимо из рантайма: `GitProgressEvaluator` в планировщике и команде /git бота, fail-closed airgap, карточки HITL в Notion — Phase 4 (GIT-01..04, NTN-01..02)
 
 ### Active
 
 <!-- Цикл v3.0. Требования с ID — в REQUIREMENTS.md. -->
 
-**Владение схемой БД**
-- [ ] Миграция `0003` в `/opt/assistant-shared` для `bot_command_settings`, `bot_custom_aliases`, `dialog_feedback_log`; инлайн-DDL удалён (WR-07, DAT-01)
-- [ ] WR-06 закрыт полностью: ветка `:memory:` не блокирует event loop
-
 **Сквозные цепочки в рантайме**
-- [ ] Git → оценка → HITL → Notion достижимо из рантайма: `GitProgressEvaluator` создаётся в планировщике или по команде бота (GIT-01..04, NTN-01..02)
 - [ ] Web-карточки HITL доставляются в Telegram: поллер `ConfirmationChannel.WEB` + `send_web_hitl_card` (HIT-02..04)
 
 **Ретро-верификация v2.0**
