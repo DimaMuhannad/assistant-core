@@ -466,6 +466,7 @@ class EmailBotHandler:
             "• `/methodist_teach <тема> | <текст>` — дообучение методиста новым правилам кафедры\n"
             "• `/methodist_stats` — статистика базы знаний и разделов\n"
             f"• `/timesheet` — табель и пейсинг выработки нормы в «{c_name}»\n"
+            "• `/git` — оценка прогресса в git-репозиториях и выгрузка в Notion\n"
             "• `/evening` — вечерний дайджест со статистикой обработки писем\n"
             "• `/help` — справка по возможностям бота"
         )
@@ -1344,6 +1345,9 @@ class EmailBotHandler:
                 "пары": "today",
                 "методист": "methodist",
                 "методиста": "methodist",
+                "git": "git",
+                "гит": "git",
+                "коммиты": "git",
             }
 
             m_hide_cmd = re.match(
@@ -1455,6 +1459,9 @@ class EmailBotHandler:
                 return
             elif route_res.action in ("ticker", "status", "hud", "tablo"):
                 await self.handle_cmd_ticker(message)
+                return
+            elif route_res.action == "git":
+                await self.handle_cmd_git(message)
                 return
             elif route_res.action == "methodist":
                 clean_q = re.sub(r"^@?методист[:,]?\s*", "", user_msg, flags=re.IGNORECASE).strip()
@@ -2217,6 +2224,14 @@ class EmailBotHandler:
 
         proposal = await self.git_evaluator.propose_card(entry, run.date_iso)
         conf = proposal.confirmation
+        if not getattr(proposal, "created", True):
+            if conf.status == ConfirmationStatus.CONFIRMED:
+                await callback.answer("Уже внесено в Notion", show_alert=True)
+                return
+            elif conf.status == ConfirmationStatus.REJECTED:
+                await callback.answer("Карточка за этот период отклонена", show_alert=True)
+                return
+
         card_text = self.git_evaluator.format_card_text(conf)
         kb = build_notion_sync_keyboard(conf.id)
         await callback.answer()
@@ -2263,14 +2278,18 @@ class EmailBotHandler:
             await callback.answer("Записано в Notion")
         except NotionSyncError as e:
             logger.warning("NotionSyncError при подтверждении %s: %s", conf_id, e)
+            await store.reopen_action(conf_id)
+            await callback.answer("Не записано в Notion, повторите", show_alert=True)
+        except LookupError as e:
+            logger.warning("LookupError при подтверждении %s: %s", conf_id, e)
+            await store.reopen_action(conf_id)
             await callback.answer("Не записано в Notion, повторите", show_alert=True)
         except ValueError:
             await callback.answer("Запрос уже обработан", show_alert=True)
-        except LookupError:
-            await callback.answer("Обработчик записи не зарегистрирован", show_alert=True)
         except Exception as e:
             logger.warning("Ошибка при подтверждении публикации Notion %s: %s", conf_id, e)
-            await callback.answer("Ошибка при выполнении", show_alert=True)
+            await store.reopen_action(conf_id)
+            await callback.answer("Не записано в Notion, повторите", show_alert=True)
 
     async def cb_ntn_reject(self, callback: CallbackQuery) -> None:
         """Обрабатывает отклонение публикации отчета активности в Notion (D-10)."""
@@ -2763,6 +2782,8 @@ class EmailBotHandler:
                 await self._warn_clear_requires_slash(message)
             elif route_res.action in ("ticker", "status", "hud", "tablo"):
                 await self.handle_cmd_ticker(message)
+            elif route_res.action == "git":
+                await self.handle_cmd_git(message)
             elif route_res.action == "methodist":
                 clean_q = re.sub(r"^@?методист[:,]?\s*", "", recognized_text, flags=re.IGNORECASE).strip()
                 await self._handle_methodist_query(message, clean_q or recognized_text)
