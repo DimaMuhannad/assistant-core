@@ -348,3 +348,47 @@ async def test_git_cycle_sends_cards_only_for_new_and_one_summary() -> None:
     notifier.send_message.side_effect = [Exception("Telegram network error"), MagicMock()]
     await run_git_progress_cycle(evaluator, notifier)
     assert notifier.send_message.call_count == 2
+
+
+def test_bot_registers_git_command_and_ntn_callbacks() -> None:
+    """ast: Command('git') и префиксы ntn:req:, ntn:conf:, ntn:rej: присутствуют в _register_handlers."""
+    bot_path = Path(__file__).resolve().parents[1] / "src" / "notifier" / "bot_handler.py"
+    tree = ast.parse(bot_path.read_text(encoding="utf-8"))
+
+    reg_func = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "_register_handlers":
+            reg_func = node
+            break
+
+    assert reg_func is not None, "Метод _register_handlers не найден в bot_handler.py"
+    source = ast.unparse(reg_func)
+
+    assert "Command(" in source and "git" in source
+    assert "ntn:req:" in source
+    assert "ntn:conf:" in source
+    assert "ntn:rej:" in source
+
+
+def test_log_project_activity_called_only_from_handler() -> None:
+    """ast: вызовы log_project_activity в src/ есть только внутри GitProgressEvaluator._handle_notion_sync."""
+    src_dir = Path(__file__).resolve().parents[1] / "src"
+    calls_found: list[tuple[str, str]] = []
+
+    for py_file in src_dir.rglob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        if (
+                            isinstance(child.func, ast.Attribute)
+                            and child.func.attr == "log_project_activity"
+                        ):
+                            calls_found.append((py_file.name, node.name))
+
+    assert len(calls_found) == 1, f"Ожидался ровно один вызов log_project_activity, найдено: {calls_found}"
+    file_name, func_name = calls_found[0]
+    assert file_name == "git_evaluator.py"
+    assert func_name == "_handle_notion_sync"
+

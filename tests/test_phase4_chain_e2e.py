@@ -49,10 +49,21 @@ class CountingGitProvider(SshGitProvider):
 class FakeNotionClient:
     """Поддельный клиент Notion для перехвата log_project_activity."""
 
-    def __init__(self, is_configured: bool = True, should_fail: bool = False):
+    def __init__(
+        self,
+        is_configured: bool = True,
+        should_fail: bool = False,
+        existing_page: dict | None = None,
+    ):
         self.is_configured = is_configured
         self.should_fail = should_fail
+        self.existing_page = existing_page
         self.logged_calls: list[dict] = []
+        self.find_calls: list[dict] = []
+
+    async def find_project_activity(self, **kwargs) -> dict | None:
+        self.find_calls.append(kwargs)
+        return self.existing_page
 
     async def log_project_activity(self, **kwargs) -> dict:
         if self.should_fail:
@@ -697,3 +708,344 @@ async def test_nda_unique_markers_not_leaked(tmp_path: Path, caplog):
 
     assert len(git_provider.recorded_calls) == 0
     assert len(fake_notion.logged_calls) == 0
+
+
+# --- Task 2: сквозные сценарии (план 04-10) --------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reject_writes_nothing_and_blocks_same_day(tmp_path: Path, tracer_repos):
+    """Отклонение: ntn:rej, FakeNotion без вызовов; повторный /git и ntn:req в тот же день показывают состояние «отклонена», новой карточки нет."""
+    repo_dir, bare_origin, _ = tracer_repos
+    ws = Workspace(
+        id="ws_rej_block",
+        name="Reject Block Project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=str(bare_origin),
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / "bot_rej_block.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+
+    store = ConfirmationStore(db_path)
+    git_provider = CountingGitProvider()
+    fake_notion = FakeNotionClient(is_configured=True)
+    evaluator = GitProgressEvaluator(
+        git_provider=git_provider,
+        notion_client=fake_notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    user_id = 777
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+
+    # 1. Первый прогон команды /git и запрос карточки
+    status_msg = AsyncMock()
+    msg = AsyncMock()
+    msg.from_user.id = user_id
+    msg.answer = AsyncMock(return_value=status_msg)
+    await handler.handle_cmd_git(msg)
+
+    reply_markup = status_msg.edit_text.call_args[1]["reply_markup"]
+    btn_req = reply_markup.inline_keyboard[0][0]
+
+    req_cb = AsyncMock()
+    req_cb.from_user.id = user_id
+    req_cb.data = btn_req.callback_data
+    req_cb.message = AsyncMock()
+    req_cb.message.answer = AsyncMock()
+    req_cb.answer = AsyncMock()
+    await handler.cb_ntn_request(req_cb)
+
+    card_kb = req_cb.message.answer.call_args[1]["reply_markup"]
+    btn_rej = next(b for row in card_kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:rej:"))
+
+    # Отклоняем карточку
+    rej_cb = AsyncMock()
+    rej_cb.from_user.id = user_id
+    rej_cb.data = btn_rej.callback_data
+    rej_cb.message = AsyncMock()
+    rej_cb.message.edit_text = AsyncMock()
+    rej_cb.answer = AsyncMock()
+    await handler.cb_ntn_reject(rej_cb)
+
+    assert len(fake_notion.logged_calls) == 0
+
+    # 2. Повторный прогон /git в тот же день
+    status_msg2 = AsyncMock()
+    msg2 = AsyncMock()
+    msg2.from_user.id = user_id
+    msg2.answer = AsyncMock(return_value=status_msg2)
+    await handler.handle_cmd_git(msg2)
+
+    reply_markup2 = status_msg2.edit_text.call_args[1]["reply_markup"]
+    btn_req2 = reply_markup2.inline_keyboard[0][0]
+
+    req_cb2 = AsyncMock()
+    req_cb2.from_user.id = user_id
+    req_cb2.data = btn_req2.callback_data
+    req_cb2.message = AsyncMock()
+    req_cb2.message.answer = AsyncMock()
+    req_cb2.answer = AsyncMock()
+    await handler.cb_ntn_request(req_cb2)
+
+    req_cb2.answer.assert_called_with("Карточка за этот период отклонена", show_alert=True)
+    req_cb2.message.answer.assert_not_called()
+    assert len(fake_notion.logged_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_rerun_same_day_keeps_single_card(tmp_path: Path, tracer_repos):
+    """Повторный прогон: два /git и два ntn:req за один день оставляют одну запись в хранилище и одну отправленную карточку."""
+    repo_dir, bare_origin, _ = tracer_repos
+    ws = Workspace(
+        id="ws_rerun_single",
+        name="Rerun Single Project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=str(bare_origin),
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / "bot_rerun_single.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+
+    store = ConfirmationStore(db_path)
+    git_provider = CountingGitProvider()
+    fake_notion = FakeNotionClient(is_configured=True)
+    evaluator = GitProgressEvaluator(
+        git_provider=git_provider,
+        notion_client=fake_notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    user_id = 777
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+
+    # Первый /git и ntn:req
+    status_msg1 = AsyncMock()
+    msg1 = AsyncMock()
+    msg1.from_user.id = user_id
+    msg1.answer = AsyncMock(return_value=status_msg1)
+    await handler.handle_cmd_git(msg1)
+
+    btn_req1 = status_msg1.edit_text.call_args[1]["reply_markup"].inline_keyboard[0][0]
+    req_cb1 = AsyncMock()
+    req_cb1.from_user.id = user_id
+    req_cb1.data = btn_req1.callback_data
+    req_cb1.message = AsyncMock()
+    req_cb1.message.answer = AsyncMock()
+    req_cb1.answer = AsyncMock()
+    await handler.cb_ntn_request(req_cb1)
+    assert req_cb1.message.answer.called
+
+    # Второй /git и ntn:req
+    status_msg2 = AsyncMock()
+    msg2 = AsyncMock()
+    msg2.from_user.id = user_id
+    msg2.answer = AsyncMock(return_value=status_msg2)
+    await handler.handle_cmd_git(msg2)
+
+    btn_req2 = status_msg2.edit_text.call_args[1]["reply_markup"].inline_keyboard[0][0]
+    req_cb2 = AsyncMock()
+    req_cb2.from_user.id = user_id
+    req_cb2.data = btn_req2.callback_data
+    req_cb2.message = AsyncMock()
+    req_cb2.message.answer = AsyncMock()
+    req_cb2.answer = AsyncMock()
+    await handler.cb_ntn_request(req_cb2)
+    assert req_cb2.message.answer.called
+
+    # В хранилище ровно одна запись!
+    confs = await store.find_confirmations(action_type="notion_project_sync")
+    assert len(confs) == 1
+
+
+@pytest.mark.asyncio
+async def test_page_already_in_notion_not_duplicated(tmp_path: Path, tracer_repos):
+    """Запись уже есть в Notion: find_project_activity вернул страницу, подтверждение завершается успехом без вызова create."""
+    repo_dir, bare_origin, _ = tracer_repos
+    ws = Workspace(
+        id="ws_dedup_test",
+        name="Dedup Project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=str(bare_origin),
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / "bot_dedup.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+
+    store = ConfirmationStore(db_path)
+    git_provider = CountingGitProvider()
+    fake_notion = FakeNotionClient(
+        is_configured=True,
+        existing_page={"id": "page-notion-already-there-888", "object": "page"},
+    )
+    evaluator = GitProgressEvaluator(
+        git_provider=git_provider,
+        notion_client=fake_notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    user_id = 777
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+
+    # Прогоняем /git и ntn:req
+    status_msg = AsyncMock()
+    msg = AsyncMock()
+    msg.from_user.id = user_id
+    msg.answer = AsyncMock(return_value=status_msg)
+    await handler.handle_cmd_git(msg)
+
+    btn_req = status_msg.edit_text.call_args[1]["reply_markup"].inline_keyboard[0][0]
+    req_cb = AsyncMock()
+    req_cb.from_user.id = user_id
+    req_cb.data = btn_req.callback_data
+    req_cb.message = AsyncMock()
+    req_cb.message.answer = AsyncMock()
+    req_cb.answer = AsyncMock()
+    await handler.cb_ntn_request(req_cb)
+
+    card_kb = req_cb.message.answer.call_args[1]["reply_markup"]
+    btn_conf = next(b for row in card_kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:conf:"))
+
+    conf_cb = AsyncMock()
+    conf_cb.from_user.id = user_id
+    conf_cb.data = btn_conf.callback_data
+    conf_cb.message = AsyncMock()
+    conf_cb.message.edit_text = AsyncMock()
+    conf_cb.answer = AsyncMock()
+
+    await handler.cb_ntn_confirm(conf_cb)
+
+    # find_project_activity был вызван
+    assert len(fake_notion.find_calls) == 1
+    # log_project_activity НЕ был вызван (дедупликация)
+    assert len(fake_notion.logged_calls) == 0
+
+    conf_cb.answer.assert_called_with("Записано в Notion")
+    assert conf_cb.message.edit_text.called
+
+
+@pytest.mark.asyncio
+async def test_ssh_failure_status_line_and_daemon_alive(tmp_path: Path):
+    """Сбой SSH: remote указывает на несуществующий путь, настоящий git fetch падает: строка «сбой SSH», карточки и кнопки нет, обработчик не падает."""
+    repo_dir = tmp_path / "ssh_fail_repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=repo_dir, check=True)
+    (repo_dir / "f.txt").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True)
+
+    # Remote на несуществующий локальный путь
+    broken_remote = str(tmp_path / "broken_nonexistent_origin.git")
+    subprocess.run(["git", "remote", "add", "origin", broken_remote], cwd=repo_dir, check=True)
+
+    ws_broken = Workspace(
+        id="ws_broken_ssh",
+        name="Broken SSH Project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=broken_remote,
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / "bot_ssh_fail.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+
+    store = ConfirmationStore(db_path)
+    # Настоящий SshGitProvider без моков!
+    real_git = SshGitProvider()
+    fake_notion = FakeNotionClient(is_configured=True)
+    evaluator = GitProgressEvaluator(
+        git_provider=real_git,
+        notion_client=fake_notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws_broken,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    user_id = 777
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+
+    status_msg = AsyncMock()
+    msg = AsyncMock()
+    msg.from_user.id = user_id
+    msg.answer = AsyncMock(return_value=status_msg)
+
+    # Не должно упасть!
+    await handler.handle_cmd_git(msg)
+
+    run_text = status_msg.edit_text.call_args[0][0]
+    reply_markup = status_msg.edit_text.call_args[1]["reply_markup"]
+
+    assert "сбой SSH" in run_text
+    # Для упавшего fetch кнопки Notion нет
+    assert reply_markup is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cycle_card_to_notion_write(tmp_path: Path, tracer_repos):
+    """Вход планировщика: run_git_progress_cycle отправляет карточку с кнопками, нажатие ntn:conf по её идентификатору пишет в Notion один раз."""
+    from src.main import run_git_progress_cycle
+
+    repo_dir, bare_origin, _ = tracer_repos
+    ws = Workspace(
+        id="ws_sched_test",
+        name="Scheduler Cycle Project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=str(bare_origin),
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / "bot_sched_cycle.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+
+    store = ConfirmationStore(db_path)
+    git_provider = CountingGitProvider()
+    fake_notion = FakeNotionClient(is_configured=True)
+    evaluator = GitProgressEvaluator(
+        git_provider=git_provider,
+        notion_client=fake_notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    user_id = 777
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+
+    notifier = AsyncMock()
+    notifier.send_message = AsyncMock()
+
+    # Запуск цикла планировщика
+    await run_git_progress_cycle(evaluator, notifier)
+
+    # Карточка отправлена через notifier.send_message
+    assert notifier.send_message.called
+    card_call = next(
+        c for c in notifier.send_message.call_args_list if c.kwargs.get("reply_markup") is not None
+    )
+    kb = card_call.kwargs["reply_markup"]
+    btn_conf = next(b for row in kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:conf:"))
+
+    # Нажимаем кнопку ntn:conf
+    conf_cb = AsyncMock()
+    conf_cb.from_user.id = user_id
+    conf_cb.data = btn_conf.callback_data
+    conf_cb.message = AsyncMock()
+    conf_cb.message.edit_text = AsyncMock()
+    conf_cb.answer = AsyncMock()
+
+    await handler.cb_ntn_confirm(conf_cb)
+
+    assert len(fake_notion.logged_calls) == 1
+    conf_cb.answer.assert_called_with("Записано в Notion")
+
