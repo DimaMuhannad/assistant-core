@@ -22,8 +22,8 @@ from aiogram import Bot, Dispatcher
 
 from src import config
 from src.storage.db import Database
-from src.composition import schedule_site_url
-from src.persona.bindings import lms_settings, timesheet_settings
+from src.composition import default_git_evaluator, default_lms_client, schedule_site_url
+from src.persona.bindings import git_source_settings, lms_settings, timesheet_settings
 from src.persona.current import current_persona
 from src.persona.models import PersonaConfigError
 from src.persona.notices import EMAIL_AI_NOTICE_FLAG_KEY, email_ai_notice
@@ -31,7 +31,7 @@ from src.persona.seed import seed_persona
 from src.parser.schedule_parser import ScheduleParser
 from src.detector.diff import ScheduleChangeDetector
 from src.calendar.client import GoogleCalendarClient
-from src.notifier.telegram import TelegramNotifier
+from src.notifier.telegram import TelegramNotifier, build_notion_sync_keyboard
 from src.collector.tg_collector import TelegramCollector
 from src.collector.email_collector import EmailCollector
 from src.brain.summarizer import GeminiSummarizer
@@ -39,7 +39,6 @@ from src.brain.reply_generator import ReplyGenerator
 from src.sender.email_sender import EmailSender
 from src.notifier.bot_handler import EmailBotHandler
 from src.brain.secretary_dialog import SecretaryDialogEngine
-from src.composition import default_lms_client
 from src.persona.current import current_persona
 from src.models.schedule import SchedulePayload, ScheduleDay, Lesson, LessonType
 
@@ -602,6 +601,36 @@ async def run_live_ticker_refresh_cycle(
         logger.warning("Error in run_live_ticker_refresh_cycle: %s", e)
 
 
+async def run_git_progress_cycle(evaluator: Any, notifier: Any) -> None:
+    """Недельный цикл оценки прогресса в Git-репозиториях и создания карточек Notion (D-03, D-05)."""
+    if evaluator is None:
+        logger.info("Цикл оценки git пропущен: оценщик не инициализирован")
+        return
+
+    try:
+        run = await evaluator.evaluate()
+        proposals = await evaluator.propose_cards(run)
+        for proposal in proposals:
+            if getattr(proposal, "created", False):
+                try:
+                    text = evaluator.format_card_text(proposal.confirmation)
+                    reply_markup = build_notion_sync_keyboard(proposal.confirmation.id)
+                    await notifier.send_message(text, reply_markup=reply_markup)
+                except Exception as e:
+                    logger.warning(
+                        "Не удалось отправить карточку Notion %s: %s",
+                        getattr(getattr(proposal, "confirmation", None), "id", "?"),
+                        e,
+                    )
+
+        changed = evaluator.register_run_signature(run)
+        summary = evaluator.format_background_summary(run)
+        if changed and summary:
+            await notifier.send_message(summary)
+    except Exception as e:
+        logger.warning("Ошибка цикла оценки git: %s", e)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Assistant Core - Phase 1 & 2 Worker Daemon")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
@@ -642,6 +671,12 @@ async def main() -> None:
     email_sender = EmailSender()
     summarizer = GeminiSummarizer()
     lms_client = default_lms_client()
+    try:
+        git_evaluator = default_git_evaluator(db)
+    except Exception as e:
+        logger.warning("Цепочка git не подключена: %s", e)
+        git_evaluator = None
+
     calendar_client = GoogleCalendarClient(
         credentials_file=config.GOOGLE_CREDENTIALS_FILE,
         token_file=config.GOOGLE_TOKEN_FILE,
@@ -659,6 +694,7 @@ async def main() -> None:
         summarizer=summarizer,
         lms_client=lms_client,
         calendar_client=calendar_client,
+        git_evaluator=git_evaluator,
     )
     dp.include_router(bot_handler.router)
     await bot_handler.setup_bot_commands()
@@ -862,6 +898,24 @@ async def main() -> None:
         args=[db, notifier],
         id="live_ticker_refresh_job",
         replace_existing=True,
+    )
+    # Weekly Git progress evaluation and Notion cards
+    gs = git_source_settings()
+    scheduler.add_job(
+        run_git_progress_cycle,
+        "cron",
+        day_of_week=gs.day_of_week,
+        hour=gs.hour,
+        minute=gs.minute,
+        args=[git_evaluator, notifier],
+        id="git_progress_job",
+        replace_existing=True,
+    )
+    logger.info(
+        "Задача git_progress_job зарегистрирована: день недели %s, время %02d:%02d",
+        gs.day_of_week,
+        gs.hour,
+        gs.minute,
     )
 
     # Initial refresh of active live tickers on daemon start
