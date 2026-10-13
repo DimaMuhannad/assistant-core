@@ -29,7 +29,7 @@ persona:
       clearance_label: "🌐 Public / Academic"
       color: green
       remote: "https://github.com/DimaMuhannad/assistant-core.git"
-      notion_project: "3eaa2e4840a08135842ce6147b608116"
+      notion_project: "3f8a2e4840a0811893a6c159345c8127"
     - id: tydex-optics
       label: "🔬 Оптические приборы и измерения (ООО «Тидекс»)"
       path: /opt/work-tydex
