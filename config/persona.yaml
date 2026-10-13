@@ -20,7 +20,7 @@ persona:
       clearance_label: "🌐 Public / Open Source"
       color: blue
       remote: "https://github.com/DimaMuhannad/chat-app.git"
-      notion_project: "notion-proj-chat-app"
+      notion_project: "3eaa2e4840a08135842ce6147b608116"
     - id: assistant-core
       label: "⚙️ Assistant Core Daemon"
       path: /opt/assistant-core
@@ -29,7 +29,7 @@ persona:
       clearance_label: "🌐 Public / Academic"
       color: green
       remote: "https://github.com/DimaMuhannad/assistant-core.git"
-      notion_project: "notion-proj-assistant-core"
+      notion_project: "3eaa2e4840a08135842ce6147b608116"
     - id: tydex-optics
       label: "🔬 Оптические приборы и измерения (ООО «Тидекс»)"
       path: /opt/work-tydex
@@ -39,7 +39,7 @@ persona:
       color: red
       remote: "git@tydex-vps:tydex/optics-firmware.git"
       ssh_alias: "tydex-vps"
-      notion_project: "notion-proj-tydex-optics"
+      notion_project: "3eaa2e4840a081e2961be7eaea84444c"
       forbidden_remote_substrings: ["github.com/DimaMuhannad"]
       forbidden_keywords: ["tydex_internal_secret", "golay_calibration_key", "thz_proprietary_firmware"]
       remote_violation_message: "CRITICAL: Проект Тидекс скомпрометирован: remote указывает на личный публичный аккаунт!"
@@ -51,7 +51,7 @@ persona:
       clearance_label: "🟡 Internal Academic"
       color: yellow
       remote: "https://github.com/DimaMuhannad/guap-physics.git"
-      notion_project: "notion-proj-guap-physics"
+      notion_project: "3eaa2e4840a0811985fecb53a9172824"
   name_forms:
     nominative: Попов Дмитрий Александрович
     genitive: Попова Дмитрия Александровича
