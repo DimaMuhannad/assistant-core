@@ -62,3 +62,10 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
 - **Delegate token-heavy routine to Antigravity agents** only via the jail wrapper in chat-app: `/opt/chat-app/scripts/agy_task.sh run --repo /opt/assistant-core --mode read|edit <<< "<task>"` (see `/opt/chat-app/.claude/skills/agy-delegate/SKILL.md`). Never run `agy` directly. The jail has no git history and no `.venv`/DB — tasks needing `git log`/tests stay with Claude.
   **Default routing (owner decision 2026-10-09, no need to ask):** bulk reading/inventories/log summaries, boilerplate code and test drafts, docs/translation, uniform edits across ≥4 files → agy. Always Claude: research, discuss/planning, architecture, security/NDA/HITL logic, code review, verification, edits of 1–3 files. Claude reads the full patch, runs the gate, commits.
 - **Phase hygiene (lesson from v2.0):** a phase is closed only with SUMMARY.md written in the same run and a VERIFICATION.md that checks the feature is reachable from the runtime (not just unit-tested).
+
+## 6. Режим жёсткой экономии токенов (решение владельца 2026-10-15)
+- Все агенты GSD переведены на **Haiku**: `.planning/config.json` → `model_profile: budget`, `models.*: haiku`, `model_overrides` для всех `gsd-*` агентов (в том числе планировщик, исполнитель, верификатор, ревьюер кода, security-аудитор). Риски снижения качества владелец принял на себя.
+- Субагенты Antigravity (agy): по умолчанию самая лёгкая модель (`flash`), повышать только по явной команде владельца.
+- Это не отменяет правил безопасности: HITL, Air-Gap NDA, 100% тестов и `python3 scripts/gate.py` обязательны независимо от модели. Результаты Haiku-агентов проверяет гейт, а не доверие к модели.
+- Основная сессия Claude Code переключается отдельно командой `/model`; конфиг GSD её не меняет.
+- Вернуть качество: `model_profile: balanced` и удалить `models` и `model_overrides` из `.planning/config.json`.
