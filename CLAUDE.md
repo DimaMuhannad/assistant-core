@@ -64,8 +64,15 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
 - **Phase hygiene (lesson from v2.0):** a phase is closed only with SUMMARY.md written in the same run and a VERIFICATION.md that checks the feature is reachable from the runtime (not just unit-tested).
 
 ## 6. Режим жёсткой экономии токенов (решение владельца 2026-10-15)
-- Все агенты GSD переведены на **Haiku**, кроме планировщиков (`gsd-planner`, `gsd-roadmapper`: Sonnet по решению владельца 2026-10-15): `.planning/config.json` → `model_profile: budget`, `models.planning: sonnet`, остальные `models.*: haiku`, `model_overrides: haiku` для всех `gsd-*` агентов, кроме двух планировщиков (в том числе исполнитель, верификатор, ревьюер кода, security-аудитор). Риски снижения качества владелец принял на себя.
+- Все агенты GSD переведены на **Haiku**, кроме планировщиков (`gsd-planner`, `gsd-roadmapper`) и контролёров (`gsd-plan-checker`, `gsd-verifier`, `gsd-security-auditor`), они на Sonnet по решению владельца 2026-10-15: `.planning/config.json` → `model_profile: budget`, `models.planning: sonnet`, остальные `models.*: haiku`, `model_overrides: haiku` для всех `gsd-*` агентов, кроме двух планировщиков и трёх контролёров (`gsd-plan-checker`, `gsd-verifier`, `gsd-security-auditor`: Sonnet; в том числе исполнитель, верификатор, ревьюер кода, security-аудитор). Риски снижения качества владелец принял на себя.
 - Субагенты Antigravity (agy): по умолчанию самая лёгкая модель (`flash`), повышать только по явной команде владельца.
 - Это не отменяет правил безопасности: HITL, Air-Gap NDA, 100% тестов и `python3 scripts/gate.py` обязательны независимо от модели. Результаты Haiku-агентов проверяет гейт, а не доверие к модели.
 - Основная сессия Claude Code переключается отдельно командой `/model`; конфиг GSD её не меняет.
 - Вернуть качество: `model_profile: balanced` и удалить `models` и `model_overrides` из `.planning/config.json`.
+
+## 7. Краткие ответы в чат (экономия output-токенов, решение владельца 2026-10-15)
+- По умолчанию отвечай в чат коротко: итог в 1–5 строк (что сделано, результат проверок, что требует решения владельца). Пример: «Фаза выполнена. Все проверки пройдены (gate ЗЕЛЁНЫЙ). Коммит abc1234».
+- Не пересказывай диффы, таблицы покрытия и содержимое артефактов: подробности лежат в файлах (SUMMARY.md, VERIFICATION.md, REVIEW.md).
+- В конце короткой сводки добавляй одну строку: «Нужна расширенная сводка по правилам GSD — напишите „подробнее“».
+- Развёрнутый ответ давай только по явной просьбе владельца («подробнее», «полная сводка»). Исключения, где коротко нельзя: вопросы, блокирующие работу, остановки HITL/чекпоинтов, красные проверки и риски безопасности.
+- Правило действует и для субагентов (agy и gsd-*): их отчёты главному агенту до 60 строк, для владельца сводка короткая.

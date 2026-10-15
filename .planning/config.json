@@ -96,17 +96,17 @@
     "gsd-nyquist-auditor": "haiku",
     "gsd-pattern-mapper": "haiku",
     "gsd-phase-researcher": "haiku",
-    "gsd-plan-checker": "haiku",
+    "gsd-plan-checker": "sonnet",
     "gsd-planner": "sonnet",
     "gsd-project-researcher": "haiku",
     "gsd-research-synthesizer": "haiku",
     "gsd-roadmapper": "sonnet",
-    "gsd-security-auditor": "haiku",
+    "gsd-security-auditor": "sonnet",
     "gsd-ui-auditor": "haiku",
     "gsd-ui-checker": "haiku",
     "gsd-ui-researcher": "haiku",
     "gsd-user-profiler": "haiku",
-    "gsd-verifier": "haiku"
+    "gsd-verifier": "sonnet"
   },
   "models": {
     "planning": "sonnet",
