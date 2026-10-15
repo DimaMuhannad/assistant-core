@@ -661,8 +661,20 @@ async def test_repeat_confirm_after_success_idempotent(tmp_path: Path, tracer_re
 async def test_nda_unique_markers_not_leaked(tmp_path: Path, caplog):
     """Маркеры NDA-пространства не попадают в ответ бота, логи или вызовы клиентов."""
     marker_name = "TOP_SECRET_CODENAME_X77"
-    marker_path = str(tmp_path / "classified_subfolder_x77")
+    nda_repo = tmp_path / "classified_subfolder_x77"
+    nda_repo.mkdir()
     marker_commit = "classified proprietary patent logic x77"
+    subprocess.run(["git", "init", "-b", "main"], cwd=nda_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=nda_repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=nda_repo, check=True)
+    (nda_repo / "patent_x77.txt").write_text("x77\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=nda_repo, check=True)
+    subprocess.run(["git", "commit", "-m", marker_commit], cwd=nda_repo, check=True, capture_output=True)
+    marker_path = str(nda_repo)
+    nda_log = subprocess.run(
+        ["git", "log", "--format=%s"], cwd=nda_repo, check=True, capture_output=True, text=True
+    ).stdout
+    assert marker_commit in nda_log, "маркер коммита должен реально попасть в тестовый NDA-репозиторий"
 
     ws_nda = Workspace(
         id="ws_classified",
@@ -1048,4 +1060,223 @@ async def test_scheduler_cycle_card_to_notion_write(tmp_path: Path, tracer_repos
 
     assert len(fake_notion.logged_calls) == 1
     conf_cb.answer.assert_called_with("Записано в Notion")
+
+
+# --- Доработка по ревизии 2026-10-15 (quick 261015-9sl) ---------------------------------------
+
+
+async def _build_stack(tmp_path, repo_dir, bare_origin, ws_id, *, should_fail=False, user_id=123):
+    """Собирает связку Database + ConfirmationStore + GitProgressEvaluator + EmailBotHandler на tmp_path."""
+    ws = Workspace(
+        id=ws_id,
+        name=f"{ws_id} project",
+        clearance=WorkspaceClearance.PUBLIC,
+        path=str(repo_dir),
+        remote=str(bare_origin),
+        notion_project="11111111111111111111111111111111",
+    )
+    db_path = str(tmp_path / f"{ws_id}.db")
+    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    await db.init_db()
+    store = ConfirmationStore(db_path)
+    notion = FakeNotionClient(is_configured=True, should_fail=should_fail)
+    evaluator = GitProgressEvaluator(
+        git_provider=CountingGitProvider(),
+        notion_client=notion,
+        confirmation_store=store,
+        persona=Persona(id="p1", name="Owner", workspaces=(ws,)),
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    handler = EmailBotHandler(bot=AsyncMock(), db=db, allowed_user_id=user_id, git_evaluator=evaluator)
+    return SimpleNamespace(
+        handler=handler,
+        evaluator=evaluator,
+        store=store,
+        notion=notion,
+        user_id=user_id,
+    )
+
+
+def _make_callback(user_id, data):
+    """Фейковый CallbackQuery с заданными from_user.id и data."""
+    cb = AsyncMock()
+    cb.from_user.id = user_id
+    cb.data = data
+    cb.message.edit_text = AsyncMock()
+    cb.message.answer = AsyncMock()
+    cb.answer = AsyncMock()
+    return cb
+
+
+async def _open_card(stack):
+    """Выполняет /git и ntn:req, возвращает (callback ntn:conf, callback ntn:rej, id карточки)."""
+    status_msg = AsyncMock()
+    msg = AsyncMock()
+    msg.from_user.id = stack.user_id
+    msg.answer = AsyncMock(return_value=status_msg)
+    await stack.handler.handle_cmd_git(msg)
+
+    run_markup = status_msg.edit_text.call_args[1]["reply_markup"]
+    req_data = next(
+        b.callback_data
+        for row in run_markup.inline_keyboard
+        for b in row
+        if b.callback_data.startswith("ntn:req:")
+    )
+    req_cb = _make_callback(stack.user_id, req_data)
+    await stack.handler.cb_ntn_request(req_cb)
+
+    card_kb = req_cb.message.answer.call_args[1]["reply_markup"]
+    conf_data = next(
+        b.callback_data for row in card_kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:conf:")
+    )
+    rej_data = next(
+        b.callback_data for row in card_kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:rej:")
+    )
+    conf_id = conf_data.split(":", 2)[2]
+    return conf_data, rej_data, conf_id
+
+
+@pytest.mark.asyncio
+async def test_notion_failure_reopens_card_to_pending(tmp_path: Path, tracer_repos):
+    """Сбой Notion при подтверждении возвращает карточку в pending (reopen_action); после восстановления Notion повтор пишет ровно один раз."""
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_reopen", should_fail=True)
+    conf_data, _, conf_id = await _open_card(stack)
+
+    cb = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb)
+
+    cb.answer.assert_called_with("Не записано в Notion, повторите", show_alert=True)
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.PENDING
+    assert conf.confirmed_by is None
+    assert conf.confirmed_at is None
+    assert stack.notion.logged_calls == []
+
+    stack.notion.should_fail = False
+    cb2 = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb2)
+    cb2.answer.assert_called_with("Записано в Notion")
+    assert len(stack.notion.logged_calls) == 1
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.CONFIRMED
+
+
+@pytest.mark.asyncio
+async def test_notion_failure_without_reopen_would_leave_card_confirmed(
+    tmp_path: Path, tracer_repos, monkeypatch
+):
+    """Зонд мутации: при подменённом reopen_action карточка после сбоя остаётся confirmed, а повтор отвечает «уже обработан».
+    Тест подменяет reopen_action и НЕ фиксирует желаемое поведение продукта; он доказывает, что утверждения теста 1 не пустые.
+    """
+
+    async def _noop_reopen(self, confirmation_id):
+        return None
+
+    monkeypatch.setattr(ConfirmationStore, "reopen_action", _noop_reopen)
+
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_reopen_probe", should_fail=True)
+    conf_data, _, conf_id = await _open_card(stack)
+
+    cb = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb)
+
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.CONFIRMED
+
+    stack.notion.should_fail = False
+    cb2 = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb2)
+    cb2.answer.assert_called_with("Запрос уже обработан (confirmed)", show_alert=True)
+    assert stack.notion.logged_calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_notion_writes_before_confirmation_after_request(tmp_path: Path, tracer_repos):
+    """После /git и ntn:req до нажатия владельцем ноль записей в Notion; карточка в pending; контрольное подтверждение пишет один раз."""
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_zero_req")
+    conf_data, _, _ = await _open_card(stack)
+
+    assert stack.notion.logged_calls == []
+    confs = await stack.store.find_confirmations(action_type="notion_project_sync")
+    assert len(confs) == 1
+    assert confs[0].status == ConfirmationStatus.PENDING
+
+    cb = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb)
+    assert len(stack.notion.logged_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_notion_writes_before_confirmation_after_scheduler_cycle(tmp_path: Path, tracer_repos):
+    """После цикла планировщика карточка отправлена в pending и ноль записей в Notion; нажатие ntn:conf пишет один раз."""
+    from src.main import run_git_progress_cycle
+
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_zero_cycle", user_id=777)
+
+    notifier = AsyncMock()
+    notifier.send_message = AsyncMock()
+    await run_git_progress_cycle(stack.evaluator, notifier)
+
+    assert stack.notion.logged_calls == []
+    confs = await stack.store.find_confirmations(action_type="notion_project_sync")
+    assert len(confs) == 1
+    assert confs[0].status == ConfirmationStatus.PENDING
+
+    card_call = next(
+        c for c in notifier.send_message.call_args_list if c.kwargs.get("reply_markup") is not None
+    )
+    kb = card_call.kwargs["reply_markup"]
+    btn_conf = next(b for row in kb.inline_keyboard for b in row if b.callback_data.startswith("ntn:conf:"))
+
+    cb = _make_callback(stack.user_id, btn_conf.callback_data)
+    await stack.handler.cb_ntn_confirm(cb)
+    assert len(stack.notion.logged_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_after_reject_does_not_write_to_notion(tmp_path: Path, tracer_repos):
+    """Подтверждение после отклонения отвечает «уже обработан (rejected)», в Notion ничего не пишет, статус остаётся rejected."""
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_conf_after_rej")
+    conf_data, rej_data, conf_id = await _open_card(stack)
+
+    await stack.handler.cb_ntn_reject(_make_callback(stack.user_id, rej_data))
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.REJECTED
+
+    cb = _make_callback(stack.user_id, conf_data)
+    await stack.handler.cb_ntn_confirm(cb)
+
+    cb.answer.assert_called_with("Запрос уже обработан (rejected)", show_alert=True)
+    assert stack.notion.logged_calls == []
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_reject_after_confirm_keeps_confirmed_record(tmp_path: Path, tracer_repos):
+    """Отклонение после подтверждения не портит данные: статус confirmed, confirmed_by не меняется, записей в Notion не прибавляется.
+    Тест фиксирует безопасность данных, а не текст ответа: cb_ntn_reject не проверяет статус и отвечает «Отклонено» (04-REVISION.md, раздел 2 п. 6).
+    """
+    repo_dir, bare_origin, _ = tracer_repos
+    stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_rej_after_conf", user_id=777)
+    conf_data, rej_data, conf_id = await _open_card(stack)
+
+    await stack.handler.cb_ntn_confirm(_make_callback(stack.user_id, conf_data))
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.CONFIRMED
+    assert conf.confirmed_by == str(stack.user_id)
+    assert len(stack.notion.logged_calls) == 1
+
+    await stack.handler.cb_ntn_reject(_make_callback(stack.user_id, rej_data))
+
+    conf = await stack.store.get_confirmation(conf_id)
+    assert conf.status == ConfirmationStatus.CONFIRMED
+    assert conf.confirmed_by == str(stack.user_id)
+    assert len(stack.notion.logged_calls) == 1
 
