@@ -4,6 +4,7 @@
 Настоящий документ сформирован в рамках планов 04-12 и 04-13 как доказательная база (evidence) для независимого верификатора GSD.
 Итоговый файл `04-VERIFICATION.md` составляется исключительно верификатором GSD на основе данного перечня R1-R5 и проверок выкатки.
 В документе отсутствуют персональные адреса электронной почты, токены API, строки журналов с NDA-содержимым и неразрешённые идентификаторы.
+Ревизия 2026-10-15: см. `04-REVISION.md` и раздел 6 `04-VERIFICATION.md` (quick 261015-9sl).
 
 ---
 
@@ -26,10 +27,10 @@
 
 | Критерий | Требования | Тесты и компоненты | Команда проверки | Статус | Живое доказательство |
 |---|---|---|---|---|---|
-| **R1** | Подключение репозиториев только через данные рабочего пространства (`git: host, account, ssh_alias, remote`), `default_git_source_provider`, `SshGitProvider` (только чтение по SSH, scope `git.read`). Пропуск без remote/каталога с отображением статуса (GIT-01, GIT-02). | `tests/test_phase4_reachability.py` (`test_composition_default_git_evaluator_*`), `tests/test_git_connector.py`, `tests/test_git_chain.py` (статусы пропусков: NO_REMOTE, NO_DIR, NOT_GIT). | `.venv/bin/pytest tests/test_phase4_reachability.py tests/test_git_connector.py tests/test_git_chain.py -k "not skipped" -q` | passed | Бот в ответе `/git` выводит видимые статусы («пропущено: нет каталога», оценка/«сбой SSH»). |
+| **R1** | Подключение репозиториев только через данные рабочего пространства (`git: host, account, ssh_alias, remote`), `default_git_source_provider`, `SshGitProvider` (только чтение по SSH, scope `git.read`). Пропуск без remote/каталога с отображением статуса (GIT-01, GIT-02). | `tests/test_phase4_reachability.py` (`test_composition_default_git_evaluator_*`), `tests/test_git_connector.py`, `tests/test_git_chain.py` (статусы пропусков: NO_REMOTE, NO_DIR, NOT_GIT). Подключение по `ssh_alias`/`remote` не реализовано: `fetch_remote` использует локальный `.git/config` (`src/connectors/git/provider.py`, строка 97); решение за владельцем. | `.venv/bin/pytest tests/test_phase4_reachability.py tests/test_git_connector.py tests/test_git_chain.py -k "not skipped" -q` | partial | Бот в ответе `/git` выводит видимые статусы («пропущено: нет каталога», оценка/«сбой SSH»). |
 | **R2** | `GitProgressEvaluator` создаётся в планировщике `src/main.py` (расписание из персоны) и по команде бота `/git`, владелец получает по-русски оценку хода проекта для public- и internal-репозиториев (GIT-03). | `tests/test_phase4_reachability.py` (`test_main_registers_git_evaluator_before_bot`, `test_main_registers_scheduler_git_progress_job`, AST-проверки), `tests/test_git_chain.py` (форматирование сводки по-русски, определение застоя). | `.venv/bin/pytest tests/test_phase4_reachability.py tests/test_git_chain.py -q` | passed | Задача `run_git_progress_cycle` зарегистрирована в планировщике живого сервиса; бот отвечает на `/git` на русском языке. |
 | **R3** | Пространства `restricted_nda` и неизвестный clearance исключены из цепочки: 0 обращений к git, LLM и Notion, статус «NDA: исключено из оценки». Доказано ловушками на рантайм-пути (GIT-04). | `tests/test_git_chain_airgap.py` (ловушки `TrapGitProvider`, `TrapLlm`, `TrapNotion` на путях `handle_cmd_git` и `run_git_progress_cycle` для 7 сценариев изоляции NDA; доказательство нефиктивности `test_traps_are_not_vacuous`). | `.venv/bin/pytest tests/test_git_chain_airgap.py -q` | passed | В живом ответе бота присутствует ровно одна строка «🔒 NDA: исключено из оценки», других упоминаний пространства нет. |
-| **R4** | Обработчик `notion_project_sync` зарегистрирован в рантайме, связь «пространство → проект Notion» из персоны. Запись в Notion только после подтверждения HITL в Telegram: отклонение ничего не пишет, повтор не создает дублей, сбой SSH/Notion не роняет демон (NTN-01, NTN-02). | `tests/test_notion_git_hitl.py`, `tests/test_git_bot_commands.py`, `tests/test_git_chain.py` (колбэки `ntn:req:`, `ntn:conf:`, `ntn:rej:`, обработка `reopen_action` при сбоях, обработка дубликатов). | `.venv/bin/pytest tests/test_notion_git_hitl.py tests/test_git_bot_commands.py -q` | passed | Обработчик зарегистрирован в рантайме; без боевых ID выводится статус «Notion не настроен» без создания ошибочных карточек. |
+| **R4** | Обработчик `notion_project_sync` зарегистрирован в рантайме, связь «пространство → проект Notion» из персоны. Запись в Notion только после подтверждения HITL в Telegram: отклонение ничего не пишет, повтор не создает дублей, сбой SSH/Notion не роняет демон (NTN-01, NTN-02). | `tests/test_notion_git_hitl.py` (19 тестов на момент приёмки, 24 после доработки 261015-9sl), `tests/test_git_bot_commands.py`, `tests/test_git_chain.py` (колбэки `ntn:req:`, `ntn:conf:`, `ntn:rej:`, обработка `reopen_action` при сбоях, обработка дубликатов). | `.venv/bin/pytest tests/test_notion_git_hitl.py tests/test_git_bot_commands.py -q` | passed | Обработчик зарегистрирован в рантайме; ID проектов в `config/persona.yaml` уже настоящие (строки 23, 32, 42, 54), статус «Notion не настроен» относится к пространствам без валидного ID. |
 | **R5** | Достижимость из рантайма доказана: задача планировщика в `src/main.py`, команда бота зарегистрирована, цепочка «команда → оценка → HITL → запись» проверена на временной БД со шпионами/ловушками. Единственный путь записи в Notion подтверждён AST-анализом. Рестарт выполнен по регламенту OPS-01 с резервной копией и смоуком. | `tests/test_phase4_chain_e2e.py` (5 сквозных сценариев), `tests/test_phase4_reachability.py` (`test_log_project_activity_called_only_from_handler`). | `.venv/bin/pytest tests/test_phase4_chain_e2e.py tests/test_phase4_reachability.py -q` | passed | Сервис перезапущен по согласованию с владельцем, смоук ЗЕЛЁНЫЙ, живой отклик бота подтверждён. |
 
 ---
@@ -68,7 +69,7 @@
    - а) Бот ответил на русском языке со списком рабочих пространств: **passed** (источник: опрос владельца).
    - б) Пространство без локального каталога показано как «пропущено: нет каталога»: **passed** (источник: опрос владельца).
    - в) Присутствует ровно одна строка «🔒 NDA: исключено из оценки», других упоминаний NDA-пространства нет: **passed** (источник: опрос владельца).
-   - г) Пространства показаны со статусом «Notion не настроен» без кнопки «Внести в Notion»: **passed** (источник: опрос владельца).
+   - г) Пространства показаны со статусом «Notion не настроен» без кнопки «Внести в Notion»: **passed** (источник: опрос владельца) (состояние на 2026-10-12; после внесения настоящих ID в persona.yaml не перепроверялось).
    - д) Для доступных публичных пространств сформирована оценка по-русски либо статус «сбой SSH», сервис продолжил стабильную работу: **passed** (источник: опрос владельца).
 
 ---
@@ -81,15 +82,16 @@
    - Нарушений или ослаблений защитных рубежей `security_shield` и `gate.py` нет.
 
 2. **Идентификаторы Notion (D-06, D-07)**:
-   - Реальные ID базы активности и страниц проектов Notion не хардкодятся и задаются владельцем через переменные окружения и `config/persona.yaml` согласно `docs/GIT_NOTION_SETUP.md`.
-   - В отсутствие привязки пространства корректно получают статус «Notion не настроен» (D-06).
+   - ID проектов Notion внесены в `config/persona.yaml` (строки 23, 32, 42, 54); ID базы активности по-прежнему задаётся вне репозитория согласно `docs/GIT_NOTION_SETUP.md`.
+   - Пространства без валидного ID получают статус «Notion не настроен» (D-06).
 
 ---
 
 ## Открытые пункты
 
-1. Реальные ID Notion (notion_project, ID базы активности) от владельца и реальная запись в живой Notion не проверялись в бою: до выдачи ID пространства показывают «Notion не настроен», полная цепочка доказана тестами на временной БД (D-06, D-07, NTN-01).
+1. Реальная запись в живую Notion в документах приёмки не подтверждена: проверка только на временной БД с поддельным клиентом (D-06, D-07, NTN-01).
 2. Файл `04-VERIFICATION.md` пишется независимым верификатором GSD по этому файлу и перечню R1-R5, данный план его не создает.
+3. Подключение репозиториев по `ssh_alias`/`remote` не реализовано, требуется решение владельца (04-REVISION.md, раздел 5, п. 2).
 
 ---
 
