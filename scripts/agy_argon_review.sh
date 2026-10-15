@@ -29,7 +29,32 @@ git -C "$REPO" rev-parse --verify "$BASE^{commit}" >/dev/null
 
 # Air-Gap: репозиторий с NDA-признаками во внешнюю модель не отправляется (fail-closed).
 ORIGIN="$(git -C "$REPO" remote get-url origin 2>/dev/null || true)"
-if printf '%s %s' "$REPO" "$ORIGIN" | grep -qiE 'nda|tydex|corporate|restricted'; then
+# Стоп-слова берутся из данных персоны (исключённые из цепочки git пространства), а не из кода;
+# ошибка чтения персоны = отказ (fail-closed).
+DENY="$(cd "$REPO" && PYTHONPATH="$REPO" "$REPO/.venv/bin/python3" - <<'PY' 2>/dev/null
+import sys
+from pathlib import Path
+from src.persona.loader import load_persona
+from src.security.airgap import git_chain_workspaces
+
+persona = load_persona()
+split = git_chain_workspaces(persona)
+if split.unresolved:
+    sys.exit(1)
+eligible = {w.id for w in split.eligible}
+words = {"nda", "corporate", "restricted"}
+for w in persona.to_domain().workspaces:
+    if w.id in eligible:
+        continue
+    for v in (w.id, getattr(w, "name", ""), getattr(w, "remote", ""), getattr(w, "ssh_alias", ""),
+              Path(getattr(w, "path", "") or "").name):
+        if v and len(str(v)) >= 3:
+            words.add(str(v).lower())
+print("\n".join(sorted(words)))
+PY
+)" || { echo "ОТКАЗ (Air-Gap): не удалось прочитать персону, отправка запрещена (fail-closed)" >&2; exit 3; }
+[[ -n "$DENY" ]] || { echo "ОТКАЗ (Air-Gap): пустой список стоп-слов" >&2; exit 3; }
+if printf '%s %s' "$REPO" "$ORIGIN" | grep -qiFf <(printf '%s\n' "$DENY"); then
   echo "ОТКАЗ (Air-Gap): репозиторий похож на NDA/корпоративный, отправка запрещена" >&2; exit 3
 fi
 if [[ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]]; then
