@@ -305,8 +305,9 @@ class EmailBotHandler:
         return default_timesheet_service(self.db)
 
     def _is_authorized(self, user_id: int) -> bool:
+        # Fail-closed: без настроенного владельца доступ закрыт для всех (SEC).
         if self.allowed_user_id is None:
-            return True
+            return False
         return str(user_id) == str(self.allowed_user_id)
 
     def register_message(self, email_id: int, message_id: int) -> None:
@@ -2271,25 +2272,33 @@ class EmailBotHandler:
 
         try:
             await resume_action(conf_id, store, confirmed_by=str(callback.from_user.id))
-            ws_name = conf.payload.get("workspace_name") or conf.payload.get("workspace_id") or "Проект"
-            text = f"✅ Записано в Notion: {ws_name}"
-            if callback.message:
-                await callback.message.edit_text(text)
-            await callback.answer("Записано в Notion")
         except NotionSyncError as e:
             logger.warning("NotionSyncError при подтверждении %s: %s", conf_id, e)
             await store.reopen_action(conf_id)
             await callback.answer("Не записано в Notion, повторите", show_alert=True)
+            return
         except LookupError as e:
             logger.warning("LookupError при подтверждении %s: %s", conf_id, e)
             await store.reopen_action(conf_id)
             await callback.answer("Не записано в Notion, повторите", show_alert=True)
+            return
         except ValueError:
             await callback.answer("Запрос уже обработан", show_alert=True)
+            return
         except Exception as e:
             logger.warning("Ошибка при подтверждении публикации Notion %s: %s", conf_id, e)
             await store.reopen_action(conf_id)
             await callback.answer("Не записано в Notion, повторите", show_alert=True)
+            return
+
+        # Запись в Notion уже выполнена: сбой интерфейса не должен откатывать карточку.
+        ws_name = conf.payload.get("workspace_name") or conf.payload.get("workspace_id") or "Проект"
+        try:
+            if callback.message:
+                await callback.message.edit_text(f"✅ Записано в Notion: {ws_name}")
+            await callback.answer("Записано в Notion")
+        except Exception as e:
+            logger.warning("Не удалось обновить сообщение после записи в Notion %s: %s", conf_id, e)
 
     async def cb_ntn_reject(self, callback: CallbackQuery) -> None:
         """Обрабатывает отклонение публикации отчета активности в Notion (D-10)."""
@@ -2304,6 +2313,11 @@ class EmailBotHandler:
 
         conf_id = parts[2]
         store = self._get_confirmation_store()
+        conf = await store.get_confirmation(conf_id)
+        if conf is not None and conf.status == ConfirmationStatus.CONFIRMED:
+            # Запись в Notion уже сделана: статус и данные не меняем.
+            await callback.answer("Уже подтверждено", show_alert=True)
+            return
         await store.reject_action(conf_id, rejected_by=str(callback.from_user.id))
         if callback.message:
             await callback.message.edit_text("❌ Отклонено. В Notion ничего не записано.")
