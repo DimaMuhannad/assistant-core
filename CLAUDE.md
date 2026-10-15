@@ -64,7 +64,7 @@ This project is an advanced AI Agent IDE and Autonomous Assistant platform consi
 - **Phase hygiene (lesson from v2.0):** a phase is closed only with SUMMARY.md written in the same run and a VERIFICATION.md that checks the feature is reachable from the runtime (not just unit-tested).
 
 ## 6. Режим жёсткой экономии токенов (решение владельца 2026-10-15)
-- Все агенты GSD переведены на **Haiku**, кроме планировщиков (`gsd-planner`, `gsd-roadmapper`: Sonnet по решению владельца 2026-10-15): `.planning/config.json` → `model_profile: budget`, `models.*: haiku`, `model_overrides` для всех `gsd-*` агентов (в том числе планировщик, исполнитель, верификатор, ревьюер кода, security-аудитор). Риски снижения качества владелец принял на себя.
+- Все агенты GSD переведены на **Haiku**, кроме планировщиков (`gsd-planner`, `gsd-roadmapper`: Sonnet по решению владельца 2026-10-15): `.planning/config.json` → `model_profile: budget`, `models.planning: sonnet`, остальные `models.*: haiku`, `model_overrides: haiku` для всех `gsd-*` агентов, кроме двух планировщиков (в том числе исполнитель, верификатор, ревьюер кода, security-аудитор). Риски снижения качества владелец принял на себя.
 - Субагенты Antigravity (agy): по умолчанию самая лёгкая модель (`flash`), повышать только по явной команде владельца.
 - Это не отменяет правил безопасности: HITL, Air-Gap NDA, 100% тестов и `python3 scripts/gate.py` обязательны независимо от модели. Результаты Haiku-агентов проверяет гейт, а не доверие к модели.
 - Основная сессия Claude Code переключается отдельно командой `/model`; конфиг GSD её не меняет.
