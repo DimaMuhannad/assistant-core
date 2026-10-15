@@ -97,10 +97,10 @@
     "gsd-pattern-mapper": "haiku",
     "gsd-phase-researcher": "haiku",
     "gsd-plan-checker": "haiku",
-    "gsd-planner": "haiku",
+    "gsd-planner": "sonnet",
     "gsd-project-researcher": "haiku",
     "gsd-research-synthesizer": "haiku",
-    "gsd-roadmapper": "haiku",
+    "gsd-roadmapper": "sonnet",
     "gsd-security-auditor": "haiku",
     "gsd-ui-auditor": "haiku",
     "gsd-ui-checker": "haiku",
@@ -109,7 +109,7 @@
     "gsd-verifier": "haiku"
   },
   "models": {
-    "planning": "haiku",
+    "planning": "sonnet",
     "discuss": "haiku",
     "research": "haiku",
     "execution": "haiku",
