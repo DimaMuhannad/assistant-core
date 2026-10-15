@@ -73,6 +73,7 @@
   "response_language": "ru",
   "model_overrides": {
     "gsd-planner": "sonnet",
-    "gsd-roadmapper": "sonnet"
+    "gsd-roadmapper": "sonnet",
+    "gsd-code-reviewer": "haiku"
   }
 }
