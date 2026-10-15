@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,7 +26,7 @@ from assistant_shared.hitl import (
     reject_pending_action,
     resume_action,
 )
-from src.brain.git_evaluator import GitProgressEvaluator
+from src.brain.git_evaluator import GitProgressEvaluator, NotionSyncError
 from src.core.domain.entities import (
     GitCommit,
     Persona,
@@ -897,6 +898,96 @@ async def test_handler_rejects_when_clearance_changed_or_unresolved(
 
     mock_notion.find_project_activity.assert_not_called()
     mock_notion.log_project_activity.assert_not_called()
+
+
+class _BrokenPersona:
+    """Персона, у которой чтение пространств падает (имитация недоступной персоны)."""
+
+    @property
+    def workspaces(self):
+        raise RuntimeError("persona unavailable")
+
+
+async def _assert_fail_closed_notion_sync(
+    hitl_store: ConfirmationStore,
+    ws_id: str,
+    persona,
+) -> None:
+    """Общая проверка fail-closed: NotionSyncError и ноль обращений к Notion."""
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+    conf = await hitl_store.create_confirmation(
+        persona_id="p_owner",
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+        },
+    )
+    with pytest.raises(NotionSyncError, match="изменился или не определен"):
+        await evaluator._handle_notion_sync(conf)
+
+    mock_notion.find_project_activity.assert_not_called()
+    mock_notion.log_project_activity.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_when_persona_workspaces_unreadable(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Если список пространств персоны не читается, публикация отказывает fail-closed без обращений к Notion (GIT-04, T-04-22)."""
+    ws_public, _ = mock_workspaces
+    await _assert_fail_closed_notion_sync(hitl_store, ws_public.id, _BrokenPersona())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "clearance",
+    ["super_confidential_unknown", "", None],
+    ids=["unknown", "empty", "none"],
+)
+async def test_handler_rejects_when_clearance_unknown(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+    clearance,
+) -> None:
+    """Неизвестный, пустой или None допуск пространства не допускается к публикации в Notion (fail-closed, GIT-04, T-04-22)."""
+    ws_public, _ = mock_workspaces
+    weird_ws = SimpleNamespace(
+        id=ws_public.id,
+        name="Weird",
+        clearance=clearance,
+        path=ws_public.path,
+        remote="",
+        ssh_alias="",
+    )
+    persona = SimpleNamespace(workspaces=[weird_ws])
+    await _assert_fail_closed_notion_sync(hitl_store, ws_public.id, persona)
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_when_persona_is_none(
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если персона недоступна (persona=None, current_persona падает), публикация отказывает fail-closed без обращений к Notion (GIT-04, T-04-22)."""
+
+    def _unavailable_current_persona():
+        raise RuntimeError("persona unavailable")
+
+    # Подмена не даёт тесту прочитать настоящую персону из конфигурации.
+    monkeypatch.setattr("src.persona.current.current_persona", _unavailable_current_persona)
+    ws_public, _ = mock_workspaces
+    await _assert_fail_closed_notion_sync(hitl_store, ws_public.id, None)
 
 
 @pytest.mark.asyncio

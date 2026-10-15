@@ -29,6 +29,9 @@ from src.security.airgap import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 class SpyGenAIClient:
     """Шпион-ловушка вместо genai.Client для проверки отсутствия NDA-токенов в запросах к LLM."""
 
@@ -187,7 +190,7 @@ async def test_nda_commits_not_sent_to_llm(
     safe_commits = sanitize_git_commits_for_llm(nda_workspace, secret_nda_commits)
 
     # 2. Рендерим шаблон промпта git_progress.jinja2
-    template_path = Path("/opt/assistant-core/src/persona/prompts/git_progress.jinja2")
+    template_path = REPO_ROOT / "src" / "persona" / "prompts" / "git_progress.jinja2"
     template = jinja2.Template(template_path.read_text(encoding="utf-8"))
 
     prompt_text = template.render(
@@ -223,7 +226,7 @@ async def test_public_commits_processed_normally(
     spy = SpyGenAIClient()
     safe_commits = sanitize_git_commits_for_llm(public_workspace, public_commits)
 
-    template_path = Path("/opt/assistant-core/src/persona/prompts/git_progress.jinja2")
+    template_path = REPO_ROOT / "src" / "persona" / "prompts" / "git_progress.jinja2"
     template = jinja2.Template(template_path.read_text(encoding="utf-8"))
 
     prompt_text = template.render(

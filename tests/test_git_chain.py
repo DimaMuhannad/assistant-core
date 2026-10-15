@@ -34,14 +34,17 @@ from src.persona.prompts import render_prompt
 from src.storage.db import Database
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 # ---------------------------------------------------------------------------
 # Task 1: Промпты
 # ---------------------------------------------------------------------------
 
 def test_prompt_copies_identical() -> None:
     """Обе копии шаблона git_progress_default.jinja2 и git_progress.jinja2 побайтно одинаковы."""
-    path_config = Path("/opt/assistant-core/config/prompts/git_progress_default.jinja2")
-    path_src = Path("/opt/assistant-core/src/persona/prompts/git_progress.jinja2")
+    path_config = REPO_ROOT / "config" / "prompts" / "git_progress_default.jinja2"
+    path_src = REPO_ROOT / "src" / "persona" / "prompts" / "git_progress.jinja2"
 
     assert path_config.exists()
     assert path_src.exists()
