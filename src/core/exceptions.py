@@ -12,3 +12,9 @@ class MissingScopeError(PermissionError):
 
     pass
 
+
+
+class GitReadError(RuntimeError):
+    """Сбой чтения истории git (код возврата, таймаут, исключение): не равен пустой истории."""
+
+    pass

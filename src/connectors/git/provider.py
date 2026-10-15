@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from src.core.domain.entities import ConnectorRole, GitCommit, Workspace
-from src.core.exceptions import AirGapViolationError
+from src.core.exceptions import AirGapViolationError, GitReadError
 from src.core.ports.connectors import BaseGitSourceProvider
 from src.security.airgap import is_git_chain_eligible, git_chain_workspaces
 
@@ -130,7 +130,10 @@ class SshGitProvider(BaseGitSourceProvider):
         since: datetime | None = None,
         max_commits: int = 100,
     ) -> list[GitCommit]:
-        """Чтение истории коммитов репозитория начиная с указанной даты (D-01, D-03)."""
+        """Чтение истории коммитов репозитория начиная с указанной даты (D-01, D-03).
+
+        Сбой чтения поднимает GitReadError: пустой список означает только отсутствие коммитов.
+        """
         if not is_git_chain_eligible(workspace):
             raise AirGapViolationError(f"Рабочее пространство {workspace.id} не допущено к цепочке git (Air-Gap)")
 
@@ -174,18 +177,20 @@ class SshGitProvider(BaseGitSourceProvider):
                     proc.returncode,
                     stderr.decode(errors="replace").strip(),
                 )
-                return []
+                raise GitReadError(f"git log для {workspace.id} завершился с кодом {proc.returncode}")
 
             output = stdout.decode("utf-8", errors="replace")
             return self._parse_git_log(output)
+        except GitReadError:
+            raise
         except asyncio.TimeoutError:
             logger.warning("Таймаут git log для %s (> 15.0 с)", workspace.id)
             if proc is not None:
                 await self._terminate(proc)
-            return []
+            raise GitReadError(f"Таймаут git log для {workspace.id}")
         except Exception as e:
             logger.warning("Ошибка чтения git log для %s: %s", workspace.id, e)
-            return []
+            raise GitReadError(f"Ошибка чтения git log для {workspace.id}") from e
 
     def _parse_git_log(self, text: str) -> list[GitCommit]:
         """Разбор вывода git log --shortstat."""

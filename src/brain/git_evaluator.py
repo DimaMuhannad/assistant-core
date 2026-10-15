@@ -102,6 +102,7 @@ class GitStatus(StrEnum):
     NO_DIR = "no_dir"
     NOT_GIT = "not_git"
     FETCH_FAILED = "fetch_failed"
+    READ_FAILED = "read_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,11 @@ def _format_commit_declension(count: int) -> str:
     if 2 <= last <= 4:
         return f"{count} коммита"
     return f"{count} коммитов"
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    """Дата с часовым поясом: наивную считаем UTC, как и при расчёте застоя."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _format_ssh_failure_text(ws: Any) -> str:
@@ -420,11 +426,24 @@ class GitProgressEvaluator:
                 raw_commits = await self.git_provider.get_commits_since(ws, since=period_start)
             except Exception as e:
                 logger.warning("get_commits_since ошибка для %s: %s", ws_id, type(e).__name__)
-                raw_commits = []
+                # Сбой чтения не равен пустой истории: не выдаём его за «Застой».
+                entries.append(
+                    WorkspaceEvaluation(
+                        workspace=ws,
+                        status=GitStatus.READ_FAILED,
+                        status_text="сбой чтения git",
+                        report=None,
+                        notion_ready=False,
+                        notion_note="Notion не настроен",
+                    )
+                )
+                continue
 
             safe_commits = sanitize_git_commits_for_llm(ws, raw_commits, self._get_persona())
             commit_count = len(safe_commits)
-            latest_commit_date = safe_commits[0].date if safe_commits else None
+            latest_commit_date = (
+                max(safe_commits, key=lambda c: _as_aware_utc(c.date)).date if safe_commits else None
+            )
 
             # Определение застоя: нет коммитов за период или последний старше stagnation_days
             is_stagnant = False
