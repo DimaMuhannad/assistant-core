@@ -1023,3 +1023,76 @@ async def test_handler_rejects_when_client_not_configured(
         await evaluator._handle_notion_sync(conf)
 
 
+
+
+def test_card_text_truncated_to_telegram_limit(mock_notion_client, hitl_store: ConfirmationStore):
+    """Карточка с длинной сводкой не превышает лимит Telegram 4096 символов."""
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion_client,
+        confirmation_store=hitl_store,
+        default_activity_db_id="33333333333333333333333333333333",
+    )
+    conf = AsyncMock(
+        payload={
+            "workspace_name": "GUAP Lab",
+            "status": "Активно",
+            "commit_count": 3,
+            "date_iso": "2026-10-11",
+            "summary": "Ж" * 6000,
+        }
+    )
+    text = evaluator.format_card_text(conf)
+
+    assert len(text) <= 4096
+    assert "Публикация в Notion: GUAP Lab" in text
+
+
+@pytest.mark.asyncio
+async def test_notion_sync_date_fallback_uses_local_timezone(
+    monkeypatch,
+    hitl_store: ConfirmationStore,
+    mock_workspaces: tuple[Workspace, Workspace],
+) -> None:
+    """Без date_iso в payload дата берётся в config.TZ, а не по UTC."""
+    import datetime as real_dt
+
+    from src.brain import git_evaluator as ge
+
+    class _FrozenDatetime(real_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 22:30 UTC 11 октября = 01:30 12 октября по Москве
+            return cls(2026, 10, 11, 22, 30, tzinfo=real_dt.timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(ge, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(ge.config, "TZ", "Europe/Moscow", raising=False)
+
+    ws_public, _ = mock_workspaces
+    persona = Persona(id="p_owner", name="Owner", workspaces=(ws_public,))
+    mock_notion = AsyncMock()
+    mock_notion.is_configured = True
+    mock_notion.find_project_activity = AsyncMock(return_value={"id": "p1", "object": "page"})
+
+    evaluator = GitProgressEvaluator(
+        git_provider=AsyncMock(),
+        notion_client=mock_notion,
+        confirmation_store=hitl_store,
+        persona=persona,
+    )
+    conf = await hitl_store.create_confirmation(
+        persona_id=persona.id,
+        action_type="notion_project_sync",
+        payload={
+            "workspace_id": ws_public.id,
+            "notion_project_id": "11111111111111111111111111111111",
+            "database_id": "22222222222222222222222222222222",
+            "commit_count": 1,
+            "status": "Активно",
+            "summary": "s",
+        },
+    )
+
+    await evaluator._handle_notion_sync(conf)
+
+    assert mock_notion.find_project_activity.call_args.kwargs["date_iso"] == "2026-10-12"

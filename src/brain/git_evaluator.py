@@ -149,6 +149,18 @@ def _format_commit_declension(count: int) -> str:
     return f"{count} коммитов"
 
 
+_TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+def _local_date_iso(now: datetime) -> str:
+    """Дата now в часовом поясе config.TZ (общий источник для карточки и публикации)."""
+    try:
+        tz = ZoneInfo(getattr(config, "TZ", "Europe/Moscow"))
+    except Exception:
+        tz = timezone.utc
+    return now.astimezone(tz).date().isoformat()
+
+
 def _as_aware_utc(value: datetime) -> datetime:
     """Дата с часовым поясом: наивную считаем UTC, как и при расчёте застоя."""
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -332,11 +344,7 @@ class GitProgressEvaluator:
         split = git_chain_workspaces(self._get_persona())
 
         now = datetime.now(timezone.utc)
-        try:
-            tz = ZoneInfo(getattr(config, "TZ", "Europe/Moscow"))
-        except Exception:
-            tz = timezone.utc
-        date_iso = now.astimezone(tz).date().isoformat()
+        date_iso = _local_date_iso(now)
         stagnation_days = self._stagnation_days()
         period_start = since or (now - timedelta(days=stagnation_days))
 
@@ -665,7 +673,10 @@ class GitProgressEvaluator:
             f"Сводка для Notion:",
             f"{summary}",
         ]
-        return "\n".join(lines).strip()
+        text = "\n".join(lines).strip()
+        if len(text) > _TELEGRAM_MESSAGE_LIMIT:
+            return text[: _TELEGRAM_MESSAGE_LIMIT - 1] + "…"
+        return text
 
     async def _handle_notion_sync(self, conf: PendingConfirmation) -> dict[str, Any]:
         """Обработчик действия HITL: публикация активности в Notion (D-06, D-09, D-10, NTN-01, NTN-02)."""
@@ -699,7 +710,7 @@ class GitProgressEvaluator:
             raise NotionSyncError("Клиент Notion не настроен")
 
         # 4. Проверка на дубликат и публикация в Notion
-        date_iso = str(payload.get("date_iso") or datetime.now(timezone.utc).date().isoformat())
+        date_iso = str(payload.get("date_iso") or _local_date_iso(datetime.now(timezone.utc)))
         try:
             find_fn = getattr(self.notion_client, "find_project_activity", None)
             existing_page = (
