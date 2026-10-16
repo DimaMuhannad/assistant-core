@@ -129,3 +129,46 @@ async def test_ntn_reject_pending_still_rejects(fx):
 
     rej.answer.assert_awaited_once_with("Отклонено")
     assert (await fx.store.get_confirmation(conf.id)).status == ConfirmationStatus.REJECTED
+
+
+async def test_ntn_confirm_notion_failure_returns_card_to_pending(fx):
+    """Сбой Notion при подтверждении: карточка снова pending, владелец может повторить (reopen_action)."""
+    fx.notion.log_project_activity.side_effect = RuntimeError("Notion API 500")
+    conf = await _pending(fx)
+    cb = _cb(conf.id, "conf")
+
+    await fx.handler.cb_ntn_confirm(cb)
+
+    cb.answer.assert_awaited_once_with("Не записано в Notion, повторите", show_alert=True)
+    assert (await fx.store.get_confirmation(conf.id)).status == ConfirmationStatus.PENDING
+
+    fx.notion.log_project_activity.side_effect = None
+    retry = _cb(conf.id, "conf")
+    await fx.handler.cb_ntn_confirm(retry)
+    assert (await fx.store.get_confirmation(conf.id)).status == ConfirmationStatus.CONFIRMED
+
+
+async def test_no_notion_calls_between_card_and_confirm(fx):
+    """Пока владелец не нажал «подтвердить», в Notion нет ни чтения, ни записи."""
+    conf = await _pending(fx)
+
+    fx.notion.find_project_activity.assert_not_called()
+    fx.notion.log_project_activity.assert_not_called()
+
+    await fx.handler.cb_ntn_confirm(_cb(conf.id, "conf"))
+
+    fx.notion.log_project_activity.assert_awaited_once()
+
+
+async def test_ntn_confirm_after_reject_writes_nothing(fx):
+    """Подтверждение отклонённой карточки ничего не пишет в Notion, статус остаётся rejected."""
+    conf = await _pending(fx)
+    await fx.handler.cb_ntn_reject(_cb(conf.id, "rej"))
+
+    cb = _cb(conf.id, "conf")
+    await fx.handler.cb_ntn_confirm(cb)
+
+    cb.answer.assert_awaited_once()
+    assert "уже обработан" in cb.answer.call_args[0][0].lower()
+    fx.notion.log_project_activity.assert_not_called()
+    assert (await fx.store.get_confirmation(conf.id)).status == ConfirmationStatus.REJECTED
