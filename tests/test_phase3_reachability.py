@@ -331,3 +331,22 @@ async def sample_func():
     # Порядок нарушен: step_a -> step_b
     with pytest.raises(AssertionError, match="Нарушен порядок вызовов"):
         check_execution_order(func_node, ["step_a", "step_b"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias", ["git", "гит", "коммиты"])
+async def test_bot_hide_show_git_command_aliases(tmp_path: Path, alias: str) -> None:
+    """«скрой/покажи команду» понимает git, гит и коммиты."""
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'git_cmd.db'}")
+    await db.init_db()
+    handler = _make_handler(db)
+    try:
+        msg_hide = _make_message(f"скрой команду {alias}")
+        await handler.handle_user_text(msg_hide)
+        assert (await db.get_command_settings())["git"]["is_enabled"] is False
+
+        msg_show = _make_message(f"покажи команду {alias}")
+        await handler.handle_user_text(msg_show)
+        assert (await db.get_command_settings())["git"]["is_enabled"] is True
+    finally:
+        await db.close()
