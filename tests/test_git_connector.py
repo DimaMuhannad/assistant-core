@@ -444,3 +444,15 @@ async def test_list_repositories_returns_domain_workspaces_from_persona_config(t
             assert hasattr(r, "name")
             assert r.clearance != WorkspaceClearance.RESTRICTED_NDA
 
+
+
+def test_parse_git_log_bad_date_fallback_is_timezone_aware():
+    """Нечитаемая дата коммита заменяется aware-датой, а не наивной."""
+    raw_output = (
+        "COMMIT_RECORD\x1f" + "3" * 40 + "\x1fCarol <c@example.com>\x1fnot-a-date\x1f"
+        "chore: bad date\n"
+    )
+    commits = SshGitProvider()._parse_git_log(raw_output)
+
+    assert len(commits) == 1
+    assert commits[0].date.tzinfo is not None

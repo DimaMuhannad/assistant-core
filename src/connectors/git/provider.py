@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
 
@@ -218,7 +218,7 @@ class SshGitProvider(BaseGitSourceProvider):
             try:
                 commit_date = datetime.fromisoformat(date_str)
             except Exception:
-                commit_date = datetime.now()
+                commit_date = datetime.now(timezone.utc)
 
             files_changed = 0
             insertions = 0
