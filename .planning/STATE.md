@@ -4,17 +4,18 @@ milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
 current_phase: 5
 current_phase_name: Цепочка web-HITL → Telegram
-status: completed
-stopped_at: Phase 4 complete, transitioned to Phase 5
-last_updated: "2026-10-12T13:15:00.000Z"
-last_activity: 2026-10-12
+status: planning
+stopped_at: Phase 04 complete, ready to plan Phase 5
+last_updated: "2026-10-18T17:20:04.657Z"
+last_activity: 2026-10-18
 last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: f4bde14
+state_head: 9f17586becd91bc619d3ee90128c5f76b811dbed
 progress:
   total_phases: 9
   completed_phases: 4
   total_plans: 44
   completed_plans: 44
+  percent: 44
 ---
 
 # Project State
@@ -28,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 
 ## Current Position
 
-Phase: 4 — Цепочка Git → оценка → HITL → Notion
-Plan: 13 of 13 complete
-Status: Phase 4 PASSED
-Last activity: 2026-10-12 — Phase 04 complete, transitioned to Phase 5
+Phase: 5 — Цепочка web-HITL → Telegram
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-18 — Phase 04 complete, transitioned to Phase 5
 
 Progress: [████░░░░░░] 44%
 
@@ -180,5 +181,5 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-10-11T10:10:55.809Z
-Stopped at: Phase 4 context gathered
+Stopped at: Phase 04 complete, ready to plan Phase 5
 Resume file: .planning/phases/04-tsepochka-git-otsenka-hitl-notion/04-CONTEXT.md
