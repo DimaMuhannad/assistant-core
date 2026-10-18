@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
-current_phase: 5
-current_phase_name: Ретро-верификация v2.0
-status: planning
+current_phase: 05
+current_phase_name: retro-verifikatsiya-v2-0
+status: executing
 stopped_at: Phase 5 context gathered
-last_updated: "2026-10-18T17:56:10.564Z"
+last_updated: "2026-10-18T19:44:42.914Z"
 last_activity: 2026-10-18
 last_activity_desc: web-HITL → Telegram moved to backlog 999.2, phases renumbered
-state_head: 29be6036c8b5304fe4a9bf343c04c0befb5b6044
+state_head: be522eec7f776a4abc29dd7248761713128da6c6
 progress:
   total_phases: 8
   completed_phases: 4
-  total_plans: 44
+  total_plans: 52
   completed_plans: 44
 ---
 
@@ -28,9 +28,9 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 
 ## Current Position
 
-Phase: 5 — Ретро-верификация v2.0
+Phase: 05 (retro-verifikatsiya-v2-0) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-10-18 — цепочка web-HITL → Telegram отложена в бэклог (999.2), фазы 6–9 стали 5–8
 
 Progress: [████░░░░░░] 44%
