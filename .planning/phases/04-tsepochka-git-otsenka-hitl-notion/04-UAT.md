@@ -8,17 +8,17 @@ updated: 2026-10-18T13:02:44Z
 
 ## Current Test
 
-number: 1
-name: Решение по открытым пунктам Air-Gap из ревью Argon (№3, №4, №5)
+number: 2
+name: Рестарт assistant-worker для выкатки правок 16 и 18 октября
 expected: |
-  Решение владельца: ограничить fetch/log remote из персоны, разворачивать симлинки и путь «/» в _norm_path, вызывать git_chain_workspaces на границе SshGitProvider; либо явно принять риск.
-awaiting: user response
+  После python3 scripts/deploy.py --backup --restart смоук ЗЕЛЁНЫЙ, /git без регрессий.
+awaiting: явное разрешение владельца на рестарт
 
 ## Tests
 
 ### 1. Air-Gap Argon №3–5
 expected: решение владельца (исправить или принять риск)
-result: [pending]
+result: accepted-risk (решение владельца 2026-10-18: риск принят, код не меняется; основной путь идёт через шлюз git_chain_workspaces в evaluate())
 
 ### 2. Рестарт assistant-worker для выкатки правок 16 и 18 октября
 expected: после python3 scripts/deploy.py --backup --restart смоук ЗЕЛЁНЫЙ, /git без регрессий
@@ -31,9 +31,9 @@ result: [pending]
 ## Summary
 
 total: 3
-passed: 0
+passed: 1
 issues: 0
-pending: 3
+pending: 2
 skipped: 0
 blocked: 0
 
