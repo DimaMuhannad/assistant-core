@@ -2,19 +2,19 @@
 gsd_state_version: "1.0"
 milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
-current_phase: 05
+current_phase: 5
 current_phase_name: retro-verifikatsiya-v2-0
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-10-18T19:44:42.914Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-10-18T21:08:45.588Z"
 last_activity: 2026-10-18
-last_activity_desc: web-HITL → Telegram moved to backlog 999.2, phases renumbered
-state_head: be522eec7f776a4abc29dd7248761713128da6c6
+last_activity_desc: Phase 5 execution started
+state_head: 4dd519d70f22b8ac2b503800f45382745afcf64b
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 52
-  completed_plans: 44
+  completed_plans: 45
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-10)
 
 **Core value:** Ассистент надёжно выполняет ежедневную работу секретаря. Ни одно содержимое NDA-пространств не уходит во внешнюю LLM, и ни одно необратимое действие не выполняется без подтверждения человека (HITL).
-**Current focus:** Phase 05 — Ретро-верификация v2.0
+**Current focus:** Phase 5 — retro-verifikatsiya-v2-0
 
 ## Current Position
 
-Phase: 05 (retro-verifikatsiya-v2-0) — READY TO EXECUTE
-Plan: Not started
+Phase: 5 (retro-verifikatsiya-v2-0) — EXECUTING
+Plan: 2 of 8
 Status: Ready to execute
-Last activity: 2026-10-18 — цепочка web-HITL → Telegram отложена в бэклог (999.2), фазы 6–9 стали 5–8
+Last activity: 2026-10-18 — Phase 5 execution started
 
 Progress: [████░░░░░░] 44%
 
@@ -91,6 +91,7 @@ Progress: [████░░░░░░] 44%
 | Phase 03 P04 | 15 min | 2 tasks | 3 files |
 | Phase 03 P05 | 10 min | 2 tasks | 3 files |
 | Phase 03 P06 | 20 min | 3 tasks | 4 files |
+| Phase 05 P01 | 40min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -148,6 +149,8 @@ Progress: [████░░░░░░] 44%
 - [Phase 03]: 03-04: сквозная цепочка достижимости AST main.py/db.py -> старт на временных БД -> реальные роуты бота (9 passed); гейт ЗЕЛЁНЫЙ (10 строк ✓), боевая БД не открывалась (7d071cf43c1c); 03-VERIFICATION.md пишет верификатор GSD по перечню R1-R5 (D-13, критерий 5)
 - [Phase 03]: 03-05: владелец согласовал check-and-restart; проверка на копии боевой БД ЗЕЛЁНАЯ (hash 47559fb19642 совпал, данные неизменны, 0003 уже в БД); рестарт не выполнялся (DAT-01, Критерий 2)
 - [Phase 03]: 03-06: рестарт assistant-worker с бэкапом (/var/backups/assistant-core/assistant-20261011-005251.db, 8.7MB); смоук ЗЕЛЁНЫЙ; живые проверки /help, /menu, 👍/👎 passed; контрольная копия 83fece373834 ЗЕЛЁНАЯ; CONCERNS.md закрыт; гейт ЗЕЛЁНЫЙ (10 строк ✓) (DAT-01, Критерий 5)
+- [Phase 05]: 05-01: ACT-03 gap (retry-путь act:cal:retry пишет в календарь вне resume_action, без проверки статуса; класс HITL, предложено HIT-06); ACT-01/ACT-02 passed по HITL-first (решение владельца 2026-10-18 №2)
+- [Phase 05]: 05-01: зависание pytest в test_fast_intent_router.py (код 124 при 10 passed) записано наблюдением, не gap требования; решение владельца за /gsd-quick или бэклогом
 
 ### Pending Todos
 
@@ -179,6 +182,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-18T17:56:09.238Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-retro-verifikatsiya-v2-0/05-CONTEXT.md
+Last session: 2026-10-18T21:08:45.087Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None
