@@ -446,13 +446,25 @@ async def test_list_repositories_returns_domain_workspaces_from_persona_config(t
 
 
 
-def test_parse_git_log_bad_date_fallback_is_timezone_aware():
-    """Нечитаемая дата коммита заменяется aware-датой, а не наивной."""
+def test_parse_git_log_bad_date_commit_is_skipped():
+    """Коммит с нечитаемой датой пропускается, а не получает дату «сейчас» (иначе скрывается застой)."""
     raw_output = (
         "COMMIT_RECORD\x1f" + "3" * 40 + "\x1fCarol <c@example.com>\x1fnot-a-date\x1f"
         "chore: bad date\n"
+        "COMMIT_RECORD\x1f" + "4" * 40 + "\x1fDan <d@example.com>\x1f2026-03-20T10:00:00+00:00\x1f"
+        "feat: ok\n"
     )
     commits = SshGitProvider()._parse_git_log(raw_output)
 
-    assert len(commits) == 1
-    assert commits[0].date.tzinfo is not None
+    assert [c.hash for c in commits] == ["4" * 40]
+
+
+def test_redact_credentials_hides_url_token():
+    """Токен в URL из stderr git не попадает в лог."""
+    from src.connectors.git.provider import _redact_credentials
+
+    text = "fatal: Authentication failed for 'https://user:tok3n@host/repo.git'"
+    out = _redact_credentials(text)
+
+    assert "tok3n" not in out and "user" not in out
+    assert "https://***@host/repo.git" in out

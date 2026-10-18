@@ -22,6 +22,14 @@ from src.security.airgap import is_git_chain_eligible, git_chain_workspaces
 
 logger = logging.getLogger(__name__)
 
+_URL_CREDENTIALS_RE = re.compile(r"(://)[^/@\s]+@")
+
+
+def _redact_credentials(text: str) -> str:
+    """Скрыть user:token@ в URL из вывода git перед записью в лог."""
+    return _URL_CREDENTIALS_RE.sub(r"\1***@", text)
+
+
 _STAT_RE = re.compile(
     r"(\d+)\s+file[s]?\s+changed(?:,\s+(\d+)\s+insertion[s]?\(\+\))?(?:,\s+(\d+)\s+deletion[s]?\(-\))?"
 )
@@ -112,7 +120,7 @@ class SshGitProvider(BaseGitSourceProvider):
                 "git fetch для %s завершился с кодом %s: %s",
                 workspace.id,
                 proc.returncode,
-                stderr.decode(errors="replace").strip(),
+                _redact_credentials(stderr.decode(errors="replace").strip()),
             )
             return False
         except asyncio.TimeoutError:
@@ -175,7 +183,7 @@ class SshGitProvider(BaseGitSourceProvider):
                     "git log для %s завершился с кодом %s: %s",
                     workspace.id,
                     proc.returncode,
-                    stderr.decode(errors="replace").strip(),
+                    _redact_credentials(stderr.decode(errors="replace").strip()),
                 )
                 raise GitReadError(f"git log для {workspace.id} завершился с кодом {proc.returncode}")
 
@@ -217,8 +225,10 @@ class SshGitProvider(BaseGitSourceProvider):
 
             try:
                 commit_date = datetime.fromisoformat(date_str)
-            except Exception:
-                commit_date = datetime.now(timezone.utc)
+            except ValueError:
+                # Подмена даты «сейчас» скрыла бы застой проекта; коммит без даты пропускаем.
+                logger.warning("Коммит %s пропущен: нечитаемая дата", commit_hash[:12])
+                continue
 
             files_changed = 0
             insertions = 0

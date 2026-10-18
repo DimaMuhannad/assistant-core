@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 import textwrap
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -527,8 +527,14 @@ async def test_stale_token_and_invalid_index(tmp_path: Path):
     await handler.cb_ntn_request(cb)
     cb.answer.assert_called_with("Результат устарел, повторите /git", show_alert=True)
 
-    # Неверный формат индекса
-    cb.data = "ntn:req:badtoken:xyz"
+    # Известный токен, нечисловой индекс: ветка «Неверный индекс», а не «устарел»
+    handler._git_runs["goodtoken"] = MagicMock(entries=[])
+    cb.data = "ntn:req:goodtoken:xyz"
+    await handler.cb_ntn_request(cb)
+    cb.answer.assert_called_with("Неверный индекс", show_alert=True)
+
+    # Известный токен, индекс вне диапазона
+    cb.data = "ntn:req:goodtoken:5"
     await handler.cb_ntn_request(cb)
     cb.answer.assert_called_with("Результат устарел, повторите /git", show_alert=True)
 
@@ -1261,7 +1267,7 @@ async def test_confirm_after_reject_does_not_write_to_notion(tmp_path: Path, tra
 @pytest.mark.asyncio
 async def test_reject_after_confirm_keeps_confirmed_record(tmp_path: Path, tracer_repos):
     """Отклонение после подтверждения не портит данные: статус confirmed, confirmed_by не меняется, записей в Notion не прибавляется.
-    Тест фиксирует безопасность данных, а не текст ответа: cb_ntn_reject не проверяет статус и отвечает «Отклонено» (04-REVISION.md, раздел 2 п. 6).
+    Тест фиксирует безопасность данных, а не текст ответа: cb_ntn_reject при confirmed отвечает «Уже подтверждено» и ничего не меняет (04-REVISION.md, раздел 2 п. 6).
     """
     repo_dir, bare_origin, _ = tracer_repos
     stack = await _build_stack(tmp_path, repo_dir, bare_origin, "ws_rej_after_conf", user_id=777)
