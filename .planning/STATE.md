@@ -3,15 +3,15 @@ gsd_state_version: "1.0"
 milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
 current_phase: 5
-current_phase_name: Цепочка web-HITL → Telegram
+current_phase_name: Ретро-верификация v2.0
 status: planning
-stopped_at: Phase 04 complete, ready to plan Phase 5
+stopped_at: Phase 5 (web-HITL) moved to backlog, ready to discuss Phase 5 (retro-verification)
 last_updated: "2026-10-18T17:20:04.657Z"
 last_activity: 2026-10-18
-last_activity_desc: Phase 04 complete, transitioned to Phase 5
+last_activity_desc: web-HITL → Telegram moved to backlog 999.2, phases renumbered
 state_head: 9f17586becd91bc619d3ee90128c5f76b811dbed
 progress:
-  total_phases: 9
+  total_phases: 8
   completed_phases: 4
   total_plans: 44
   completed_plans: 44
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-10)
 
 **Core value:** Ассистент надёжно выполняет ежедневную работу секретаря. Ни одно содержимое NDA-пространств не уходит во внешнюю LLM, и ни одно необратимое действие не выполняется без подтверждения человека (HITL).
-**Current focus:** Phase 05 — Цепочка web-HITL → Telegram
+**Current focus:** Phase 05 — Ретро-верификация v2.0
 
 ## Current Position
 
-Phase: 5 — Цепочка web-HITL → Telegram
+Phase: 5 — Ретро-верификация v2.0
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-18 — Phase 04 complete, transitioned to Phase 5
+Last activity: 2026-10-18 — цепочка web-HITL → Telegram отложена в бэклог (999.2), фазы 6–9 стали 5–8
 
 Progress: [████░░░░░░] 44%
 
@@ -102,6 +102,7 @@ Progress: [████░░░░░░] 44%
 
 - [Roadmap]: Порядок фаз выбран владельцем (вариант A): гейт → безопасность → схема БД → сквозные цепочки → ретро-верификация → UXQ-03 → онбординг.
 - [Roadmap]: Сквозные цепочки разделены на Phase 4 (Git → Notion) и Phase 5 (web-HITL → Telegram), онбординг — на Phase 8 (мастер) и Phase 9 (коннекторы и брифинги). Итого 9 фаз.
+- [Owner 2026-10-18]: веб-интерфейс (chat-app) на этом этапе не нужен, работа только с чат-ассистентом. Цепочка web-HITL → Telegram (HIT-02..04) перенесена в бэклог Phase 999.2, фазы 6–9 перенумерованы в 5–8.
 - [Roadmap]: Фаза, меняющая рантайм, закрывается достижимостью из `src/main.py` или команды бота (VERIFICATION.md) и рестартом `assistant-worker` только по разрешению владельца со смоук-проверкой OPS-01.
 - [Process]: Исполнение механических планов — через `agy_cross_ai.sh`, без автокоммита; Claude читает патч целиком, гоняет гейт и коммитит сам.
 - [Phase 01]: 01-01: страж боевой БД на sys.addaudithook в tests/conftest.py плюс ASSISTANT_DB_PATH_OVERRIDE, захваченный в src/config.py до load_dotenv(override=True)
@@ -161,8 +162,7 @@ None yet.
 - [Phase 3]: пустые `assistant.db-wal/-shm` в `data/` после ro-чтения; перед первым живым `--backup` проверить WR-08/WR-09 (права, `/var/tmp`).
 - [Phase 2]: SAFE-01 ждёт решения владельца (HITL-карточка или обратимый архив с командой отмены) на этапе discuss-phase.
 - [Phase 3]: Боевая БД получает миграцию `0003` только при рестарте, разрешённом владельцем. Перед ним нужна резервная копия по процедуре OPS-01.
-- [Phase 5]: Статус «ожидает / подтверждено / отклонено» для web (HIT-04) может потребовать мелкой правки chat-app через `/gsd-quick`.
-- [Phase 6]: Нестабильный `test_concurrent_write_two_processes` (DAT-03) нужно прогнать повторно и честно записать результат. 2026-10-11 при приёмке Phase 3 упал в 1 из 2 полных прогонов chat-app (принято, A-1).
+- [Phase 5]: Нестабильный `test_concurrent_write_two_processes` (DAT-03) нужно прогнать повторно и честно записать результат. 2026-10-11 при приёмке Phase 3 упал в 1 из 2 полных прогонов chat-app (принято, A-1).
 - [Phase 3, принято]: пустые `assistant.db-wal/-shm` не чистятся (A-3); `fastapi` не в зависимостях assistant-shared (A-4).
 - [Инфраструктура]: agy не передаёт задачи субагентам, механизм делегирования нужно починить отдельной задачей через `/gsd-quick` (A-6).
 
@@ -181,5 +181,5 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-10-11T10:10:55.809Z
-Stopped at: Phase 04 complete, ready to plan Phase 5
+Stopped at: Phase 5 (web-HITL) moved to backlog, ready to discuss Phase 5 (retro-verification)
 Resume file: .planning/phases/04-tsepochka-git-otsenka-hitl-notion/04-CONTEXT.md

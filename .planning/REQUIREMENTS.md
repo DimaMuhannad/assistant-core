@@ -39,9 +39,6 @@
 - [x] **GIT-04**: Пространства `restricted_nda` и с неопределённым допуском исключены из цепочки полностью: ни обращений к git, ни LLM, ни Notion. Проверяется ловушками клиентов на рантайм-пути.
 - [x] **NTN-01**: Обработчик `notion_project_sync` зарегистрирован в рантайме. Связь «пространство → проект Notion» (`notion_project`) берётся из персоны.
 - [x] **NTN-02**: Запись в Notion — только после подтверждения владельцем через HITL-карточку в Telegram. Отклонение ничего не пишет, повтор не создаёт дублей, сбой SSH или Notion не роняет демон и виден в статусе.
-- [ ] **HIT-02**: Поллер `ConfirmationChannel.WEB` в демоне находит новые web-подтверждения и вызывает `send_web_hitl_card` (`src/notifier/bot_handler.py:1951`). Карточка «Да / Отмена» доходит до владельца в Telegram с проверкой `allowed_user_id`.
-- [ ] **HIT-03**: Сквозной сценарий web DELETE → 409 + запись в `pending_confirmations` → карточка в Telegram → подтверждение → `resume_action` выполняет удаление; отмена ничего не удаляет. Проверяется интеграционным тестом на временной БД.
-- [ ] **HIT-04**: Подтвердить действие можно только из авторизованного канала (Telegram владельца). Web-интерфейс видит статус «ожидает / подтверждено / отклонено» вместо таймаута в 60 с.
 
 ### Ретро-верификация v2.0 (VER)
 
@@ -80,6 +77,14 @@
 ## v2 Requirements
 
 Отложено на будущие циклы. Отслеживается, но не входит в текущую дорожную карту.
+
+### Цепочка web-HITL → Telegram (отложено 2026-10-18, бэклог Phase 999.2)
+
+Веб-интерфейс на этом этапе не нужен (решение владельца 2026-10-18).
+
+- **HIT-02**: Поллер `ConfirmationChannel.WEB` в демоне находит новые web-подтверждения и вызывает `send_web_hitl_card` (`src/notifier/bot_handler.py:1951`). Карточка «Да / Отмена» доходит до владельца в Telegram с проверкой `allowed_user_id`.
+- **HIT-03**: Сквозной сценарий web DELETE → 409 + запись в `pending_confirmations` → карточка в Telegram → подтверждение → `resume_action` выполняет удаление; отмена ничего не удаляет. Проверяется интеграционным тестом на временной БД.
+- **HIT-04**: Подтвердить действие можно только из авторизованного канала (Telegram владельца). Web-интерфейс видит статус «ожидает / подтверждено / отклонено» вместо таймаута в 60 с.
 
 ### Найдено при онбординге
 
@@ -148,40 +153,37 @@
 | GIT-04 | Phase 4 | Complete |
 | NTN-01 | Phase 4 | Complete |
 | NTN-02 | Phase 4 | Complete |
-| HIT-02 | Phase 5 | Pending |
-| HIT-03 | Phase 5 | Pending |
-| HIT-04 | Phase 5 | Pending |
-| VER-01 | Phase 6 | Pending |
-| DAT-02 | Phase 6 | Pending |
-| DAT-03 | Phase 6 | Pending |
-| DAT-04 | Phase 6 | Pending |
-| SEC-01 | Phase 6 | Pending |
-| SEC-02 | Phase 6 | Pending |
-| SEC-03 | Phase 6 | Pending |
-| HIT-01 | Phase 6 | Pending |
-| ISO-01 | Phase 6 | Pending |
-| ISO-02 | Phase 6 | Pending |
-| ISO-03 | Phase 6 | Pending |
-| ISO-04 | Phase 6 | Pending |
-| FIN-01 | Phase 6 | Pending |
-| ACT-01 | Phase 6 | Pending |
-| ACT-02 | Phase 6 | Pending |
-| ACT-03 | Phase 6 | Pending |
-| ACT-04 | Phase 6 | Pending |
-| UXQ-01 | Phase 6 | Pending |
-| UXQ-02 | Phase 6 | Pending |
-| UXQ-04 | Phase 6 | Pending |
-| UXQ-03 | Phase 7 | Pending |
-| GEN-01 | Phase 8 | Pending |
-| ONB-01 | Phase 8 | Pending |
-| ONB-02 | Phase 9 | Pending |
-| ONB-03 | Phase 9 | Pending |
+| VER-01 | Phase 5 | Pending |
+| DAT-02 | Phase 5 | Pending |
+| DAT-03 | Phase 5 | Pending |
+| DAT-04 | Phase 5 | Pending |
+| SEC-01 | Phase 5 | Pending |
+| SEC-02 | Phase 5 | Pending |
+| SEC-03 | Phase 5 | Pending |
+| HIT-01 | Phase 5 | Pending |
+| ISO-01 | Phase 5 | Pending |
+| ISO-02 | Phase 5 | Pending |
+| ISO-03 | Phase 5 | Pending |
+| ISO-04 | Phase 5 | Pending |
+| FIN-01 | Phase 5 | Pending |
+| ACT-01 | Phase 5 | Pending |
+| ACT-02 | Phase 5 | Pending |
+| ACT-03 | Phase 5 | Pending |
+| ACT-04 | Phase 5 | Pending |
+| UXQ-01 | Phase 5 | Pending |
+| UXQ-02 | Phase 5 | Pending |
+| UXQ-04 | Phase 5 | Pending |
+| UXQ-03 | Phase 6 | Pending |
+| GEN-01 | Phase 7 | Pending |
+| ONB-01 | Phase 7 | Pending |
+| ONB-02 | Phase 8 | Pending |
+| ONB-03 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 47 total
-- Mapped to phases: 47 ✓
+- v1 requirements: 44 total (HIT-02..04 перенесены в v2 2026-10-18)
+- Mapped to phases: 44 ✓
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-10-09*
-*Last updated: 2026-10-09 after roadmap creation (traceability filled, 9 phases)*
+*Last updated: 2026-10-18 — web-HITL → Telegram (HIT-02..04) отложена в бэклог, фазы 6–9 стали 5–8*
