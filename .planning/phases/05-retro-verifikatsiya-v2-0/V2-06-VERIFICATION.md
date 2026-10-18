@@ -2,11 +2,11 @@
 phase: 05-retro-verifikatsiya-v2-0
 v2_phase: "06"
 v2_source: /opt/chat-app/.planning/milestones/v2.0-phases/06-gotovnost-k-multitenantnosti
-verified: 2026-10-18T21:46:41Z
-status: in_progress
-score: "0 из 5 требований вынесены"
+verified: 2026-10-18T21:52:24Z
+status: gaps_found
+score: "3 из 5 требований passed"
 requirements: [ISO-01, ISO-02, ISO-03, ISO-04, FIN-01]
-gaps: []
+gaps: [ISO-02, ISO-04]
 ---
 
 # V2-06: Готовность к мультитенантности (ретро-верификация фазы 06 v2.0)
@@ -22,6 +22,7 @@ gaps: []
 | Требование | Статус | Точка входа в рантайме (file:line) | Тест или команда проверки | Метка |
 |---|---|---|---|---|
 | ISO-01 | passed | `src/main.py:687-699` (`EmailBotHandler`, `dp.include_router`) → `src/notifier/bot_handler.py:432, 1311, 1416` → `src/brain/intent_router.py:381` и `src/brain/secretary_dialog.py:753, 813` → `src/brain/key_rotator.py:227, 219-220, 194-213` (прокси и `get_key_rotator`, пул по `persona_id`); `src/main.py:675` → `src/composition.py:161-167` → `src/main.py:904-913` → `src/brain/git_evaluator.py:305-311`; глобальных присваиваний `config.GEMINI_API_KEY` нет | `tests/test_key_rotator.py:111-125` (`test_key_rotator_no_global_config_mutation`), `:128-135`, `:138-170` (`test_key_rotator_persona_isolation`); `pytest tests/test_key_rotator.py -q` → код 0, `9 passed` | трасса |
+| ISO-02 | gap | `src/security/airgap.py:19, 23-129, 132-157` (маскировка тела, snippet, вложений работает) → `src/brain/secretary_dialog.py:169-176, 191-200, 773-806` (`sender`, `sender_email`, `subject`, `date_sent` NDA-письма попадают в промпт и в `contents` внешнего вызова `generate_content`); дополнительно `src/brain/summarizer.py:343-347, 382, 399` (вечерний дайджест) | `tests/test_airgap_trap.py:103-314` (8 тестов, проверяют только тело, snippet и вложения); `tests/test_airgap_trap.py tests/test_nda_script_parity.py` → код 0, `12 passed` | трасса+e2e |
 | ISO-03 | passed | `src/composition.py:37, 57, 78, 111, 144` (`MissingScopeError` в пяти фабриках) ← `src/core/ports/connectors.py:34, 78, 146, 194` (`required_scopes`); `src/main.py:673` (`default_lms_client()` вне `try`) и `src/main.py:965` (`asyncio.run(main())` без перехвата): нехватка scope у `lms` останавливает старт (fail-closed); `/opt/chat-app/backend/app/core/config.py:6-33` (в `Settings` нет полей LMS) | `tests/test_phase4_reachability.py:91-120`, `tests/test_ports_conformance.py:284-295, 297-310`, `tests/test_concurrency_isolation.py:71`; `pytest tests/test_phase4_reachability.py tests/test_ports_conformance.py -q` → код 0, `41 passed`; `grep -rniE 'lms\|guap' /opt/chat-app/backend/app --include=*.py` → 0 совпадений | трасса |
 | ISO-04 | gap | `src/main.py:651-652` (персона процесса) → `src/persona/current.py:17-40` (`_override`, `current_persona`, `use_persona`) → `src/brain/key_rotator.py:190-213` (пул ключей по `persona_id`) → `src/composition.py:21-146` (фабрики по персоне) → `/opt/assistant-shared/assistant_shared/hitl/store.py:24-75, 100-108` (подтверждения с `persona_id`); сбой записи подтверждения `database is locked` в `store.py:52` | `tests/test_concurrency_isolation.py:97-163` (`test_concurrent_confirmations_isolation`: 2 сбоя из 9 прогонов в связке с другими файлами, 0 из 20 при изолированном прогоне файла); `tests/test_concurrency_isolation.py:44-94`, `:166-190` и `tests/test_synthetic_persona.py` проходят | трасса+e2e |
 | FIN-01 | passed | `tests/hardcode_baseline.py:14` (`HARDCODE_BASELINE = {}`), `tests/test_hardcode_scanner.py:149-158` (нет новых хардкодов вне baseline, нет устаревших записей); `/opt/chat-app/backend/tests/hardcode_baseline.py:14`, `/opt/chat-app/backend/tests/test_hardcode_scanner.py:149-158` | `tests/test_hardcode_scanner.py` (3 passed, код 0); `backend/tests/test_hardcode_scanner.py` (3 passed, код 0, git status chat-app не изменён) | трасса |
@@ -46,6 +47,34 @@ gaps: []
 - `tests/test_key_rotator.py`: 9 тестов (определения на строках `:27, 33, 52, 69, 80, 100, 111, 128, 138`). `test_key_rotator_no_global_config_mutation` (`:111-125`) сверяет `config.GEMINI_API_KEY` до и после `mark_exhausted`, и проверяет, что временный `.env` переписан (там `env_path` задан явно, `:124-125`). `test_key_rotator_default_env_path_is_none` (`:128-135`): при `env_path=None` `sync_active_key_to_env` возвращает `False`. `test_key_rotator_persona_isolation` (`:138-170`): подмена `_current_rotator` (тестовый путь) и переключение `use_persona` между двумя персонами с независимыми пулами и cooldown.
 - Команда: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/test_key_rotator.py -q` → код 0, `9 passed in 3.00s`.
 
+### ISO-02: Тело и вложения NDA-почты не уходят во внешний LLM; метаданные обрабатываются только локальным кодом
+
+**Формулировка требования (`/opt/chat-app/.planning/milestones/v2.0-REQUIREMENTS.md:84`):** «`WorkspaceScope` (air-gap) внутри assistant-core: содержимое рабочих пространств `restricted_nda`, включая тело и вложения NDA-почты (`EmailMessage`), никогда не передаётся в LLM; метаданные обрабатываются только локальным кодом. Проверяется тестом с «ловушкой» вместо LLM-клиента.»
+
+**Вердикт:** `gap` (метка `трасса+e2e`). Вынесен строго против текста v2.0 по решению владельца от 2026-10-18 №5, без смягчения формулировки. Разведено на две части:
+- **(а) Тело, snippet и вложения NDA-почты: выполнено.** `mask_nda_email_data` заменяет тело, snippet и `body` маркером, `body_html` очищает, `attachments` обнуляет до пустого списка. Тесты-ловушки, которые проходят через реальные методы диалога, зелёные.
+- **(б) Метаданные: не выполнено.** `sender_name`/`sender_email`, `subject` и `date_sent` NDA-писем уходят во внешний LLM (Gemini) по трём путям диалога, потому что маскировка их не затрагивает. Это gap.
+
+**Трасса части (а) (`файл:строка`):**
+- `src/security/airgap.py:19` — `NDA_MASK_MARKER = "[NDA: тело и вложения скрыты Air-Gap]"`; `:23-129` — `is_nda_email`.
+- `src/security/airgap.py:132-157` — `mask_nda_email_data`: для `dict` `body_plain`, `snippet`, `body` (если есть) = маркер (`:136, :138, :141`), `body_html = ""` (`:137`), `attachments = []` (`:139`); для dataclass то же (`:146-154`). `sender_*`, `subject`, `date_sent` не трогаются.
+- Вызовы маскировки: `src/brain/secretary_dialog.py:171-173`, `:194-196`, `:773-775`; `src/brain/summarizer.py:62` (утренний бриф), `:327`, `:331` (вечерний дайджест), `:436`, `:440` (локальный fallback); `src/brain/reply_generator.py:45-47` — для NDA `AirGapViolationError`, ответ не генерируется.
+- Утренний бриф (`summarizer.py:91-96`) передаёт в LLM только число писем, а не их текст и метаданные.
+
+**Трасса части (б): утечка метаданных (только чтение кода; данные писем не читались, LLM не вызывался).** В каждом пути поля читаются до маскировки или не затрагиваются ею.
+
+- **Путь 1, `_get_email_overview`** (`src/brain/secretary_dialog.py:160-180`): `sender` (`:169`) и `subj` (`:170`) читаются до маскировки (`:171-173`) и попадают в строку `:176` (`f"• От {sender}: «{subj}» — {snip}"`). `date_sent` не используется. Вызовы: `:337` (`_build_grounding_context`, `:326`) → блок `:348-353` (`em_over_ctx`) → `:653` (`grounding_context`) → `:669-670` (`user_prompt`) → `:744` (`contents=user_prompt`, `_make_dialog_call` `:740-748`) → `client.aio.models.generate_content`. Отдельный вызов `:422` (`prime_morning_context`, `:409`; вызывается из `src/main.py:517` и `:773`) сохраняет результат в `save_primed_context` (`:444`); дальнейший путь этого результата в LLM не прослеживался (см. Ограничения).
+- **Путь 2, `_search_email_context`** (`:182-202`): `date_str` из `date_sent` (`:191`), `sender` (`:192`), `subj` (`:193`) читаются до маскировки (`:194-196`); блок `:200` (`f"• [{date_str}] От: {sender} ({em.get('sender_email')})\n  Тема: «{subj}»..."`) содержит их открыто. Вызов `:338` → `blocks.append` `:355-356` → `:653` → `:744` → `generate_content`.
+- **Путь 3, tool `search_emails` в `answer_user_message`** (`:758-808`): после `mask_nda_email_data` (`:773-775`) в `cleaned_emails` (`:778-785`) поля `sender` (`:780`), `sender_email` (`:781`), `subject` (`:782`) и `date_sent` (`:783`) остаются открытыми; маскирован только `content` (`:784`). Далее `types.Part.from_function_response` (`:787-790`) → `follow_up_contents` (`:798`) → `_make_followup_call` (`:800-808`) → `generate_content` (`:802-806`), вызов через `key_rotator.execute_with_failover` (`:813`).
+- **Дополнительный путь вне трёх путей диалога** (того же класса, учесть в ISO-05): `src/brain/summarizer.py` — `generate_evening_digest` (`:307`): список `bot_answered` маскируется (`:326-329`), но `sender_name`, `sender_email`, `subject`, `updated_at` (`:343-347`) попадают в `email_lines` → промпт (`:382`) → `generate_content` (`:399`).
+
+**Реальный риск (правило A7):** почтового ящика NDA не подключено (решение владельца 2026-10-09), поэтому утечки на текущих данных нет. Кодовый путь открыт: метаданные уйдут во внешний LLM сразу после подключения NDA-ящика или при попадании NDA-письма в эти запросы.
+
+**Тесты (`tests/test_airgap_trap.py`, `tests/test_nda_script_parity.py`):**
+- `tests/test_airgap_trap.py` (8 тестов: `:103` detection, `:109` mask, `:121` reply_generator, `:134` overview, `:200` search, `:237` full flow со шпионом, `:280` summarizer, `:314` обычные письма). `SpyGenAIClient` (`:24-59`) проверяет список `forbidden_patterns` (`:28-33`: `mock_nda_secret_token`, `mock_proprietary_token`, две строки `CONFIDENTIAL`). Метаданные в этот список не входят. В фикстурах NDA-письма содержат `sender_name`, `sender_email`, `subject`, `date_sent` (`:66-68`, `:145-149`, `:209-213`, `:246-250`), но ни один `assert` не проверяет их отсутствие в промпте (проверки: `:188-190`, `:229-231`, `:272-274`, `:309-311`).
+- `tests/test_nda_script_parity.py` (4 теста: `:27, 35, 101, 118`) проверяют обёртку `scripts/security_shield.py` и словари слов и токенов библиотеки. Маскировки тела или метаданных они не проверяют.
+- Команда: `PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/test_airgap_trap.py tests/test_nda_script_parity.py -q` → код 0, `12 passed in 2.30s`. Зелёный прогон не означает отсутствие утечки метаданных: тесты этого не проверяют.
+
 ### ISO-03: Zero-Trust scopes; ядро не поднимает коннектор без scope; chat-app не держит учётные данные LMS
 
 **Формулировка требования (`/opt/chat-app/.planning/milestones/v2.0-REQUIREMENTS.md:85`):** «Zero-Trust scopes: коннектор объявляет `required_scopes`, персона выдаёт `scopes`; ядро отказывается поднимать коннектор без выданного scope; процесс chat-app не держит учётные данные LMS (проверяемый тест).»
@@ -53,6 +82,7 @@ gaps: []
 **Вердикт:** `passed` (метка `трасса`, без e2e-теста, D-04). Часть assistant-core доказана трассой по всем пяти фабрикам и пробой. Часть про chat-app: в формулировке указан «проверяемый тест», а отдельного теста в chat-app нет. Подтверждение только статическим поиском по коду и полям настроек. Это записано как предел вывода (A6) и вынесено владельцу на решение.
 
 **Трасса assistant-core (`файл:строка`):**
+- Исключение: `src/core/exceptions.py:10` (`MissingScopeError(PermissionError)`), импорт в фабриках `src/composition.py`.
 - Декларации `required_scopes`: `src/core/ports/connectors.py:34` (timesheet), `:78` (schedule), `:146` (lms), `:194` (git); `src/connectors/aadhk/provider.py:17`, `src/connectors/guap_lms/client.py:20`, `src/connectors/git/provider.py:43`, `src/connectors/notion/client.py:23`.
 - Проверки в фабриках `src/composition.py`: `schedule_site_url` (`:34-37`, raise на `:37`), `default_timesheet_service` (`:54-57`, `:57`), `default_lms_client` (`:75-78`, `:78`), `default_git_source_provider` (`:108-111`, `:111`), `default_notion_client` (`:141-144`, `:144`). Каждая сравнивает `required_scopes` с `binding(role).scopes` (`src/persona/bindings.py:67-79`, читает `current_persona()`).
 - Вызовы при старте: `src/main.py:673` — `default_lms_client()` вне `try`; исключение не перехватывается и доходит до `src/main.py:965` (`asyncio.run(main())`), процесс завершается (fail-closed). `src/main.py:674-678` — `default_git_evaluator` в `try/except`, цепочка git отключается с записью в лог. `src/main.py:703` — `schedule_site_url()` вне `try`.
@@ -137,5 +167,21 @@ gaps: []
 
 | Требование | Класс по D-09 | Предложение оформления | Привязка |
 |---|---|---|---|
+| ISO-02 | NDA, безопасность: внешний LLM получает метаданные NDA-писем (отправитель, тема, дата) | Новое требование ISO-05 в `.planning/REQUIREMENTS.md`, severity `high`, закрытие в backlog-фазе 999.4, связка с NDAM-01. Оформляет план 05-08 (решение владельца №5). Исправление в этой фазе не выполняется (D-10) | `src/brain/secretary_dialog.py:169-176, 191-200, 773-806`; `src/brain/summarizer.py:343-347, 399`; `src/security/airgap.py:132-157` |
 | ISO-04 | Целостность данных (подтверждения HITL): параллельная запись двух персон не проходит стабильно, `database is locked` в 2 из 9 прогонов в связке | Класс D-09 «целостность данных» → новое требование с ID в REQUIREMENTS.md через план 05-08 после решения владельца, либо запись бэклога 999.x; исправление вне фазы (D-10). Серьёзность: средняя (cross-talk не наблюдался, сбой — отказ записи) | `tests/test_concurrency_isolation.py:97-163`, `/opt/assistant-shared/assistant_shared/hitl/store.py:52` |
+
+## Ограничения проверки
+
+1. **Что не делалось.** Боевая БД `/opt/assistant-core/data/assistant.db` и файл `/opt/assistant-core/assistant.db` не открывались. Ни один `.env` не читался (включая `/opt/chat-app/backend/.env`). Каталоги `restricted_nda` (в том числе `/opt/work-tydex`) и данные NDA-писем не читались. Живых вызовов LLM и внешних API не было. Сервисы не перезапускались: `assistant-worker` активен и не трогался, `chat-app.service` неактивен. `sync_active_key_to_env` не запускалась. Пакеты не устанавливались. Файлы вне `.planning/` не менялись.
+2. **Загрузка конфигурации тестами.** Тесты и пробы импортируют `src/config.py`, который по дизайну проекта читает `.env` через python-dotenv. Значения из `.env` не выводились и в документ не попали.
+3. **Предел вывода по ISO-03 (A6).** Отсутствие LMS-кода и полей в chat-app не доказывает отсутствие переменных `GUAP_*`/`LMS_*` в `.env` или в окружении процесса. Текст v2.0 требует «проверяемый тест», а теста для части chat-app нет. Вердикт `passed` сохранён по плану; решение владельца: оставить passed по коду или перевести в gap.
+4. **Предел вывода по ISO-02 (A7).** Утечка метаданных оценена по коду, без живого трафика и без данных писем; runtime-проба метаданных не выполнялась (план требует только чтения кода). Три пути диалога прослежены полностью. Путь `prime_morning_context` (`src/brain/secretary_dialog.py:422`) сохраняет результат через `save_primed_context` (`:444`), дальнейшее чтение за пределами `secretary_dialog.py` не проверялось.
+5. **ISO-04, одна персона в рантайме.** Параллельная работа двух персон проверена только тестами; продуктовый процесс работает с одной персоной.
+6. **ISO-04, причина сбоя не установлена.** `database is locked` воспроизводится в 2 из 9 прогонов в связке; в изолированном прогоне файла сбоев не было (0 из 20). Исправление не выполнялось (D-10). Гипотеза из раздела ISO-04 не проверена.
+7. **Покрытие ISO-03.** Прямых тестов на нехватку scope для `default_lms_client` и `schedule_site_url` нет; покрытие трассой и пробой в памяти.
+8. **FIN-01, буква и решение.** По букве v2.0 allowlist должен быть пуст; он не пуст. Passed по решению владельца №1 (формальный критерий). FIN-02 не создан.
+9. **Черновик агента Argon.** Черновик `05-02-ARGON-DRAFT.md` (agy, Argon acc2, модель gemini-4-argon-high, только чтение; без pytest и strace) использован как входной черновик. Каждая ссылка file:line, имя функции и вердикт сверены с кодом, все команды и пробы выполнены. Исправлено **36 пунктов** (перечень в `05-02-SUMMARY.md`).
+10. **Состояние chat-app.** `git -C /opt/chat-app status --porcelain --ignored | sort` до первого и после последнего прогона pytest совпал (20 строк, предсуществующие, созданы не этой фазой).
+11. **Прочее.** Тест `test_concurrent_write_two_processes` (DAT-03) в этом плане не запускался; он относится к другим планам фазы.
+
 
