@@ -1,6 +1,6 @@
 ---
 phase: 04-tsepochka-git-otsenka-hitl-notion
-verified: 2026-10-18T13:05:00Z
+verified: 2026-10-18T13:02:18Z
 status: human_needed
 score: "5/5 критериев (4 подтверждены полностью, критерий 1 частично: отклонение принято владельцем, override)"
 covered_files:
@@ -51,7 +51,7 @@ covered_files:
   - tests/test_phase4_git_read_failure.py
   - tests/test_phase4_hitl_security_fixes.py
   - tests/test_phase4_reachability.py
-covered_digest: "v3:sha256:68d567c97d0cc30807a178391a1832cf1e53bdbfdec5483dcb2f00f9ded61232"
+covered_digest: "v2:sha256:eccc64abd95420374452b5844bdf6f2b5558d93fd64b77a8ea559100f5fc77df"
 behavior_unverified: 0
 overrides_applied: 1
 overrides:
