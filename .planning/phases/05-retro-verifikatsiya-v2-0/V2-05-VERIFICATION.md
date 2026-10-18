@@ -1,0 +1,86 @@
+---
+phase: 05-retro-verifikatsiya-v2-0
+v2_phase: "05"
+v2_source: /opt/chat-app/.planning/milestones/v2.0-phases/05-edinyy-hitl-primitiv
+verified: 2026-10-18T22:02:07Z
+status: in_progress
+score: "0 из 1 требований вынесены"
+requirements: [HIT-01]
+gaps: []
+---
+
+# V2-05: Единый HITL-примитив (ретро-верификация фазы 05 v2.0)
+
+## Источник (только чтение)
+
+- Исходный каталог: `/opt/chat-app/.planning/milestones/v2.0-phases/05-edinyy-hitl-primitiv/` (только `ls`, файлы не открывались для правки).
+- Состав каталога (11 файлов, проверено `ls`): `05-01-PLAN.md`, `05-01-SUMMARY.md`, `05-02-PLAN.md`, `05-02-SUMMARY.md`, `05-03-PLAN.md`, `05-03-SUMMARY.md`, `05-04-PLAN.md`, `05-04-SUMMARY.md`, `05-CONTEXT.md`, `05-RESEARCH.md`, `05-VALIDATION.md`. Собственного `05-VERIFICATION.md` в v2.0 нет.
+
+## Вердикты
+
+| Требование | Статус | Точка входа в рантайме (file:line) | Тест или команда проверки | Метка |
+|---|---|---|---|---|
+| HIT-01 | passed | `src/main.py:647` (`db.init_db()`) → миграция `0002`; `src/notifier/bot_handler.py:399-400` (`hitl:confirm:` / `hitl:reject:`) → `cb_hitl_confirm` `:2051`, `resume_action` `:2078`; `bot_handler.py:403-409` (`act:cal\|rem\|drf:conf/rej:`) → `_handle_hitl_action_callback` `:2358`, `resume_action` `:2401`; `/opt/assistant-shared/assistant_shared/hitl/engine.py:28-62` (`resume_action`) → `store.py:116-139` (`confirm_action`) | `tests/test_hitl_safety_guardrails.py tests/test_bot_hitl_parity.py tests/test_hitl_telegram_cards.py`: 18 passed, код 0 (3 прогона из 3 зелёные); `/opt/assistant-shared/tests`: 211 passed, код 0; e2e: `tests/test_hitl_telegram_cards.py:448` (`test_cb_act_deduplication_and_protection`, двойное нажатие даёт одно напоминание), `tests/test_bot_hitl_parity.py:72` (`test_cb_hitl_confirm_authorized`, кнопка → реальный обработчик удаления на временной БД) | трасса+e2e |
+
+Решение владельца 2026-10-18 №3 (как указано в `05-03-PLAN.md`): примитив `ConfirmationStore` + `resume_action` + миграция `0002_pending_confirmations` засчитаны как выполнение HIT-01. Отсутствие декоратора `@requires_confirmation` записано в «Наблюдениях», не в «Gaps». Обход единой точки в очистке диалога записан отдельно (HIT-05, см. «Gaps»).
+
+## Доказательства
+
+### HIT-01
+
+**Четыре части требования (проверено чтением и grep):**
+
+- (а) `ConfirmationStore` (`/opt/assistant-shared/assistant_shared/hitl/store.py`): класс `:20`, `create_confirmation` `:24-75`, `get_confirmation` `:77-98` (авто-перевод в `expired` по TTL), `confirm_action` `:116-139`, `reject_action` `:141-164`. `confirm_action` выполняет условный `UPDATE ... WHERE id = ? AND status = 'pending'` (`:124-131`) и при `rowcount == 0` возвращает `None` (`:133-134`).
+- (б) `resume_action` (`/opt/assistant-shared/assistant_shared/hitl/engine.py`): реестр `_ACTION_HANDLERS` `:15`, `register_action_handler` `:18-21`, `get_action_handler` `:24-25`, `resume_action` `:28-62`. Атомарное подтверждение через `store.confirm_action` `:39`; при отсутствии записи `ValueError` `:40-46`; при отсутствии обработчика `LookupError` `:48-51`; исполнение обработчика ровно один раз `:60-62` (`handler(conf)` для корутины или синхронной функции).
+- (в) Миграция `/opt/assistant-shared/assistant_shared/db/migrations/0002_pending_confirmations.sql`: таблица `pending_confirmations` `:2-14`, индексы `:16-18`. Применяет `run_migrations` (`/opt/assistant-shared/assistant_shared/db/migrator.py:151`, glob `*.sql` `:164`, `_apply_migration` `:121`, `BEGIN IMMEDIATE` `:129`). Тесты: `/opt/assistant-shared/tests/test_hitl_shared.py:33-55` (`test_migration_0002`: таблица, колонки, индексы), `/opt/assistant-shared/tests/test_migrations.py:54` (ожидаемые таблицы, включая `pending_confirmations`) и `:65-83` (`test_initial_schema_creates_all_tables`).
+- (г) Декоратор `@requires_confirmation`: `/opt/assistant-shared/assistant_shared/hitl/decorators.py` (26 строк) содержит только `create_hitl_conflict_exception` `:13-26`. Команда `grep -rn "requires_confirmation" /opt/assistant-shared /opt/assistant-core/src /opt/assistant-core/tests --include=*.py` вернула 0 совпадений (код возврата grep 1). По решению №3 это наблюдение, не gap.
+
+**Трасса из рантайма (`файл:строка`):**
+
+1. Старт демона: `src/main.py:646` (`db = Database(config.SQLITE_DB_PATH)`), `:647` (`await db.init_db()`) → `src/storage/db.py:73-75` (`init_db` → `_apply_migrations`) → `db.py:71` (`asyncio.to_thread(run_migrations, target)`) → миграция `0002` (см. пункт (в)).
+2. Регистрация обработчиков: `src/notifier/bot_handler.py:193-194` (в `__init__`: `_register_handlers()`, `_register_hitl_action_handlers()`); `:205` (`_register_hitl_action_handlers`); `register_action_handler` вызывается для `delete_project` `:223`, `delete_document` `:224`, `delete_task` `:225`, `delete_reminder` `:226`, `create_calendar_event` `:297`, `create_reminder` `:298`, `draft_email_reply` `:299`.
+3. Подключение роутера: `src/main.py:687-699` (создание `EmailBotHandler`, `dp.include_router(bot_handler.router)` `:699`).
+4. Путь 1, веб-карточка: роутер `bot_handler.py:399-400` → `cb_hitl_confirm` `:2051`. Авторизация `:2053-2055` (`_is_authorized` `:307-311`, закрыт по умолчанию при `allowed_user_id is None`). Загрузка `get_confirmation` `:2060`. Истечение TTL `:2067-2071`. Идемпотентность `status != PENDING` `:2073-2075`. Вызов `resume_action(conf_id, store, confirmed_by=...)` `:2078` → `engine.py:28` → `store.py:116`.
+5. Путь 2, карточки секретаря: создание записи `_handle_secretary_dialog` `bot_handler.py:2569`, `store.create_confirmation` `:2601`. Роутер `:403-409` → `cb_act_calendar_confirm` `:2491-2493`, `cb_act_reminder_confirm` `:2553-2555`, `cb_act_draft_confirm` `:2561-2563` → `_handle_hitl_action_callback` `:2358`. Авторизация `:2360-2362`. Загрузка `:2370-2371`. Проверки существования, истечения и статуса `:2372-2397`. Вызов `resume_action` `:2401` → `engine.py:28` → `store.py:116`.
+6. Путь 3, Notion (подключён в v3, фаза 4): роутер `bot_handler.py:418` (`ntn:conf:`) → `cb_ntn_confirm` `:2242`, `resume_action` `:2274`, откат через `store.reopen_action` `:2277`, `:2282`, `:2290`. Регистрация обработчика `notion_project_sync` (`src/brain/git_evaluator.py:209`) условна: `src/composition.py:151-153` возвращает `None`, если `default_git_source_provider()` пуст; `src/main.py:674-678` оборачивает вызов в `try`.
+
+**Идемпотентность и однократность:**
+
+- Двойное нажатие в пути 2 закрыто тестом: `tests/test_hitl_telegram_cards.py:448-512` (второе нажатие отвечает «Запрос уже обработан или истек», напоминаний после него ровно `base + 1`).
+- Однократное исполнение на уровне примитива: `/opt/assistant-shared/tests/test_hitl_shared.py:113-147` (`executed_count == 1` после повторного `resume_action`, `ValueError` `match="cannot be resumed"`).
+- Для пути 1 (веб-карточка) повторного нажатия отдельным тестом не покрыто. Защита обеспечивается проверкой статуса `:2073-2075` и условным `UPDATE` в `store.py:124-134`. Записано в «Наблюдениях».
+
+**Тесты пути 1 и 2 на временной БД (метка e2e):**
+
+- `tests/test_bot_hitl_parity.py:72` (`test_cb_hitl_confirm_authorized`): callback `hitl:confirm:<id>` → `cb_hitl_confirm` → реальный обработчик `delete_task` → строка задачи удалена, статус `CONFIRMED`, `confirmed_by` заполнен.
+- `tests/test_bot_hitl_parity.py:132` (неавторизованный), `:187` (отклонение), `:240` (истёкший срок).
+- `tests/test_hitl_telegram_cards.py:189` (`test_cb_act_calendar_confirm_and_reject`, `create_event.assert_called_once()` на `:228`), `:515` (неавторизованный), `:557` (истёкший срок).
+
+**Выполненные команды (каталог `/opt/assistant-core`, `PYTHONDONTWRITEBYTECODE=1`, `-p no:cacheprovider`, `timeout 300`):**
+
+| Команда | Код возврата | Результат |
+|---|---|---|
+| `.venv/bin/pytest tests/test_hitl_safety_guardrails.py tests/test_bot_hitl_parity.py tests/test_hitl_telegram_cards.py -q` (прогон 1) | 0 | 18 passed in 14.50s |
+| то же (прогон 2) | 0 | 18 passed in 12.81s |
+| то же (прогон 3) | 0 | 18 passed in 13.18s |
+| `.venv/bin/pytest /opt/assistant-shared/tests -q` | 0 | 211 passed in 28.06s |
+
+Проверка неизменности assistant-shared: `git -C /opt/assistant-shared status --porcelain --ignored | sort` до и после прогона совпал (6 строк, одинаковые). Изменений в `/opt/assistant-shared` нет.
+
+Строка вердикта проверена командой `grep -E '^\| HIT-01 \| (passed|gap) \|'`: код возврата 0.
+
+## Наблюдения (не gaps)
+
+1. **Декоратор `@requires_confirmation` отсутствует.** `grep` по трём деревьям вернул 0 совпадений (см. пункт (г)). По решению владельца №3 это не gap. Текст требования HIT-01 упоминает декоратор буквально, поэтому вердикт опирается на решение владельца, а не на букву требования. `decorators.py:7` импортирует `fastapi`, которого нет в зависимостях `assistant-shared` (известно как A-4 в `STATE.md`).
+2. **Идемпотентность пути 1 не покрыта повторным нажатием в тестах.** Защита есть в коде (`bot_handler.py:2073-2075`, `store.py:124-134`), отдельного теста двойного нажатия для `hitl:confirm:` нет.
+3. **Тесты очистки диалога зелёные, но обход не ловят.** `tests/test_hitl_safety_guardrails.py` (`:42-79`, `:83-134`) проверяет карточку и итоговую очистку, но не проверяет `pending_confirmations` и не вызывает `resume_action`. Подробности в «Gaps» (HIT-05).
+4. **Голосовой и текстовый пути `/clear` не очищают память.** `bot_handler.py:1453-1459` (текст без слэша) и `:2794-2796` (голос) только вызывают `_warn_clear_requires_slash` (`:1888`). Это не обход.
+5. **Регистрация `notion_project_sync` условна** (см. трассу, пункт 6). Для HIT-01 не влияет, относится к V2-07.
+
+## Gaps
+
+Раздел заполняется в Задаче 2 (HIT-05).
+
+## Ограничения проверки
+
+Раздел дополняется в Задаче 3.
