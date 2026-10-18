@@ -5,16 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 5
 current_phase_name: retro-verifikatsiya-v2-0
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-10-18T21:08:45.588Z"
+stopped_at: Completed 05-04-PLAN.md
+last_updated: "2026-10-18T21:34:44.542Z"
 last_activity: 2026-10-18
 last_activity_desc: Phase 5 execution started
-state_head: 4dd519d70f22b8ac2b503800f45382745afcf64b
+state_head: 41eb224a61c5614bb34540c71ab1581b6931a187
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 52
-  completed_plans: 45
+  completed_plans: 46
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 ## Current Position
 
 Phase: 5 (retro-verifikatsiya-v2-0) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Last activity: 2026-10-18 — Phase 5 execution started
 
@@ -92,6 +92,7 @@ Progress: [████░░░░░░] 44%
 | Phase 03 P05 | 10 min | 2 tasks | 3 files |
 | Phase 03 P06 | 20 min | 3 tasks | 4 files |
 | Phase 05 P01 | 40min | 3 tasks | 3 files |
+| Phase 5 P04 | n/a | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -151,6 +152,8 @@ Progress: [████░░░░░░] 44%
 - [Phase 03]: 03-06: рестарт assistant-worker с бэкапом (/var/backups/assistant-core/assistant-20261011-005251.db, 8.7MB); смоук ЗЕЛЁНЫЙ; живые проверки /help, /menu, 👍/👎 passed; контрольная копия 83fece373834 ЗЕЛЁНАЯ; CONCERNS.md закрыт; гейт ЗЕЛЁНЫЙ (10 строк ✓) (DAT-01, Критерий 5)
 - [Phase 05]: 05-01: ACT-03 gap (retry-путь act:cal:retry пишет в календарь вне resume_action, без проверки статуса; класс HITL, предложено HIT-06); ACT-01/ACT-02 passed по HITL-first (решение владельца 2026-10-18 №2)
 - [Phase 05]: 05-01: зависание pytest в test_fast_intent_router.py (код 124 при 10 passed) записано наблюдением, не gap требования; решение владельца за /gsd-quick или бэклогом
+- [Phase 5]: V2-09: UXQ-02 passed (трасса+e2e, алиас как переименование по плану); UXQ-01 gap (ONB-02); UXQ-04 gap (алерты коннекторов без вызовов)
+- [Phase 5]: RESEARCH A3 опровергнуто: замер latency есть (test_edge_caching_latency_sub_250ms), попадание в кэш не доказано тестом, доказано трассой
 
 ### Pending Todos
 
@@ -182,6 +185,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-18T21:08:45.087Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-10-18T21:34:43.995Z
+Stopped at: Completed 05-04-PLAN.md
 Resume file: None
