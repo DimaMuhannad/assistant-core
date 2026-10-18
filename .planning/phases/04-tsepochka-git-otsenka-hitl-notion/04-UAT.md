@@ -1,5 +1,5 @@
 ---
-status: partial
+status: complete
 phase: 04-tsepochka-git-otsenka-hitl-notion
 source: [04-VERIFICATION.md]
 started: 2026-10-18T13:02:44Z
@@ -8,7 +8,7 @@ updated: 2026-10-18T13:02:44Z
 
 ## Current Test
 
-[завершено: пп. 1 и 3 passed, п. 2 partial из-за внешнего IMAP ГУАП]
+[завершено: все 3 пункта passed]
 
 ## Tests
 
@@ -18,7 +18,7 @@ result: accepted-risk (решение владельца 2026-10-18: риск п
 
 ### 2. Рестарт assistant-worker для выкатки правок 16 и 18 октября
 expected: после python3 scripts/deploy.py --backup --restart смоук ЗЕЛЁНЫЙ, /git без регрессий
-result: partial (2026-10-18: рестарт с бэкапом /var/backups/assistant-core/assistant-20261018-141228.db выполнен по разрешению владельца; сервис active, 11 из 11 задач, git_progress_job зарегистрирован, getMe ✓, /help подтверждён владельцем. ИТОГ СМОУКА КРАСНЫЙ из-за одной проверки: «[guap] Failed to connect/ingest IMAP: timed out» — внешняя проблема, была до рестарта и ещё ~24 раза за 3 дня; к правкам фазы не относится. /git на боевом сервисе не вызывался.)
+result: passed (2026-10-18: второй рестарт с бэкапом после quick 261018-imp (IMAP timeout 45 с + повтор); ИТОГ СМОУКА ЗЕЛЁНЫЙ, 11 из 11 задач, /help подтверждён владельцем. Первый смоук был красным только из-за внешнего таймаута IMAP ГУАП.)
 
 ### 3. Живая запись в Notion на боевых ID
 expected: страница создана ровно один раз, повторное нажатие не создаёт дубль
@@ -27,8 +27,8 @@ result: passed (2026-10-18, владелец вручную: запись по �
 ## Summary
 
 total: 3
-passed: 2
-issues: 1
+passed: 3
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
