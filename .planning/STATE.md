@@ -5,17 +5,16 @@ milestone_name: Стабилизация платформы и онбордин�
 current_phase: 5
 current_phase_name: Ретро-верификация v2.0
 status: planning
-stopped_at: Phase 5 (web-HITL) moved to backlog, ready to discuss Phase 5 (retro-verification)
-last_updated: "2026-10-18T17:20:04.657Z"
+stopped_at: Phase 5 context gathered
+last_updated: "2026-10-18T17:56:10.564Z"
 last_activity: 2026-10-18
 last_activity_desc: web-HITL → Telegram moved to backlog 999.2, phases renumbered
-state_head: 9f17586becd91bc619d3ee90128c5f76b811dbed
+state_head: 29be6036c8b5304fe4a9bf343c04c0befb5b6044
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 44
   completed_plans: 44
-  percent: 44
 ---
 
 # Project State
@@ -180,6 +179,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-11T10:10:55.809Z
-Stopped at: Phase 5 (web-HITL) moved to backlog, ready to discuss Phase 5 (retro-verification)
-Resume file: .planning/phases/04-tsepochka-git-otsenka-hitl-notion/04-CONTEXT.md
+Last session: 2026-10-18T17:56:09.238Z
+Stopped at: Phase 5 context gathered
+Resume file: .planning/phases/05-retro-verifikatsiya-v2-0/05-CONTEXT.md
