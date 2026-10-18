@@ -2,11 +2,11 @@
 phase: 05-retro-verifikatsiya-v2-0
 v2_phase: "08"
 v2_source: /opt/chat-app/.planning/milestones/v2.0-phases/08-ispolnitelnyy-kontur-tool-calling
-verified: 2026-10-18T21:04:56Z
-status: in_progress
-score: "0 из 4 требований вынесены"
+verified: 2026-10-18T21:06:57Z
+status: gaps_found
+score: "3 из 4 требований passed"
 requirements: [ACT-01, ACT-02, ACT-03, ACT-04]
-gaps: []
+gaps: [ACT-03]
 ---
 
 # V2-08: Исполнительный инструментальный контур (Tool Calling)
@@ -138,4 +138,24 @@ gaps: []
 
 ## Ограничения проверки
 
-_(заполняется в Task 3)_
+- **Сервисы.** `chat-app.service` и `assistant-worker.service` не трогались и не перезапускались. Весь контур ACT находится в `assistant-core` и `assistant-shared`.
+- **Внешние системы (D-02).** Живых вызовов Gemini, Google Calendar и почты не было. Внешние API в тестах заменены заглушками (`MagicMock`, `AsyncMock`, `FakeGeminiClient`).
+- **БД и секреты.** Боевая `/opt/assistant-core/data/assistant.db`, посторонний `/opt/assistant-core/assistant.db` и файлы `.env` не открывались и не читались напрямую. Тесты импортируют `src.config`, который загружает `.env` штатно, так же как при любом прогоне pytest.
+- **Код и тесты (D-10).** Код, тесты и схема в репозиториях не менялись, новых тестов не добавлено. Проб вне репозиториев две: плагин pytest для дампа потоков и скрипт бисекции, оба в каталоге сессии вне дерева проекта.
+- **Агенты.** agy не запускался (STATE A-6). Исполнитель — Claude.
+- **Поведение LLM (A5).** Соблюдение правил промпта моделью не проверялось. Вердикт ACT-02 опирается на текст промпта и снимок.
+- **Гейт.** `python3 scripts/gate.py` не запускался: он хеширует боевую БД. По коду дефект из наблюдения 5 даёт КРАСНЫЙ.
+- **Не проверено построчно.** Тела функций карточек `src/notifier/telegram.py:195-237` (проверены определение 191 и вопрос 244) и диапазоны строк в `assistant-shared` (`store.py`, `engine.py`) сверены по номерам определений, не по каждой строке.
+- **Черновик Argon.** Использован черновик агента agy на аккаунте acc2 (модель gemini-4-argon-high) как вход. Черновик выполнен только чтением на чистых клонах без pytest и strace. Каждая ссылка file:line, вердикт и команда перепроверены по реальному коду и прогоном. Исправлено 10 пунктов:
+  1. ACT-03: вердикт passed заменён на gap. Утверждение «`src/notifier/bot_handler.py:2401` — единственная точка запуска» неверно: путь `act:cal:retry` (`:2499-2551`) вызывает бэкенд напрямую.
+  2. ACT-03: гарантия однократного исполнения распространена на retry. Для retry защиты нет: запрос в `src/storage/db.py:381` не фильтрует по статусу.
+  3. ACT-04: метка «трасса» заменена на «трасса+e2e»: `tests/test_tool_calling_flow.py:81` вызывает реальный `route()`.
+  4. ACT-04: ожидание «код 0, 10 passed» неверно. Итог 10 passed верен, процесс не завершается (код 124, наблюдение 5).
+  5. ACT-03 и ACT-01: «41 passed» заменено на «44 passed». Фактически `test_secretary_tools.py` содержит 7 тестов (не 6), `test_prompt_snapshot.py` содержит 19 (не 17).
+  6. ACT-02: «23 passed (17 + 6)» заменено на «26 (19 + 7)».
+  7. ACT-04: `dp.start_polling` находится в `src/main.py:934`, а не в `:944`.
+  8. Gaps: «gaps нет» заменено на gap ACT-03 с классом D-09 и привязкой.
+  9. Все ссылки `file:///var/tmp/argon-p5…/assistant-core/…` (чистые клоны без remote) заменены путями репозитория `/opt/assistant-core`.
+  10. Ограничения черновика «.venv отсутствует, пробы не выполнены» неверны: `.venv` есть, все пробы выполнены.
+  Проверено и подтверждено без изменений: все строки `intent_router.py`, ключевые строки `bot_handler.py` (регистрация, диспетчеризация, обработчики, HITL-callbacks), `secretary_dialog.py` (`_build_action_proposal`, `search_emails`, `render_prompt`), `tools_schema.py`, правило промпта `secretary_default.jinja2:27-31` и снимок, `calendar/client.py:149,185`, INSERT в `db.py` (`:1181`, `:1580`), пути `_is_authorized`, `resume_action`, атомарный `confirm_action`, `reject_action`.
+- **Дата сверки:** 2026-10-18 (UTC), ветка `main`.
