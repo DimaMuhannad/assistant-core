@@ -76,10 +76,56 @@ gaps: []
 3. **Тесты очистки диалога зелёные, но обход не ловят.** `tests/test_hitl_safety_guardrails.py` (`:42-79`, `:83-134`) проверяет карточку и итоговую очистку, но не проверяет `pending_confirmations` и не вызывает `resume_action`. Подробности в «Gaps» (HIT-05).
 4. **Голосовой и текстовый пути `/clear` не очищают память.** `bot_handler.py:1453-1459` (текст без слэша) и `:2794-2796` (голос) только вызывают `_warn_clear_requires_slash` (`:1888`). Это не обход.
 5. **Регистрация `notion_project_sync` условна** (см. трассу, пункт 6). Для HIT-01 не влияет, относится к V2-07.
+6. **Тесты очистки диалога зелёные, но обход не ловят.** Тесты `tests/test_hitl_safety_guardrails.py` (прогон зелёный, см. таблицу команд) и `tests/test_bot_hitl_parity.py:277-314` проходят при наличии обхода; `test_dlg_clear_registers_in_confirmation_store` закрепляет постфактум-запись как ожидаемую. Gap HIT-05 записан по коду, а не по падению тестов.
+7. **Стабильность.** Набор `test_hitl_safety_guardrails.py tests/test_bot_hitl_parity.py tests/test_hitl_telegram_cards.py` прошёл 3 из 3 прогонов (18 passed). Падений, зависаний и `database is locked` в этих прогонах не наблюдалось. `test_concurrent_confirmations_isolation` (`tests/test_concurrency_isolation.py:97`, ISO-04) в эту проверку не входит.
 
 ## Gaps
 
-Раздел заполняется в Задаче 2 (HIT-05).
+### HIT-05 (кандидат): обход единой точки подтверждения в очистке диалога
+
+**Вход и карточка (`/clear`, `/reset`):**
+
+- Регистрация команды: `src/notifier/bot_handler.py:428` (`Command("clear", "reset")` → `handle_cmd_clear_dialog`). Текст без слэша и голос очистку не запускают: `:1453-1459` и `:2794-2796` только вызывают `_warn_clear_requires_slash` (`:1888`).
+- `handle_cmd_clear_dialog` `:1897-1930`: проверка `_is_authorized` `:1899`, подсчёт `get_active_dialog_count` `:1902`, карточка с кнопками `callback_data="dlg:confirm_clear"` `:1922` и `"dlg:cancel_clear"` `:1923`. Запись `PendingConfirmation` при показе карточки **не создаётся**, `confirmation_id` в `callback_data` **не передаётся** (константная строка, без привязки к записи и без TTL).
+- Регистрация колбэка: `bot_handler.py:394` (`F.data == "dlg:confirm_clear"` → `cb_dlg_confirm_clear`).
+
+**Разбор `cb_dlg_confirm_clear` (`bot_handler.py:1932-1967`):**
+
+- (а) Авторизация: `:1933-1935` (`_is_authorized`, при отказе `answer` и `return`).
+- (б) Постфактум-создание записи в момент нажатия: `try:` `:1938`, `store = self._get_confirmation_store()` `:1939`, `store.create_confirmation(action_type="clear_dialog", target_id=<user_id>, channel=TELEGRAM, ttl_minutes=10)` `:1940-1947`.
+- (в) Немедленное подтверждение той же записи без решения пользователя: `await store.confirm_action(conf.id, ...)` `:1948`.
+- (г) Fail-open: `except Exception:` `:1949`, `logger.warning("Не удалось зафиксировать clear_dialog в ConfirmationStore", exc_info=True)` `:1950`. Ошибка хранилища не прерывает выполнение.
+- (д) Прямое разрушающее действие без `resume_action`: `archived = await self.db.clear_dialog_history(callback.from_user.id)` `:1952` → `src/storage/db.py:2365-2373` (`UPDATE bot_dialog_history SET is_archived = TRUE WHERE user_id = ? AND ...`). Обработчик `clear_dialog` в реестре `register_action_handler` не зарегистрирован (`grep` по `src/` и `/opt/assistant-shared/assistant_shared`: совпадений с `clear_dialog` как ключом реестра нет).
+
+**Смягчающие факты (для честной оценки, серьёзность не снижена):** очистка мягкая (архивирование; восстановление через `dlg:undo_clear`, `bot_handler.py:2326`, `db.py:2347`), выполняется только для владельца (`_is_authorized`), нажатие кнопки остаётся действием человека. Требование HITL, однако, не выполнено: запись создаётся после нажатия, а не до него, не привязана к карточке, не имеет TTL при показе, и при сбое ConfirmationStore очистка всё равно выполняется.
+
+**Отмена (`cb_dlg_cancel_clear`, `:1969-1989`):** та же схема постфактум: `create_confirmation` `:1976-1983`, `reject_action` `:1984`, `except` `:1985-1986`. Действие не выполняется, запись пишется задним числом.
+
+**Полный перечень вызовов `confirm_action(` и `resume_action(` в `src/` (проверено grep):**
+
+| Файл:строка | Вызов | Функция | Роль |
+|---|---|---|---|
+| `src/notifier/bot_handler.py:1948` | `confirm_action` | `cb_dlg_confirm_clear` | **ОБХОД**: прямое подтверждение, за ним очистка без `resume_action` |
+| `bot_handler.py:2078` | `resume_action` | `cb_hitl_confirm` | единая точка |
+| `bot_handler.py:2274` | `resume_action` | `cb_ntn_confirm` | единая точка (откат `reopen_action` `:2277`, `:2282`, `:2290`) |
+| `bot_handler.py:2401` | `resume_action` | `_handle_hitl_action_callback` | единая точка |
+| `bot_handler.py:1984`, `:2132`, `:2321`, `:2477` | `reject_action` | отмена `dlg`, `hitl`, `ntn`, `act` | отказ, действие не выполняется |
+| `bot_handler.py:2601`, `src/brain/git_evaluator.py:566` | `create_confirmation` | `_handle_secretary_dialog`, дайджест Git | создание записи до показа карточки |
+
+Вызовов `resume_action` в `src/` три (`:2078`, `:2274`, `:2401`). Другого обхода, кроме `cb_dlg_confirm_clear`, не найдено.
+
+**Тесты, которые не ловят обход:**
+
+- `tests/test_hitl_safety_guardrails.py:42-79` (`test_bot_handler_clear_dialog_hitl_card`): проверяет `active_count == 2` (`:68-69`) и кнопки (`:75-79`). Записи в `pending_confirmations` после показа карточки не проверяет.
+- `tests/test_hitl_safety_guardrails.py:83-134` (`test_bot_handler_confirm_cancel_undo_callbacks`): вызывает `cb_dlg_confirm_clear` (`:114`), проверяет `get_active_dialog_count == 0` (`:117`). `ConfirmationStore` и `resume_action` не проверяет.
+- `tests/test_bot_hitl_parity.py:277-314` (`test_dlg_clear_registers_in_confirmation_store`): вызывает `cb_dlg_confirm_clear` без предварительной карточки (`:295`) и **закрепляет обход** как ожидаемое поведение: проверяет строку `clear_dialog` со статусом `confirmed` и каналом `telegram` (`:307-314`). Не проверяет состояние `pending`, TTL карточки, вызов `resume_action` и поведение при сбое ConfirmationStore.
+- Тест на сбой ConfirmationStore при очистке диалога в `tests/` отсутствует.
+
+**Gap:**
+
+| Требование | Класс по D-09 | Предложение оформления | Привязка |
+|---|---|---|---|
+| HIT-01 (обход единой точки), кандидат HIT-05 | HITL (высокий приоритет): очистка памяти диалога выполняется напрямую после `confirm_action` без `resume_action`; запись создаётся постфактум при нажатии; карточка не привязана к записи и не имеет TTL; сбой ConfirmationStore проглатывается (fail-open) | Новое требование **HIT-05** в `.planning/REQUIREMENTS.md`, серьёзность `high`: «Очистка памяти диалога проходит через единую точку `resume_action`: запись создаётся до показа карточки, привязана к ней и имеет TTL, при сбое хранилища очистка не выполняется (fail-closed)». Оформляет план 05-08. В фазе 5 не исправляется (D-10) | Phase 999.3 (бэклог), решение владельца №3 и №6 (как указано в `05-03-PLAN.md`) |
 
 ## Ограничения проверки
 
