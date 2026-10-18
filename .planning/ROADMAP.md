@@ -303,3 +303,13 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 7. Быстрые действия по времени суток | v3.0 | 0/TBD | Not started | - |
 | 8. Первый запуск: чистая БД и мастер персоны | v3.0 | 0/TBD | Not started | - |
 | 9. Коннекторы и брифинги из диалога | v3.0 | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Follow-up — Phase 04 deferred UAT follow-up: Test 1 (BACKLOG)
+
+**Goal:** Ужесточить Air-Gap git-цепочки (ревью Argon №3–5): ограничить fetch/log remote из персоны, realpath в `_norm_path`, проверка пересечений с NDA на границе `SshGitProvider`
+**Source phase:** 04
+**Deferred at:** 2026-10-18 during /gsd-verify-work 04 session completion (риск принят владельцем)
+**Follow-ups:**
+- [ ] Test 1: Ужесточить Air-Gap git-цепочки (Argon №3–5; связано с решением владельца 2026-10-15 о fetch по remote локального клона) (deferred 2026-10-18)
