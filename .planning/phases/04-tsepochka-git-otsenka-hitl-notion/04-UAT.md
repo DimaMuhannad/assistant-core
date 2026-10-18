@@ -1,5 +1,5 @@
 ---
-status: testing
+status: partial
 phase: 04-tsepochka-git-otsenka-hitl-notion
 source: [04-VERIFICATION.md]
 started: 2026-10-18T13:02:44Z
@@ -8,11 +8,7 @@ updated: 2026-10-18T13:02:44Z
 
 ## Current Test
 
-number: 3
-name: Живая запись в Notion на боевых ID
-expected: |
-  Страница активности создана ровно один раз, повторное нажатие не создаёт дубль.
-awaiting: проверка владельцем (меняет внешнее состояние)
+[завершено: пп. 1 и 3 passed, п. 2 partial из-за внешнего IMAP ГУАП]
 
 ## Tests
 
@@ -26,14 +22,14 @@ result: partial (2026-10-18: рестарт с бэкапом /var/backups/assis
 
 ### 3. Живая запись в Notion на боевых ID
 expected: страница создана ровно один раз, повторное нажатие не создаёт дубль
-result: [pending]
+result: passed (2026-10-18, владелец вручную: запись по статусам «Активно» и «Застой», на каждое подтверждение ровно одна страница, дубля при повторе нет)
 
 ## Summary
 
 total: 3
-passed: 1
+passed: 2
 issues: 1
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
