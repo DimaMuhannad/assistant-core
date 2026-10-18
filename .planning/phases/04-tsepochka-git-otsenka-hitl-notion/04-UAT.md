@@ -8,11 +8,11 @@ updated: 2026-10-18T13:02:44Z
 
 ## Current Test
 
-number: 2
-name: Рестарт assistant-worker для выкатки правок 16 и 18 октября
+number: 3
+name: Живая запись в Notion на боевых ID
 expected: |
-  После python3 scripts/deploy.py --backup --restart смоук ЗЕЛЁНЫЙ, /git без регрессий.
-awaiting: явное разрешение владельца на рестарт
+  Страница активности создана ровно один раз, повторное нажатие не создаёт дубль.
+awaiting: проверка владельцем (меняет внешнее состояние)
 
 ## Tests
 
@@ -22,7 +22,7 @@ result: accepted-risk (решение владельца 2026-10-18: риск п
 
 ### 2. Рестарт assistant-worker для выкатки правок 16 и 18 октября
 expected: после python3 scripts/deploy.py --backup --restart смоук ЗЕЛЁНЫЙ, /git без регрессий
-result: [pending]
+result: partial (2026-10-18: рестарт с бэкапом /var/backups/assistant-core/assistant-20261018-141228.db выполнен по разрешению владельца; сервис active, 11 из 11 задач, git_progress_job зарегистрирован, getMe ✓, /help подтверждён владельцем. ИТОГ СМОУКА КРАСНЫЙ из-за одной проверки: «[guap] Failed to connect/ingest IMAP: timed out» — внешняя проблема, была до рестарта и ещё ~24 раза за 3 дня; к правкам фазы не относится. /git на боевом сервисе не вызывался.)
 
 ### 3. Живая запись в Notion на боевых ID
 expected: страница создана ровно один раз, повторное нажатие не создаёт дубль
@@ -32,8 +32,8 @@ result: [pending]
 
 total: 3
 passed: 1
-issues: 0
-pending: 2
+issues: 1
+pending: 1
 skipped: 0
 blocked: 0
 
