@@ -19,6 +19,31 @@ from src.storage.db import Database
 
 logger = logging.getLogger(__name__)
 
+# Сервер университета периодически отвечает дольше 15 с (~10% циклов): таймаут шире и одна повторная попытка подключения.
+IMAP_TIMEOUT_SEC = 45
+IMAP_CONNECT_ATTEMPTS = 2
+
+
+def open_imap_client(host: str, port: int, username: str, password: str) -> IMAPClient:
+    """Подключиться и войти в IMAP; при таймауте или сетевой ошибке повторить подключение один раз."""
+    for attempt in range(1, IMAP_CONNECT_ATTEMPTS + 1):
+        client = None
+        try:
+            client = IMAPClient(host, port=port, ssl=True, timeout=IMAP_TIMEOUT_SEC)
+            client.login(username, password)
+            return client
+        except (TimeoutError, OSError) as e:
+            if client is not None:
+                try:
+                    client.shutdown()
+                except Exception:
+                    pass
+            if attempt == IMAP_CONNECT_ATTEMPTS:
+                raise
+            logger.warning("IMAP %s: попытка %d из %d не удалась: %s", host, attempt, IMAP_CONNECT_ATTEMPTS, e)
+    raise RuntimeError("unreachable")
+
+
 # Noise keywords in sender or subject
 NOISE_SENDER_PATTERNS = [
     r"no[-_]?reply",
@@ -391,8 +416,7 @@ class EmailCollector:
         }
 
         try:
-            with IMAPClient(host, port=port, ssl=True, timeout=15) as client:
-                client.login(username, password)
+            with open_imap_client(host, port, username, password) as client:
                 logger.info("[%s] IMAP connected to %s:%d as %s", account_id, host, port, username)
 
                 for folder in folders:
