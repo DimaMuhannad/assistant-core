@@ -334,3 +334,13 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 **Plans**: TBD
 **UI hint**: no
 **Заметки для планирования**: статус «ожидает / подтверждено / отклонено» на стороне web (HIT-04) может потребовать мелкой правки chat-app. Она делается только через `/gsd-quick` в его репозитории, pytest chat-app остаётся зелёным.
+
+### Phase 999.3: Gap HIT-05 — очистка диалога мимо единой точки подтверждения (BACKLOG)
+
+**Goal:** Очистка диалога (`cb_dlg_confirm_clear`) идёт через `resume_action`: запись создаётся до подтверждения, сбой хранилища не приводит к выполнению очистки
+**Source phase:** 05 (ретро-верификация v2.0, V2-05-VERIFICATION.md)
+**Requirements:** HIT-05
+**Class (D-09):** HITL, серьёзность high
+**Deferred at:** 2026-10-19 (план 05-08; исправление не входит в Phase 5, D-10)
+**Follow-ups:**
+- [ ] Перевести cb_dlg_confirm_clear на единую точку resume_action и покрыть тестом сбой ConfirmationStore (тесты, закрепляющие обход: tests/test_bot_hitl_parity.py:277-314)
