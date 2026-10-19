@@ -344,3 +344,105 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8
 **Deferred at:** 2026-10-19 (план 05-08; исправление не входит в Phase 5, D-10)
 **Follow-ups:**
 - [ ] Перевести cb_dlg_confirm_clear на единую точку resume_action и покрыть тестом сбой ConfirmationStore (тесты, закрепляющие обход: tests/test_bot_hitl_parity.py:277-314)
+
+### Phase 999.4: Gap ISO-05 — метаданные NDA-почты уходят в LLM (BACKLOG)
+
+**Goal:** Метаданные NDA-почты (отправитель, тема, дата) не попадают в LLM ни на одном пути: `_get_email_overview`, `_search_email_context` и `search_emails` (`src/brain/secretary_dialog.py`), вечерний дайджест (`generate_evening_digest`, `src/brain/summarizer.py`)
+**Source phase:** 05 (ретро-верификация v2.0, V2-06-VERIFICATION.md, ISO-02)
+**Requirements:** ISO-05 (связано с NDAM-01)
+**Class (D-09):** NDA, безопасность, серьёзность high
+**Deferred at:** 2026-10-19 (план 05-08; исправление не входит в Phase 5, D-10; решения владельца 2026-10-18 №5 и 2026-10-19 пункт 3)
+**Follow-ups:**
+- [ ] Маскировать метаданные NDA-писем на трёх путях диалога и в вечернем дайджесте, fail-closed при сбое маскировки; тесты-ловушки на метаданные (сейчас покрыты только тело, snippet и вложения)
+
+### Phase 999.5: Gap DAT-03 — конкурентная запись двух процессов (BACKLOG)
+
+**Goal:** Конкурентная запись демона и chat-app в одну БД проходит стабильно (`test_concurrent_write_two_processes`)
+**Source phase:** 05 (V2-04-VERIFICATION.md, DAT-03; 05-EVIDENCE-DAT03.md)
+**Requirements:** DAT-05
+**Class (D-09):** целостность данных, серьёзность high
+**Deferred at:** 2026-10-19 (план 05-08; исправление вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Найти причину `database is locked` в тесте конкурентной записи (протокол: 1 сбой из 30 на свободной системе, 0 из 30 под нагрузкой; причина не исследована) и закрыть её
+
+### Phase 999.6: Gap DAT-02 — демон и chat-app открывают разные файлы БД (BACKLOG)
+
+**Goal:** Демон и chat-app работают с одной БД: путь берётся из настроек обоих процессов и совпадает
+**Source phase:** 05 (V2-04-VERIFICATION.md, DAT-02)
+**Requirements:** DAT-06
+**Связано:** Phase 999.2 (web-HITL → Telegram; решение владельца 2026-10-19 пункт 2)
+**Class (D-09):** целостность данных, серьёзность high
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Определить общую БД (демон `/opt/assistant-core/data/assistant.db`, chat-app `/opt/chat-app/backend/data/assistant.db`), выровнять `SQLITE_DB_PATH` обоих процессов; изменение chat-app — только через `/gsd-quick` в его репозитории
+
+### Phase 999.7: Gap DAT-04 (а) — тесты chat-app обращаются к путям assistant-core (BACKLOG)
+
+**Goal:** Тесты chat-app не обращаются к `/opt/assistant-core/data/` и `assistant.db`: фикстура персоны указывает на временный каталог, обход аудита не трогает боевые пути
+**Source phase:** 05 (V2-04-VERIFICATION.md, DAT-04 а: 9 строк stat/lstat в strace)
+**Requirements:** DAT-07
+**Class (D-09):** целостность данных, серьёзность critical
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Перевести фикстуру персоны на временный каталог; закрыть обход `rglob` по пространству assistant-core (`backend/app/api/v1/security.py:42`); исправить docstring `backend/tests/conftest.py:1-5`
+
+### Phase 999.8: Gap ISO-04 — database is locked в подтверждениях двух персон (BACKLOG)
+
+**Goal:** Параллельные подтверждения двух персон (`ConfirmationStore`) проходят без `database is locked`
+**Source phase:** 05 (V2-06-VERIFICATION.md, ISO-04)
+**Requirements:** DAT-08
+**Class (D-09):** целостность данных, серьёзность средняя
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Найти причину сбоя в `test_concurrent_confirmations_isolation` (2 из 9 прогонов в связке, 0 из 20 изолированно) и закрыть её в `/opt/assistant-shared/assistant_shared/hitl/store.py`
+
+### Phase 999.9: Gap ACT-03 — повтор календаря мимо HITL-движка (BACKLOG)
+
+**Goal:** Повтор синхронизации календаря (`act:cal:retry`) проходит через `resume_action` и `ConfirmationStore` и выполняет внешнюю запись не более одного раза
+**Source phase:** 05 (V2-08-VERIFICATION.md, ACT-03)
+**Requirements:** HIT-06
+**Class (D-09):** HITL и целостность данных, серьёзность high (назначено планом 05-08; в V2-08 не указана)
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Перевести `act:cal:retry` (`src/notifier/bot_handler.py:2499-2551`) на `resume_action`, повтор только для статуса `pending_sync`; тест на повторное нажатие
+
+### Phase 999.10: Gap UXQ-01 — меню команд не обновляется при подключении коннекторов (BACKLOG)
+
+**Goal:** Меню команд бота обновляется при подключении и отключении коннекторов (`setup_bot_commands`)
+**Source phase:** 05 (V2-09-VERIFICATION.md, UXQ-01)
+**Requirements:** нет, запись бэклога (закрывается ONB-02, Phase 8)
+**Class (D-09):** улучшение (функция не доставляется; не безопасность, не HITL, не NDA)
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Вызывать `setup_bot_commands(chat_id=...)` после подключения и отключения коннектора (через ONB-02) и после ручной правки привязок
+- [ ] Проверить вызов `setup_bot_commands` после подключения и отключения в VERIFICATION Phase 8
+
+### Phase 999.11: Gap UXQ-04 — проактивные алерты коннекторов не вызываются (BACKLOG)
+
+**Goal:** Алерты `send_connector_health_alert` доставляются: сейчас определены в `src/notifier/bot_handler.py:2660-2690`, вызовов в `src/` нет
+**Source phase:** 05 (V2-09-VERIFICATION.md, UXQ-04, часть 3)
+**Requirements:** нет, запись бэклога
+**Class (D-09):** улучшение (функция не доставляется)
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Подключить `send_connector_health_alert` к периодической проверке `health_check()` коннекторов (задача планировщика, дедупликация и cooldown); сделать `cb_connector_health_check` реальной проверкой связи
+
+### Phase 999.12: Gap DAT-04 (б) — герметичность тестов chat-app (BACKLOG)
+
+**Goal:** Тесты chat-app не обращаются к `.venv`, `config/`, `scripts/`, `src/` и корню assistant-core (701 путь из делегаторов и обхода аудита)
+**Source phase:** 05 (V2-04-VERIFICATION.md, DAT-04 б)
+**Requirements:** нет, запись бэклога
+**Class (D-09):** улучшение (герметичность тестов), серьёзность low
+**Deferred at:** 2026-10-19 (план 05-08; вне Phase 5, D-10)
+**Follow-ups:**
+- [ ] Изолировать делегаторы и обход аудита от корня assistant-core в тестах chat-app (DEBT-03 IN-05 рассматривается отдельно)
+
+### Phase 999.13: Зависание tests/test_fast_intent_router.py — дефект инфраструктуры тестов (BACKLOG)
+
+**Goal:** Процесс `tests/test_fast_intent_router.py` завершается после итога: три теста `test_bot_handler_dispatch_to_*` создают `EmailBotHandler` без `bot`/`notifier` и оставляют незакрытые потоки aiosqlite
+**Source phase:** 05 (V2-08-VERIFICATION.md, наблюдение 5; V2-09-VERIFICATION.md, наблюдение 8; 05-01-SUMMARY.md)
+**Requirements:** нет, дефект инфраструктуры тестов (не требование; решение владельца 2026-10-19 пункт 4)
+**Class (D-09):** целостность гейта, не gap требования
+**Deferred at:** 2026-10-19 (план 05-08; код и тесты не менялись, D-10)
+**Follow-ups:**
+- [ ] Закрыть соединения aiosqlite в тестах диспетчера (отдельная задача `/gsd-quick` или правка тестов); отдельный запуск даёт код 124 при 10 passed, в полном наборе гейта зелёный

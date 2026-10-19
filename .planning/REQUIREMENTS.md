@@ -46,19 +46,19 @@
 - [ ] **DAT-02**: Путь к БД берётся из настроек в обоих процессах (проверка по факту).
 - [ ] **DAT-03**: WAL и `busy_timeout` включены, конкурентная запись двух процессов работает (проверка по факту, включая нестабильный `test_concurrent_write_two_processes`).
 - [ ] **DAT-04**: Тесты chat-app изолированы от `/opt/assistant-core` (проверка по факту, только чтение chat-app).
-- [ ] **SEC-01**: Единая библиотека безопасности в `assistant-shared` используется обоими репозиториями (проверка по факту).
-- [ ] **SEC-02**: `security_shield.py` — тонкая обёртка над библиотекой, дрейфа нет (проверка по факту).
-- [ ] **SEC-03**: pre-commit hook воспроизводимо установлен и блокирует синтетический секрет (проверка по факту).
-- [ ] **HIT-01**: `ConfirmationStore`, `@requires_confirmation`, `resume_action` и миграция `pending_confirmations` (проверка по факту).
-- [ ] **ISO-01**: Ключи Gemini принадлежат контексту персоны, глобальный ключ не мутируется (проверка по факту).
-- [ ] **ISO-02**: Существующая маскировка тела, snippet и вложений NDA-почты для LLM работает (проверка по факту). Метаданные NDA-почты — v2 (NDAM-01).
-- [ ] **ISO-03**: Zero-Trust scopes коннекторов (проверка по факту).
+- [x] **SEC-01**: Единая библиотека безопасности в `assistant-shared` используется обоими репозиториями (проверка по факту).
+- [x] **SEC-02**: `security_shield.py` — тонкая обёртка над библиотекой, дрейфа нет (проверка по факту).
+- [x] **SEC-03**: pre-commit hook воспроизводимо установлен и блокирует синтетический секрет (проверка по факту).
+- [x] **HIT-01**: `ConfirmationStore`, `@requires_confirmation`, `resume_action` и миграция `pending_confirmations` (проверка по факту). Проверено 2026-10-18: декоратор `@requires_confirmation` не реализован, примитив `ConfirmationStore` + `resume_action` + миграция `0002` засчитан по решению владельца №3; обход единой точки в очистке диалога — HIT-05.
+- [x] **ISO-01**: Ключи Gemini принадлежат контексту персоны, глобальный ключ не мутируется (проверка по факту).
+- [ ] **ISO-02**: Существующая маскировка тела, snippet и вложений NDA-почты для LLM работает (проверка по факту). Метаданные NDA-почты — v2 (NDAM-01). Проверено 2026-10-18: маскировка тела, snippet и вложений работает; по исходному тексту v2.0 метаданные (отправитель, тема, дата) уходят в LLM — ISO-05.
+- [x] **ISO-03**: Zero-Trust scopes коннекторов (проверка по факту).
 - [ ] **ISO-04**: Нет cross-talk между персоной по умолчанию и синтетической (проверка по факту).
-- [ ] **FIN-01**: `HARDCODE_BASELINE` пуст в обоих репозиториях (формальное подтверждение).
-- [ ] **ACT-01**: Function Calling секретаря: `create_calendar_event`, `create_reminder`, `draft_email_reply` вызывают реальный бэкенд и возвращают `function_response` (проверка по факту).
-- [ ] **ACT-02**: Промпт секретаря запрещает утверждать о выполнении без успешного tool_result. При нехватке данных задаётся уточняющий вопрос (проверка по факту).
+- [x] **FIN-01**: `HARDCODE_BASELINE` пуст в обоих репозиториях (формальное подтверждение).
+- [x] **ACT-01**: Function Calling секретаря (HITL-first, решение владельца 2026-10-18): инструменты `create_calendar_event`, `create_reminder`, `draft_email_reply` не исполняют бэкенд напрямую: вызов превращается в `ActionProposal` и карточку подтверждения (вместо `function_response` и `tool_result`), а календарь, напоминание и черновик письма выполняет обработчик после подтверждения; инструмент `search_emails` возвращает `function_response` модели (проверка по факту).
+- [x] **ACT-02**: Промпт секретаря запрещает утверждать о выполнении (событие внесено, напоминание создано, черновик подготовлен), если инструмент не вызван и не сформирована карточка подтверждения (HITL-first, решение владельца 2026-10-18). При нехватке данных задаётся уточняющий вопрос (проверка по факту).
 - [ ] **ACT-03**: Перед созданием внешних событий и изменением критичных данных — HITL-карточка с инлайн-кнопками; действие только после нажатия (проверка по факту).
-- [ ] **ACT-04**: Интенты `calendar_schedule`, `create_reminder`, `draft_reply` в `FastIntentRouter` с извлечением сущностей (проверка по факту).
+- [x] **ACT-04**: Интенты `calendar_schedule`, `create_reminder`, `draft_reply` в `FastIntentRouter` с извлечением сущностей (проверка по факту).
 - [ ] **UXQ-01**: Меню команд бота строится из коннекторов персоны (`set_my_commands`, scope чата) и обновляется при подключении и отключении (проверка по факту).
 - [x] **UXQ-02**: Декларативные алиасы, переименование и скрытие команд из чата (проверка по факту; хранение после DAT-01).
 - [ ] **UXQ-04**: Edge caching < 250 мс, телеметрия 👍/👎, проактивные алерты коннекторов (проверка по факту).
@@ -68,6 +68,12 @@
 Исправление не входит в Phase 5; каждое требование привязано к записи бэклога в ROADMAP.md (решение владельца 2026-10-19: все gaps оформляются по правилу плана 05-08).
 
 - [ ] **HIT-05**: Очистка диалога (`cb_dlg_confirm_clear` в `src/notifier/bot_handler.py`) проходит через единую точку подтверждения: запись `clear_dialog` создаётся в статусе ожидания, действие выполняется только через `resume_action` после подтверждения владельцем, сбой `ConfirmationStore` не приводит к выполнению очистки (fail-closed). Доказательство: V2-05-VERIFICATION.md. Привязка: Phase 999.3.
+- [ ] **ISO-05**: Метаданные NDA-почты (отправитель, тема, дата) не попадают в LLM ни на одном пути: `_get_email_overview`, `_search_email_context` и tool `search_emails` в `src/brain/secretary_dialog.py`, а также вечерний дайджест (`generate_evening_digest` в `src/brain/summarizer.py`); маскировка fail-closed при сбое. Связано с NDAM-01. Доказательство: V2-06-VERIFICATION.md. Привязка: Phase 999.4.
+- [ ] **DAT-05**: Конкурентная запись двух процессов в одну БД проходит стабильно (WAL и `busy_timeout`, `test_concurrent_write_two_processes`); сбой `database is locked` не возникает в протоколе повторных прогонов. Доказательство: 05-EVIDENCE-DAT03.md. Привязка: Phase 999.5.
+- [ ] **DAT-06**: Демон и chat-app работают с одной БД: путь берётся из настроек обоих процессов и совпадает (сейчас демон использует `/opt/assistant-core/data/assistant.db`, chat-app — `/opt/chat-app/backend/data/assistant.db`). Связано с Phase 999.2. Доказательство: V2-04-VERIFICATION.md. Привязка: Phase 999.6.
+- [ ] **DAT-07**: Тесты chat-app не обращаются к путям `/opt/assistant-core` (`data/`, `assistant.db`): фикстура персоны указывает на временный каталог, обход аудита Security Tile не трогает боевые пути. Доказательство: V2-04-VERIFICATION.md. Привязка: Phase 999.7.
+- [ ] **DAT-08**: Параллельные подтверждения двух персон (`ConfirmationStore`) проходят без `database is locked`; тест `test_concurrent_confirmations_isolation` стабилен. Доказательство: V2-06-VERIFICATION.md. Привязка: Phase 999.8.
+- [ ] **HIT-06**: Повтор синхронизации календаря (`act:cal:retry` в `src/notifier/bot_handler.py`) проходит через HITL-движок (`resume_action` и `ConfirmationStore`) и выполняет внешнюю запись не более одного раза, только для записи в статусе `pending_sync`. Доказательство: V2-08-VERIFICATION.md. Привязка: Phase 999.9.
 
 ### Интерфейс (UXQ)
 
@@ -160,37 +166,44 @@
 | NTN-01 | Phase 4 | Complete |
 | NTN-02 | Phase 4 | Complete |
 | VER-01 | Phase 5 | Pending |
-| DAT-02 | Phase 5 | Pending |
-| DAT-03 | Phase 5 | Pending |
-| DAT-04 | Phase 5 | Pending |
-| SEC-01 | Phase 5 | Pending |
-| SEC-02 | Phase 5 | Pending |
-| SEC-03 | Phase 5 | Pending |
-| HIT-01 | Phase 5 | Pending |
-| ISO-01 | Phase 5 | Pending |
-| ISO-02 | Phase 5 | Pending |
-| ISO-03 | Phase 5 | Pending |
-| ISO-04 | Phase 5 | Pending |
-| FIN-01 | Phase 5 | Pending |
-| ACT-01 | Phase 5 | Pending |
-| ACT-02 | Phase 5 | Pending |
-| ACT-03 | Phase 5 | Pending |
-| ACT-04 | Phase 5 | Pending |
-| UXQ-01 | Phase 5 | Pending |
+| DAT-02 | Phase 5 | Gap → DAT-06 (999.6) |
+| DAT-03 | Phase 5 | Gap → DAT-05 (999.5) |
+| DAT-04 | Phase 5 | Gap → DAT-07 (999.7), 999.12 |
+| SEC-01 | Phase 5 | Complete |
+| SEC-02 | Phase 5 | Complete |
+| SEC-03 | Phase 5 | Complete |
+| HIT-01 | Phase 5 | Complete |
+| ISO-01 | Phase 5 | Complete |
+| ISO-02 | Phase 5 | Gap → ISO-05 (999.4) |
+| ISO-03 | Phase 5 | Complete |
+| ISO-04 | Phase 5 | Gap → DAT-08 (999.8) |
+| FIN-01 | Phase 5 | Complete |
+| ACT-01 | Phase 5 | Complete |
+| ACT-02 | Phase 5 | Complete |
+| ACT-03 | Phase 5 | Gap → HIT-06 (999.9) |
+| ACT-04 | Phase 5 | Complete |
+| UXQ-01 | Phase 5 | Gap → 999.10 |
 | UXQ-02 | Phase 5 | Complete |
-| UXQ-04 | Phase 5 | Pending |
+| UXQ-04 | Phase 5 | Gap → 999.11 |
 | UXQ-03 | Phase 6 | Pending |
 | GEN-01 | Phase 7 | Pending |
 | ONB-01 | Phase 7 | Pending |
 | ONB-02 | Phase 8 | Pending |
 | ONB-03 | Phase 8 | Pending |
 | HIT-05 | Phase 999.3 | Pending |
+| ISO-05 | Phase 999.4 | Pending |
+| DAT-05 | Phase 999.5 | Pending |
+| DAT-06 | Phase 999.6 | Pending |
+| DAT-07 | Phase 999.7 | Pending |
+| DAT-08 | Phase 999.8 | Pending |
+| HIT-06 | Phase 999.9 | Pending |
 
 **Coverage:**
-- v1 requirements: 44 total (HIT-02..04 перенесены в v2 2026-10-18)
-- Mapped to phases: 44 ✓
+- v1 requirements: 51 total (44 + 7 gap-требований Phase 5: HIT-05, ISO-05, DAT-05..08, HIT-06; HIT-02..04 перенесены в v2 2026-10-18)
+- Mapped to phases: 51 ✓
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-10-09*
 *Last updated: 2026-10-18 — web-HITL → Telegram (HIT-02..04) отложена в бэклог, фазы 6–9 стали 5–8*
+*Last updated: 2026-10-19 (Phase 5, план 05-08) — ретро-верификация v2.0 по 05-VERIFICATION.md: статусы DAT, SEC, HIT-01, ISO, FIN, ACT, UXQ обновлены; новые требования HIT-05, ISO-05, DAT-05..08, HIT-06 (gaps → бэклог 999.3–999.9)*
