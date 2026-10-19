@@ -1,29 +1,34 @@
 ---
 phase: 05-retro-verifikatsiya-v2-0
 plan: 08
-verified: 2026-10-19T00:36:17Z
+verified: 2026-10-19T01:10:00Z
 status: passed
-score: "4/4 критериев успеха; требований passed 11 из 19, gap 8"
+score: "4/4 критериев успеха; цель фазы достигнута; требований passed 11 из 19, gap 8 (оформлены)"
 covered_files:
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-04-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-05-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-06-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-07-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-08-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/V2-09-VERIFICATION.md
-  - .planning/phases/05-retro-verifikatsiya-v2-0/05-EVIDENCE-DAT03.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-01-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-01-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-02-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-02-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-03-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-03-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-04-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-04-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-05-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-05-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-06-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-06-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-07-PLAN.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-07-SUMMARY.md
   - .planning/phases/05-retro-verifikatsiya-v2-0/05-08-PLAN.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-08-SUMMARY.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-EVIDENCE-DAT03.md
+  - .planning/phases/05-retro-verifikatsiya-v2-0/05-SUMMARY.md
+covered_digest: "v3:sha256:e738b3fa6a2de2852d9cb573cdd42efb0200f5abc86348bb8fbe472f4c16a9ef"
 behavior_unverified: 0
 overrides_applied: 0
 gaps: []
 requirement_gaps: [DAT-02, DAT-03, DAT-04, ISO-02, ISO-04, ACT-03, UXQ-01, UXQ-04]
+verifier: gsd-verifier (проверка достижения цели фазы, 2026-10-19)
 ---
 
 # Фаза 5: Ретро-верификация v2.0 — сводка
@@ -136,3 +141,58 @@ requirement_gaps: [DAT-02, DAT-03, DAT-04, ISO-02, ISO-04, ACT-03, UXQ-01, UXQ-0
 4. Новых тестов и изменений кода в репозиториях нет (D-10). chat-app и assistant-shared не менялись.
 5. agy не использовался (STATE A-6). Черновики Argon (acc2) использовались как недоверенный ввод и перепроверены по коду; счётчики исправлений по SUMMARY: 05-01 — 10, 05-02 — 36, 05-03 — 24, 05-04 — 21.
 6. strace фиксирует только файловые вызовы; обращения без файловых системных вызовов трассой не видны.
+
+## Проверка достижения цели фазы (gsd-verifier)
+
+**Дата:** 2026-10-19. **Вердикт по цели фазы: passed.** Цель фазы: каждое требование v2.0, перенесённое без проверки, получает честный статус по факту, каждый разрыв становится явной записью. Требования-gaps, корректно оформленные и разнесённые по бэклогу, не являются gaps фазы.
+
+### Проверка по критериям ROADMAP
+
+| # | Критерий | Результат | Что проверено независимо |
+|---|---|---|---|
+| 1 | VERIFICATION.md для фаз 4–9 v2.0 со ссылками на источник | VERIFIED | шесть файлов `V2-04..V2-09-VERIFICATION.md` существуют; во frontmatter у каждого `v2_source` с путём в `/opt/chat-app/.planning/milestones/v2.0-phases/…`, есть блок «Источник» |
+| 2 | 19 требований: passed или gap с доказательством из рантайма; FIN-01 формально | VERIFIED | таблица сводки: 11 passed + 8 gap = 19, у каждой строки file:line; `HARDCODE_BASELINE: dict[str, dict[str, int]] = {}` в `tests/hardcode_baseline.py:14` |
+| 3 | DAT-03 прогнан повторно, результат честный | VERIFIED | `05-EVIDENCE-DAT03.md`: 1 из 30 (свободная система, free-27 `database is locked`), 0 из 30 под нагрузкой, вердикт gap; сбой не скрыт; каталог проб `/var/tmp/gsd-phase05-probes/dat03` существует |
+| 4 | Каждый gap — требование или бэклог; гейт ЗЕЛЁНЫЙ; БД не тронута; рестарт не нужен | VERIFIED | см. ниже |
+
+### Покрытие ID требований
+
+Объединение `requirements` из PLAN 05-01..05-08: VER-01, ACT-01..04, ISO-01..04, FIN-01, HIT-01, UXQ-01, UXQ-02, UXQ-04, DAT-03, SEC-01..03, DAT-04, DAT-02 = 20 ID. Совпадает со строкой Requirements фазы 5 в ROADMAP.md (20 ID). Все 20 есть в таблице сводки; осиротевших ID нет.
+
+### Сверка статусов REQUIREMENTS.md и 05-VERIFICATION.md
+
+- Passed (11): SEC-01, SEC-02, SEC-03, HIT-01, ISO-01, ISO-03, FIN-01, ACT-01, ACT-02, ACT-04, UXQ-02 — в REQUIREMENTS.md `[x]` и «Complete». VER-01 `[x]`, «Complete».
+- Gap (8): DAT-02, DAT-03, DAT-04, ISO-02, ISO-04, ACT-03, UXQ-01, UXQ-04 — `[ ]`, в таблице трассировки «Gap → …» с привязкой.
+- UXQ-02, отмеченное Complete ещё планом 05-04 (коммит `9fd2bac`): совпадает с итоговым вердиктом passed, расхождения нет.
+- Новые требования HIT-05, ISO-05, DAT-05..08, HIT-06 присутствуют (`[ ]`, «Pending», Phase 999.3–999.9); счёт покрытия 51 согласуется с 44 + 7.
+
+### Соответствие gap → требование/бэклог
+
+Все 10 строк реестра имеют цель: HIT-05 → 999.3, ISO-05 → 999.4, DAT-05 → 999.5, DAT-06 → 999.6, DAT-07 → 999.7, DAT-08 → 999.8, HIT-06 → 999.9, UXQ-01 → 999.10, UXQ-04 (часть 3) → 999.11, DAT-04 (б) → 999.12; запись 999.13 (зависание `test_fast_intent_router.py`) без gap, по решению владельца. Все разделы 999.3–999.13 найдены в ROADMAP.md с Source phase, Class и Follow-ups.
+
+### Выборочная проверка file:line по коду (не по SUMMARY)
+
+| Утверждение | Результат |
+|---|---|
+| `src/main.py:646-648` `Database(config.SQLITE_DB_PATH)` + `init_db()` (DAT-02, HIT-01); `:673` `default_lms_client()` до `try`; `:700, 932` `setup_bot_commands()` | подтверждено |
+| `bot_handler.py:2499-2551` `act:cal:retry` → `create_event_from_dict` (`src/calendar/client.py:185`) без `resume_action` (`resume_action` только на `:2078, 2274, 2401`) — gap ACT-03 | подтверждено |
+| `bot_handler.py:1932` `cb_dlg_confirm_clear`: `create_confirmation` + немедленный `confirm_action`, `except Exception` лишь логирует, затем `clear_dialog_history` выполняется (fail-open) — gap HIT-05; тест `test_bot_hitl_parity.py:277` закрепляет обход | подтверждено |
+| `airgap.py:132-157` маскирует body/snippet/attachments, но не sender/subject/date; `secretary_dialog.py:169-176, 191-200, 773-806` и `summarizer.py:343-347` подставляют отправителя, тему, дату — gap ISO-02 | подтверждено |
+| `send_connector_health_alert` определён в `bot_handler.py:2660`, вызовов в `src/` нет — gap UXQ-04 (часть 3) | подтверждено |
+| `bot_handler.py:911-939` `setup_bot_commands` вызывается только на старте (`main.py:700, 932`) — gap UXQ-01 | подтверждено |
+| `assistant_shared/db/connection.py:42-45, 61-64` WAL и `busy_timeout = 30000`; `hitl/store.py:52` запись в `pending_confirmations` | подтверждено |
+| `key_rotator.py:190-213` пул ротаторов по `persona_id` (ISO-01); `composition.py:37, 57, 78, 111, 144` `MissingScopeError` (ISO-03); `scripts/gate.py:780` `hook_installed_check` | подтверждено |
+
+Расхождений между утверждениями V2-файлов (включая выводы, выросшие из черновиков Argon) и кодом не найдено.
+
+### Гейт и неизменность кода
+
+- `gate-1.txt`: КРАСНЫЙ (rc 1), единственная красная строка «боевая assistant.db не изменена» (assistant-worker active, БД изменена воркером в окне измерения); остальные 10 строк ✓. `gate-2.txt`: ЗЕЛЁНЫЙ (rc 0), все 11 строк ✓, SHA-256 до/после совпали (`a90d8fb6c11c`). Красная попытка записана в документе, не скрыта; повтор один раз соответствует протоколу. Сам верификатор гейт не запускал (по заданию оркестратора), опираясь на сохранённые выводы.
+- `git diff --name-only 252970d..HEAD` вне `.planning/`: 0 файлов. В рабочем дереве вне `.planning` изменений нет. Код и тесты не менялись, рестарт не требовался (D-10).
+- Боевая БД и `.env` верификатором не открывались.
+
+### Замечания (не блокируют)
+
+1. Открытые вопросы владельцу 1–7 (раздел выше) остаются без ответа: UXQ-02 (алиас вместо переименования), ISO-03 (нет теста chat-app), HIT-01 (аннотация `@requires_confirmation`), статус `04-VERIFICATION.md` v3. Это решения о формулировках, а не недостающие доказательства; текущие вердикты честно помечены.
+2. Статус `passed` относится к цели фазы (честные вердикты и оформление gaps). Продукт при этом содержит 8 открытых требований-gaps, из них высокой серьёзности HIT-05, ISO-05, DAT-05, DAT-06, HIT-06 и критической DAT-07; их исправление запланировано вне Phase 5 (бэклог 999.3–999.9).
+3. Нерешённый риск среды: гейт зависит от того, что воркер не пишет в БД во время pytest (гейт-1 красный из-за этого); защита тестов — `tests/live_db_guard.py`.
