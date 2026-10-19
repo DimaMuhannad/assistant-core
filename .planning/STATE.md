@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 
 ## Current Position
 
-Phase: 5 (retro-verifikatsiya-v2-0) — EXECUTING
+Phase: 5 (retro-verifikatsiya-v2-0) — COMPLETE
 Plan: 8 of 8
-Status: Ready to execute
-Last activity: 2026-10-18 — Phase 5 execution started
+Status: Phase complete (05-VERIFICATION.md: 11 passed, 8 gap из 19; VER-01 Complete)
+Last activity: 2026-10-19 — Phase 5 closed (plan 05-08)
 
 Progress: [████░░░░░░] 44%
 
@@ -166,6 +166,10 @@ Progress: [████░░░░░░] 44%
 - [Phase 05]: 05-06: SEC-01, SEC-02, SEC-03 passed (трасса+e2e / e2e); DAT-04 gap: strace полного прогона chat-app трогает /opt/assistant-core/data и assistant.db (stat, 9 строк): класс целостность данных (critical, DAT-07) и улучшение (low, 999.x), передано 05-08
 - [Phase 5]: 05-07: DAT-03 gap по протоколу 60 прогонов (free 1/30, load 0/30, K=1 J=0), класс целостность данных, DAT-05 передано 05-08
 - [Phase 5]: 05-07: DAT-02 gap: путь воркера /opt/assistant-core/data/assistant.db не совпадает с путём chat-app /opt/chat-app/backend/data/assistant.db (ответ владельца), DAT-06 передано 05-08; V2-04 gaps_found, 3 из 6 passed
+- [Owner 2026-10-18 №1–7, план 05-08]: FIN-01 passed формально (FIN-02 не создаётся); ACT-01/ACT-02 в HITL-first формулировке (ACT-05 не создаётся); HIT-01 засчитан по ConfirmationStore + resume_action; ISO-02 gap против v2.0 → ISO-05; все gaps в бэклог Phase 999.3+, не в Phase 6
+- [Owner 2026-10-19]: (1) все gaps оформлены требованием или записью бэклога, исправление вне Phase 5 (D-10); (2) DAT-02 gap, high, требование DAT-06, связано с Phase 999.2; (3) ISO-05 охватывает три пути secretary_dialog.py и вечерний дайджест summarizer.py; (4) зависание test_fast_intent_router.py — бэклог 999.13 без нового требования
+- [Phase 5]: 05-08: итог 11 passed / 8 gap из 19; VER-01 Complete; новые требования HIT-05, ISO-05, DAT-05..08, HIT-06 (Coverage 51); ISO-04 → DAT-08; бэклог 999.3–999.13
+- [Phase 5]: 05-08: гейт попытка 1 КРАСНЫЙ (хеш живой БД при записи assistant-worker внутри окна), попытка 2 ЗЕЛЁНЫЙ после одного повтора через 30 с; код не менялся, рестарт не нужен
 
 ### Pending Todos
 
@@ -197,6 +201,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-18T22:48:42.364Z
-Stopped at: Completed 05-07-PLAN.md
+Last session: 2026-10-19T00:40:00.000Z
+Stopped at: Completed 05-08-PLAN.md (Phase 5 complete)
 Resume file: None
