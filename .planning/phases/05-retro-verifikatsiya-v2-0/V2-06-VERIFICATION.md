@@ -4,9 +4,9 @@ v2_phase: "06"
 v2_source: /opt/chat-app/.planning/milestones/v2.0-phases/06-gotovnost-k-multitenantnosti
 verified: 2026-10-18T21:52:24Z
 status: gaps_found
-score: "3 из 5 требований passed"
+score: "2 из 5 требований passed"
 requirements: [ISO-01, ISO-02, ISO-03, ISO-04, FIN-01]
-gaps: [ISO-02, ISO-04]
+gaps: [ISO-02, ISO-03, ISO-04]
 ---
 
 # V2-06: Готовность к мультитенантности (ретро-верификация фазы 06 v2.0)
@@ -23,7 +23,7 @@ gaps: [ISO-02, ISO-04]
 |---|---|---|---|---|
 | ISO-01 | passed | `src/main.py:687-699` (`EmailBotHandler`, `dp.include_router`) → `src/notifier/bot_handler.py:432, 1311, 1416` → `src/brain/intent_router.py:381` и `src/brain/secretary_dialog.py:753, 813` → `src/brain/key_rotator.py:227, 219-220, 194-213` (прокси и `get_key_rotator`, пул по `persona_id`); `src/main.py:675` → `src/composition.py:161-167` → `src/main.py:904-913` → `src/brain/git_evaluator.py:305-311`; глобальных присваиваний `config.GEMINI_API_KEY` нет | `tests/test_key_rotator.py:111-125` (`test_key_rotator_no_global_config_mutation`), `:128-135`, `:138-170` (`test_key_rotator_persona_isolation`); `pytest tests/test_key_rotator.py -q` → код 0, `9 passed` | трасса |
 | ISO-02 | gap | `src/security/airgap.py:19, 23-129, 132-157` (маскировка тела, snippet, вложений работает) → `src/brain/secretary_dialog.py:169-176, 191-200, 773-806` (`sender`, `sender_email`, `subject`, `date_sent` NDA-письма попадают в промпт и в `contents` внешнего вызова `generate_content`); дополнительно `src/brain/summarizer.py:343-347, 382, 399` (вечерний дайджест) | `tests/test_airgap_trap.py:103-314` (8 тестов, проверяют только тело, snippet и вложения); `tests/test_airgap_trap.py tests/test_nda_script_parity.py` → код 0, `12 passed` | трасса+e2e |
-| ISO-03 | passed | `src/composition.py:37, 57, 78, 111, 144` (`MissingScopeError` в пяти фабриках) ← `src/core/ports/connectors.py:34, 78, 146, 194` (`required_scopes`); `src/main.py:673` (`default_lms_client()` вне `try`) и `src/main.py:965` (`asyncio.run(main())` без перехвата): нехватка scope у `lms` останавливает старт (fail-closed); `/opt/chat-app/backend/app/core/config.py:6-33` (в `Settings` нет полей LMS) | `tests/test_phase4_reachability.py:91-120`, `tests/test_ports_conformance.py:284-295, 297-310`, `tests/test_concurrency_isolation.py:71`; `pytest tests/test_phase4_reachability.py tests/test_ports_conformance.py -q` → код 0, `41 passed`; `grep -rniE 'lms\|guap' /opt/chat-app/backend/app --include=*.py` → 0 совпадений | трасса |
+| ISO-03 | gap | `src/composition.py:37, 57, 78, 111, 144` (`MissingScopeError` в пяти фабриках) ← `src/core/ports/connectors.py:34, 78, 146, 194` (`required_scopes`); `src/main.py:673` (`default_lms_client()` вне `try`) и `src/main.py:965` (`asyncio.run(main())` без перехвата): нехватка scope у `lms` останавливает старт (fail-closed); `/opt/chat-app/backend/app/core/config.py:6-33` (в `Settings` нет полей LMS) | `tests/test_phase4_reachability.py:91-120`, `tests/test_ports_conformance.py:284-295, 297-310`, `tests/test_concurrency_isolation.py:71`; `pytest tests/test_phase4_reachability.py tests/test_ports_conformance.py -q` → код 0, `41 passed`; `grep -rniE 'lms\|guap' /opt/chat-app/backend/app --include=*.py` → 0 совпадений | трасса |
 | ISO-04 | gap | `src/main.py:651-652` (персона процесса) → `src/persona/current.py:17-40` (`_override`, `current_persona`, `use_persona`) → `src/brain/key_rotator.py:190-213` (пул ключей по `persona_id`) → `src/composition.py:21-146` (фабрики по персоне) → `/opt/assistant-shared/assistant_shared/hitl/store.py:24-75, 100-108` (подтверждения с `persona_id`); сбой записи подтверждения `database is locked` в `store.py:52` | `tests/test_concurrency_isolation.py:97-163` (`test_concurrent_confirmations_isolation`: 2 сбоя из 9 прогонов в связке с другими файлами, 0 из 20 при изолированном прогоне файла); `tests/test_concurrency_isolation.py:44-94`, `:166-190` и `tests/test_synthetic_persona.py` проходят | трасса+e2e |
 | FIN-01 | passed | `tests/hardcode_baseline.py:14` (`HARDCODE_BASELINE = {}`), `tests/test_hardcode_scanner.py:149-158` (нет новых хардкодов вне baseline, нет устаревших записей); `/opt/chat-app/backend/tests/hardcode_baseline.py:14`, `/opt/chat-app/backend/tests/test_hardcode_scanner.py:149-158` | `tests/test_hardcode_scanner.py` (3 passed, код 0); `backend/tests/test_hardcode_scanner.py` (3 passed, код 0, git status chat-app не изменён) | трасса |
 
@@ -79,7 +79,14 @@ gaps: [ISO-02, ISO-04]
 
 **Формулировка требования (`/opt/chat-app/.planning/milestones/v2.0-REQUIREMENTS.md:85`):** «Zero-Trust scopes: коннектор объявляет `required_scopes`, персона выдаёт `scopes`; ядро отказывается поднимать коннектор без выданного scope; процесс chat-app не держит учётные данные LMS (проверяемый тест).»
 
-**Вердикт:** `passed` (метка `трасса`, без e2e-теста, D-04). Часть assistant-core доказана трассой по всем пяти фабрикам и пробой. Часть про chat-app: в формулировке указан «проверяемый тест», а отдельного теста в chat-app нет. Подтверждение только статическим поиском по коду и полям настроек. Это записано как предел вывода (A6) и вынесено владельцу на решение.
+**Вердикт:** `gap`, серьёзность low (метка `трасса`, D-04). Решение владельца 2026-10-19 №2: перевести из `passed` в `gap`.
+
+- Часть assistant-core доказана трассой по всем пяти фабрикам и пробой (эта часть выполнена).
+- Часть про chat-app не закрыта: текст v2.0 требует «проверяемый тест», отдельного теста в chat-app нет. Подтверждение только статическим поиском по коду и полям настроек (предел вывода A6).
+
+**Сценарий отказа, который не ловит ни один тест:** будущая правка добавит, например, `GUAP_LMS_PASSWORD` в `Settings` chat-app для web-кнопки «синхронизировать оценки». Ни один тест не упадёт, а компрометация internet-facing chat-app раскроет учётные данные LMS.
+
+**Закрытие:** запись бэклога Phase 999.15 (тест в chat-app: `Settings` не содержит полей учётных данных LMS). Новый ID требования не создаётся; ISO-03 в `REQUIREMENTS.md` остаётся `[ ]`, «Gap → 999.15».
 
 **Трасса assistant-core (`файл:строка`):**
 - Исключение: `src/core/exceptions.py:10` (`MissingScopeError(PermissionError)`), импорт в фабриках `src/composition.py`.
@@ -169,12 +176,13 @@ gaps: [ISO-02, ISO-04]
 |---|---|---|---|
 | ISO-02 | NDA, безопасность: внешний LLM получает метаданные NDA-писем (отправитель, тема, дата) | Новое требование ISO-05 в `.planning/REQUIREMENTS.md`, severity `high`, закрытие в backlog-фазе 999.4, связка с NDAM-01. Оформляет план 05-08 (решение владельца №5). Исправление в этой фазе не выполняется (D-10) | `src/brain/secretary_dialog.py:169-176, 191-200, 773-806`; `src/brain/summarizer.py:343-347, 399`; `src/security/airgap.py:132-157` |
 | ISO-04 | Целостность данных (подтверждения HITL): параллельная запись двух персон не проходит стабильно, `database is locked` в 2 из 9 прогонов в связке | Класс D-09 «целостность данных» → новое требование с ID в REQUIREMENTS.md через план 05-08 после решения владельца, либо запись бэклога 999.x; исправление вне фазы (D-10). Серьёзность: средняя (cross-talk не наблюдался, сбой — отказ записи) | `tests/test_concurrency_isolation.py:97-163`, `/opt/assistant-shared/assistant_shared/hitl/store.py:52` |
+| ISO-03 | Безопасность (учётные данные внешней системы в internet-facing процессе), серьёзность low: нет теста, что chat-app не держит учётные данные LMS | Запись бэклога 999.15 (тест в chat-app на отсутствие LMS-полей в `Settings`); новый ID не создаётся (решение владельца 2026-10-19 №2) | `/opt/chat-app/backend/app/core/config.py:6-33` (статическая проверка) |
 
 ## Ограничения проверки
 
 1. **Что не делалось.** Боевая БД `/opt/assistant-core/data/assistant.db` и файл `/opt/assistant-core/assistant.db` не открывались. Ни один `.env` не читался (включая `/opt/chat-app/backend/.env`). Каталоги `restricted_nda` (в том числе `/opt/work-tydex`) и данные NDA-писем не читались. Живых вызовов LLM и внешних API не было. Сервисы не перезапускались: `assistant-worker` активен и не трогался, `chat-app.service` неактивен. `sync_active_key_to_env` не запускалась. Пакеты не устанавливались. Файлы вне `.planning/` не менялись.
 2. **Загрузка конфигурации тестами.** Тесты и пробы импортируют `src/config.py`, который по дизайну проекта читает `.env` через python-dotenv. Значения из `.env` не выводились и в документ не попали.
-3. **Предел вывода по ISO-03 (A6).** Отсутствие LMS-кода и полей в chat-app не доказывает отсутствие переменных `GUAP_*`/`LMS_*` в `.env` или в окружении процесса. Текст v2.0 требует «проверяемый тест», а теста для части chat-app нет. Вердикт `passed` сохранён по плану; решение владельца: оставить passed по коду или перевести в gap.
+3. **Предел вывода по ISO-03 (A6).** Отсутствие LMS-кода и полей в chat-app не доказывает отсутствие переменных `GUAP_*`/`LMS_*` в `.env` или в окружении процесса. Текст v2.0 требует «проверяемый тест», а теста для части chat-app нет. Решение владельца 2026-10-19 №2: вердикт `gap`, серьёзность low, бэклог 999.15.
 4. **Предел вывода по ISO-02 (A7).** Утечка метаданных оценена по коду, без живого трафика и без данных писем; runtime-проба метаданных не выполнялась (план требует только чтения кода). Три пути диалога прослежены полностью. Путь `prime_morning_context` (`src/brain/secretary_dialog.py:422`) сохраняет результат через `save_primed_context` (`:444`), дальнейшее чтение за пределами `secretary_dialog.py` не проверялось.
 5. **ISO-04, одна персона в рантайме.** Параллельная работа двух персон проверена только тестами; продуктовый процесс работает с одной персоной.
 6. **ISO-04, причина сбоя не установлена.** `database is locked` воспроизводится в 2 из 9 прогонов в связке; в изолированном прогоне файла сбоев не было (0 из 20). Исправление не выполнялось (D-10). Гипотеза из раздела ISO-04 не проверена.
