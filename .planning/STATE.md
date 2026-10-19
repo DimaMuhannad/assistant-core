@@ -3,15 +3,15 @@ gsd_state_version: "1.0"
 milestone: v3.0
 milestone_name: Стабилизация платформы и онбординг
 current_phase: "05.1"
-current_phase_name: Проактивная картина владельца
+current_phase_name: Пересмотр карточек и сводка состояния
 status: planning
 stopped_at: Phase 5 complete, ready to plan Phase 6
-last_updated: "2026-10-19T10:19:33.747Z"
+last_updated: "2026-10-19T10:23:16.168Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 5 complete, transitioned to Phase 6
-state_head: e26d41eee0b8fcb58052796567380faff0b5ddb8
+state_head: 42265e254f23693d8961f9fcae3caae4c93710f2
 progress:
-  total_phases: 10
+  total_phases: 11
   completed_phases: 5
   total_plans: 52
   completed_plans: 52
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-10)
 
 ## Current Position
 
-Phase: 05.1 — Проактивная картина владельца
+Phase: 05.1 — Пересмотр карточек и сводка состояния
 Plan: Not started
 Status: Ready to plan
 Last activity: 2026-10-19 — Phase 5 complete, transitioned to Phase 6
@@ -201,6 +201,7 @@ None yet.
 - Phase 4 edited: edited fields: goal, success_criteria (NDA excluded entirely, D-12); REQUIREMENTS GIT-04 rewritten
 - Phase 05.1 inserted after Phase 5: Проактивная картина владельца (обсуждение 2026-10-19) (URGENT)
 - Phase 05.2 inserted after Phase 05.1: Проекты из диалога в Notion (обсуждение 2026-10-19) (URGENT)
+- Phase 05.1 inserted after Phase 5: Пересмотр карточек и сводка состояния; прежние 05.1 и 05.2 перенумерованы в 05.2 и 05.3 (решение владельца 2026-10-19) (URGENT)
 
 ## Deferred Items
 
