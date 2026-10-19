@@ -6,10 +6,10 @@ current_phase: "05.1"
 current_phase_name: Пересмотр карточек и сводка состояния
 status: planning
 stopped_at: Phase 5 complete, ready to plan Phase 6
-last_updated: "2026-10-19T10:23:16.168Z"
+last_updated: "2026-10-19T10:33:54.901Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 5 complete, transitioned to Phase 6
-state_head: 42265e254f23693d8961f9fcae3caae4c93710f2
+state_head: 83a0d430b699704fe41a12b36beb521072e16342
 progress:
   total_phases: 11
   completed_phases: 5
@@ -179,6 +179,7 @@ Progress: [██████░░░░] 63%
 - [Owner 2026-10-19 №6, mail]: меню «mail» видно всегда, независимо от привязки почты; бэклог 999.16, связано с ONB-02 / UXQ-01 (Phase 8)
 - [Owner 2026-10-19 №7, DAT-04 (а)]: stat/lstat считаются обращением; gap critical, DAT-07 без изменений
 - [Phase 5, 2026-10-19]: итог после решений владельца: passed 9, gap 10 из 19 (UXQ-02, ISO-03 переведены в gap); вердикт цели фазы passed сохранён
+- [Phase Owner 2026-10-19]: Новая веха «Автономный секретарь» вместо фаз 05.1–05.3 в v3.0. v3.0 закрывается как есть: устаревшие проверки фаз 1–3 и human_needed фазы 4 — долги в бэклог; 05.1–05.3 — входные данные новой вехи; 6–8 — в бэклог. Входные данные: .planning/notes/proactive-owner-picture.md. Порядок: /clear → /gsd-complete-milestone → /gsd-new-milestone
 
 ### Pending Todos
 
